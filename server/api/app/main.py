@@ -7,6 +7,7 @@ import sys
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
 from app.config import ServerConfig, load_config
 from app.db import Base, engine, init_engine
 from app.routes import recordings, regenerate, settings
