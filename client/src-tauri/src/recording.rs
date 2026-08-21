@@ -160,7 +160,17 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
             *guard = Some(active);
             Err(e)
         }
-        Err((e, _)) => Err(e),
+        Err((e, _)) => {
+            // Fatal: leave spool consistent — mark the session terminal so
+            // pending() stops re-enqueueing a doomed upload; keep the .pcm
+            // sidecar (recoverable audio) next to the marker.
+            let mut dead = active.session.clone();
+            dead.duration_sec = active.started.elapsed().as_secs_f64();
+            dead.finalized = true; // terminal: excluded from pending()
+            dead.title = format!("{} [ENCODE FAILED — pcm kept]", dead.title);
+            spool.write_session(&dead).ok();
+            Err(e)
+        }
     }
 }
 

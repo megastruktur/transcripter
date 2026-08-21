@@ -54,6 +54,8 @@ export async function startRecording(title: string): Promise<void> {
 export async function stopRecording(): Promise<void> {
 	const cfg = loadApiConfig();
 	try {
+		if (stoppingFlag) return;
+		stoppingFlag = true;
 		const session = await commands.stopRecording(
 			cfg.baseUrl || null,
 			cfg.token || null
@@ -84,8 +86,12 @@ export async function stopRecording(): Promise<void> {
 			// stay in recording state so Stop can be retried.
 			recorder.warnings.push(`stop failed (retry Stop): ${msg}`);
 		}
+	} finally {
+		stoppingFlag = false;
 	}
 }
+
+let stoppingFlag = false;
 
 /** Retry pending spool uploads (server-side scan + enqueue). */
 export async function retryPendingUploads(): Promise<number> {
