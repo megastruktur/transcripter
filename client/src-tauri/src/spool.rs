@@ -38,6 +38,13 @@ impl Spool {
         Ok(Self { root })
     }
 
+    /// Open an already-spool root (no `spool` segment appended) — used by
+    /// the uploader retry loop, which receives `Spool::root()` paths.
+    pub fn open_root(root: &Path) -> anyhow::Result<Self> {
+        fs::create_dir_all(root)?;
+        Ok(Self { root: root.to_path_buf() })
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -142,6 +149,28 @@ mod tests {
         let ids: Vec<String> = spool.pending().unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["open".to_string()]);
         std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn open_root_reads_same_sessions_as_new() {
+        // Uploader retry path: Spool::open_root(root_of_existing_spool)
+        // must see sessions created via Spool::new (no spool/spool double-join).
+        let base = std::env::temp_dir().join(format!("spool-root-{}", uuid::Uuid::new_v4()));
+        let spool = Spool::new(&base).unwrap();
+        spool.create(&session("rid")).unwrap();
+
+        let reopened = Spool::open_root(spool.root()).unwrap();
+        let loaded = reopened.read_session("rid").unwrap();
+        assert_eq!(loaded.id, "rid");
+
+        // And the write path: persist server_rec_id, re-read sees it.
+        let mut updated = loaded;
+        updated.server_rec_id = Some("server-123".into());
+        reopened.write_session(&updated).unwrap();
+        let again = reopened.read_session("rid").unwrap();
+        assert_eq!(again.server_rec_id.as_deref(), Some("server-123"));
+
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

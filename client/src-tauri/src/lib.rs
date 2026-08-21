@@ -182,14 +182,14 @@ async fn try_upload(
     for attempt in 0..6 {
         // Re-read session.json each attempt: upload() persists server_rec_id
         // there on first create, and we must resume THAT recording.
-        let current = Spool::new(spool_dir)
+        let current = Spool::open_root(spool_dir)
             .ok()
             .and_then(|s| s.read_session(&session.id).ok())
             .unwrap_or_else(|| session.clone());
         let res = uploader.upload(spool_dir, &current, &mut |_p| {}).await;
         match res {
             Ok(()) => {
-                if let Ok(s) = Spool::new(spool_dir) {
+                if let Ok(s) = Spool::open_root(spool_dir) {
                     s.remove(&session.id).ok();
                 }
                 return Ok(());
