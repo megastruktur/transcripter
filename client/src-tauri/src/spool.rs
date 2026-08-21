@@ -20,6 +20,8 @@ pub struct SpoolSession {
     pub system_active: bool,
     /// Upload progress: next byte offset acked by server.
     pub uploaded_offset: u64,
+    /// Server-assigned recording id (set on first create; reused on retries).
+    pub server_rec_id: Option<String>,
     /// Set when server confirmed finalize.
     pub finalized: bool,
 }
@@ -112,6 +114,7 @@ mod tests {
             mic_active: true,
             system_active: false,
             uploaded_offset: 0,
+            server_rec_id: None,
             finalized: false,
         }
     }

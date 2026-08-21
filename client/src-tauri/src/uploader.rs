@@ -1,6 +1,5 @@
 //! Resumable uploader: spool → server, chunked offset PUT, retry, cleanup.
 
-use std::path::PathBuf;
 
 use crate::spool::SpoolSession;
 
@@ -48,9 +47,7 @@ impl Uploader {
         let resp = rb
             .json(&serde_json::json!({
                 "title": s.title,
-                "total_bytes": std::fs::metadata(
-                    crate_path(s)
-                ).map(|m| m.len()).ok(),
+                "total_bytes": None::<u64>,
             }))
             .send()
             .await
@@ -103,7 +100,16 @@ impl Uploader {
         let data = std::fs::read(&audio).map_err(|e| UploadError::Io(e.to_string()))?;
         let total = data.len() as u64;
 
-        let rec_id = self.create_recording(session).await?;
+        let rec_id = match &session.server_rec_id {
+            Some(id) => id.clone(),
+            None => {
+                let id = self.create_recording(session).await?;
+                let mut updated = session.clone();
+                updated.server_rec_id = Some(id.clone());
+                persist_session(spool_root, &updated)?;
+                id
+            }
+        };
         let mut offset = self.committed(&rec_id).await?;
         progress(UploadProgress {
             session_id: session.id.clone(),
@@ -168,7 +174,10 @@ impl Uploader {
     }
 }
 
-fn crate_path(s: &SpoolSession) -> PathBuf {
-    // total_bytes lookup helper — path within spool root is resolved by caller
-    PathBuf::from("/nonexistent").join(&s.id)
+fn persist_session(spool_root: &std::path::Path, session: &SpoolSession) -> Result<(), UploadError> {
+    std::fs::write(
+        spool_root.join(&session.id).join("session.json"),
+        serde_json::to_string_pretty(session).unwrap_or_default(),
+    )
+    .map_err(|e| UploadError::Io(e.to_string()))
 }

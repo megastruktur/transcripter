@@ -5,7 +5,6 @@ pub mod recording;
 pub mod spool;
 pub mod uploader;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::AppHandle;
@@ -14,11 +13,12 @@ use tokio::runtime::Runtime;
 use crate::permissions::PreFlightReport;
 use crate::spool::{Spool, SpoolSession};
 
-static UPLOADING: AtomicBool = AtomicBool::new(false);
 static RUNTIME: std::sync::LazyLock<Runtime> =
     std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime"));
 
 pub fn run() {
+    // Retry spool entries from previous runs once the frontend provides
+    // config (it calls cmd_upload_now per pending session after Settings ok).
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             cmd_pre_flight,
@@ -43,19 +43,30 @@ fn cmd_start_recording(app: AppHandle, title: Option<String>) -> Result<String, 
 }
 
 #[tauri::command]
-fn cmd_stop_recording(app: AppHandle) -> Result<SpoolSession, String> {
+fn cmd_stop_recording(
+    app: AppHandle,
+    server_url: Option<String>,
+    server_token: Option<String>,
+) -> Result<SpoolSession, String> {
     let spool = spool_from_app(&app)?;
     let session = recording::stop(&spool)?;
 
-    // Kick the uploader for this session (roborev T10: never silently drop).
-    let cfg = upload_config(&app);
-    let for_upload = session.clone();
-    let spool_dir = spool.root().to_path_buf();
-    RUNTIME.spawn(async move {
-        if let Err(e) = upload_with_retry(&spool_dir, &for_upload, cfg).await {
-            eprintln!("[uploader] session {} failed: {e}", for_upload.id);
-        }
-    });
+    // Kick the uploader with the frontend-provided config (roborev T10:
+    // env-var-only config never worked for UI-configured users).
+    if let (Some(url), Some(token)) = (server_url, server_token) {
+        let for_upload = session.clone();
+        let spool_dir = spool.root().to_path_buf();
+        RUNTIME.spawn(async move {
+            if let Err(e) = upload_with_retry(&spool_dir, &for_upload, UploadCfg {
+                base_url: url,
+                token,
+            }).await {
+                eprintln!("[uploader] session {} failed: {e}", for_upload.id);
+            }
+        });
+    } else {
+        eprintln!("[uploader] no server config from UI; recording stays in spool");
+    }
     Ok(session)
 }
 
@@ -71,18 +82,10 @@ fn spool_from_app(app: &AppHandle) -> Result<Spool, String> {
     Spool::new(&dir).map_err(|e| e.to_string())
 }
 
+#[derive(Clone)]
 struct UploadCfg {
     base_url: String,
     token: String,
-}
-
-fn upload_config(_app: &AppHandle) -> UploadCfg {
-    // Frontend owns settings in localStorage; Rust reads env fallbacks only.
-    // The frontend also invokes cmd_upload_now with explicit config (below).
-    UploadCfg {
-        base_url: std::env::var("TRANSCRIPTER_URL").unwrap_or_default(),
-        token: std::env::var("TRANSCRIPTER_TOKEN").unwrap_or_default(),
-    }
 }
 
 #[tauri::command]
@@ -95,27 +98,54 @@ fn cmd_upload_now(
     let spool = spool_from_app(&app)?;
     let session = spool.read_session(&session_id).map_err(|e| e.to_string())?;
     let spool_dir = spool.root().to_path_buf();
-    RUNTIME.spawn(async move {
-        if let Err(e) = upload_with_retry(&spool_dir, &session, UploadCfg { base_url, token }).await {
-            eprintln!("[uploader] session {} failed: {e}", session.id);
-        }
-    });
+    enqueue_upload(
+        spool_dir,
+        session.clone(),
+        UploadCfg { base_url, token },
+    );
     Ok(())
 }
 
-/// Upload with backoff; stops retrying after ~5 minutes and leaves the spool
-/// entry pending (next app start or cmd_upload_now retries it).
+#[derive(Clone)]
+struct UploadJob {
+    spool_dir: std::path::PathBuf,
+    session: SpoolSession,
+    cfg: UploadCfg,
+}
+
+enum QueueMsg {
+    Job(UploadJob),
+}
+
+static UPLOAD_QUEUE: std::sync::LazyLock<
+    tokio::sync::mpsc::UnboundedSender<QueueMsg>,
+> = std::sync::LazyLock::new(|| {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
+    RUNTIME.spawn(async move {
+        while let Some(QueueMsg::Job(job)) = rx.recv().await {
+            if let Err(e) = try_upload(&job.spool_dir, &job.session, &job.cfg).await {
+                eprintln!("[uploader] session {} failed: {e}", job.session.id);
+            }
+        }
+    });
+    tx
+});
+
+/// Enqueue an upload; the single queue worker processes jobs sequentially.
+/// Returns immediately; failures are logged and the spool entry stays pending.
+fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: UploadCfg) {
+    let _ = UPLOAD_QUEUE.send(QueueMsg::Job(UploadJob { spool_dir, session, cfg }));
+}
+
+/// Upload with backoff; gives up after ~5 min and leaves the spool entry
+/// pending (pending() scan on next start or cmd_upload_now retries it).
 async fn upload_with_retry(
     spool_dir: &std::path::Path,
     session: &SpoolSession,
     cfg: UploadCfg,
 ) -> anyhow::Result<()> {
-    if UPLOADING.swap(true, Ordering::SeqCst) {
-        anyhow::bail!("another upload in flight");
-    }
-    let result = try_upload(spool_dir, session, &cfg).await;
-    UPLOADING.store(false, Ordering::SeqCst);
-    result
+    enqueue_upload(spool_dir.to_path_buf(), session.clone(), cfg);
+    Ok(())
 }
 
 async fn try_upload(

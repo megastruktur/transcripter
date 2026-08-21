@@ -73,6 +73,7 @@ pub fn start(spool: &Spool, title: &str, with_system: bool) -> Result<String, St
         mic_active: true,
         system_active,
         uploaded_offset: 0,
+        server_rec_id: None,
         finalized: false,
     };
     spool.create(&session).map_err(|e| e.to_string())?;

@@ -32,8 +32,11 @@ export const commands = {
 	startRecording(title: string | null): Promise<string> {
 		return invoke('cmd_start_recording', { title });
 	},
-	stopRecording(): Promise<SpoolSession> {
-		return invoke('cmd_stop_recording');
+	stopRecording(serverUrl: string | null, serverToken: string | null): Promise<SpoolSession> {
+		return invoke('cmd_stop_recording', { serverUrl, serverToken });
+	},
+	uploadNow(baseUrl: string, token: string, sessionId: string): Promise<void> {
+		return invoke('cmd_upload_now', { baseUrl, token, sessionId });
 	},
 	pump(): Promise<number> {
 		return invoke('cmd_pump');

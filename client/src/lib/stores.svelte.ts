@@ -1,4 +1,5 @@
 import { commands, type PreFlightReport } from '$lib/tauri';
+import { loadApiConfig } from '$lib/api.svelte';
 
 export type UploadState = {
 	sessionId: string;
@@ -49,7 +50,22 @@ export async function stopRecording(): Promise<void> {
 		clearInterval(pumpTimer);
 		pumpTimer = null;
 	}
-	await commands.stopRecording();
+	const cfg = loadApiConfig();
+	const session = await commands.stopRecording(
+		cfg.baseUrl || null,
+		cfg.token || null
+	);
 	recorder.recording = false;
-	// Uploader service (T9 rust side) picks up the spool entry on its loop.
+	if (!session.finalized) {
+		recorder.warnings.push(`recording queued for upload (${session.id.slice(0, 8)}…)`);
+	}
+}
+
+/** Retry pending spool uploads (called on Recordings mount). */
+export async function retryPendingUploads(): Promise<void> {
+	const cfg = loadApiConfig();
+	if (!cfg.baseUrl || !cfg.token) return;
+	// Rust spool scan is not exposed as a list; cmd_upload_now per session
+	// comes from the stop-time queue — this is the explicit retry hook.
+	await commands.uploadNow(cfg.baseUrl, cfg.token, 'pending');
 }
