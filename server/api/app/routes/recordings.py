@@ -175,7 +175,7 @@ def finalize(
     rec.state = RecordingState.processing
     session.commit()
 
-    request.app.state.on_finalize(rec.id)  # hook wired to Temporal in T3
+    request.app.state.on_finalize(rec.id, body.duration_sec)  # → Temporal
     return {"state": rec.state.value, "size": size}
 
 

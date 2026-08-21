@@ -35,9 +35,9 @@ cfg: ServerConfig = load_config()
 
 app = FastAPI(title="Transcripter API")
 app.state.config = cfg
-app.state.on_finalize = lambda rec_id: regenerate.trigger_pipeline_async(
-    rec_id, None
-)  # duration known post-finalize via catalog; workflow reads it from DB
+app.state.on_finalize = lambda rec_id, duration: regenerate.trigger_pipeline_async(
+    rec_id, duration
+)
 
 init_engine(cfg.database.url)
 Base.metadata.create_all(bind=engine())

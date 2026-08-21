@@ -38,23 +38,23 @@ def test_regenerate_uploading_409(client: TestClient) -> None:
     assert r.status_code == 409
 
 
+def _force_state(rid: str, state: str) -> None:
+    from app.db import Recording, get_session
+
+    gen = get_session()
+    s = next(gen)
+    try:
+        rec = s.get(Recording, rid)
+        assert rec is not None
+        rec.state = state
+        s.commit()
+    finally:
+        gen.close()
+
+
 def test_regenerate_starts_workflow(client: TestClient) -> None:
     rid = _make_recording(client)
-    # Move out of uploading: fake finalize via direct upload
-    data = b"q" * 64
-    r = client.put(
-        f"/recordings/{rid}/audio",
-        params={"offset": 0},
-        content=data,
-        headers={"content-length": str(len(data))},
-    )
-    assert r.status_code == 200
-
-    r = client.post(
-        f"/recordings/{rid}/finalize",
-        json={"sha256": hashlib.sha256(data).hexdigest(), "duration_sec": 1.0},
-    )
-    assert r.status_code == 200
+    _force_state(rid, "done")
 
     with patch("app.temporal_client.regenerate_stage", new_callable=AsyncMock) as m:
         m.return_value = "wf-123"
@@ -64,19 +64,17 @@ def test_regenerate_starts_workflow(client: TestClient) -> None:
     m.assert_awaited_once()
 
 
+def test_regenerate_processing_409(client: TestClient) -> None:
+    rid = _make_recording(client)
+    _force_state(rid, "processing")
+    r = client.post(f"/recordings/{rid}/regenerate", json={"stage": "transcribe"})
+    assert r.status_code == 409
+    assert "already processing" in r.json()["detail"]
+
+
 def test_regenerate_temporal_down_503(client: TestClient) -> None:
     rid = _make_recording(client)
-    data = b"w" * 32
-    client.put(
-        f"/recordings/{rid}/audio",
-        params={"offset": 0},
-        content=data,
-        headers={"content-length": str(len(data))},
-    )
-    client.post(
-        f"/recordings/{rid}/finalize",
-        json={"sha256": hashlib.sha256(data).hexdigest()},
-    )
+    _force_state(rid, "done")
 
     with patch(
         "app.temporal_client.regenerate_stage",
@@ -110,3 +108,65 @@ def test_artifact_served_when_present(client: TestClient) -> None:
     r = client.get(f"/recordings/{rid}/artifacts/transcribe")
     assert r.status_code == 200
     assert r.text == "# t"
+
+
+def _sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def test_audio_uploading_409(client: TestClient) -> None:
+    rid = _make_recording(client)
+    r = client.get(f"/recordings/{rid}/audio")
+    assert r.status_code == 409
+
+
+def test_audio_served_after_upload(client: TestClient) -> None:
+    rid = _make_recording(client)
+    data = b"a" * 128
+    client.put(
+        f"/recordings/{rid}/audio",
+        params={"offset": 0},
+        content=data,
+        headers={"content-length": str(len(data))},
+    )
+    client.post(f"/recordings/{rid}/finalize", json={"sha256": _sha(data)})
+    r = client.get(f"/recordings/{rid}/audio")
+    assert r.status_code == 200
+    assert r.content == data
+
+
+def test_summary_not_generated_404(client: TestClient) -> None:
+    rid = _make_recording(client)
+    r = client.get(f"/recordings/{rid}/summary")
+    assert r.status_code == 404
+
+
+def test_finalize_starts_pipeline(client: TestClient) -> None:
+    from app import temporal_client
+
+    rid = _make_recording(client)
+    data = b"z" * 64
+    client.put(
+        f"/recordings/{rid}/audio",
+        params={"offset": 0},
+        content=data,
+        headers={"content-length": str(len(data))},
+    )
+    r = client.post(f"/recordings/{rid}/finalize", json={"sha256": _sha(data)})
+    assert r.status_code == 200
+    temporal_client.start_pipeline.assert_awaited_once()
+
+
+def test_segments_json_selectable(client: TestClient) -> None:
+    rid = _make_recording(client)
+    from pathlib import Path as P
+
+    storage = os.environ["TRANSCRIPTER_STORAGE"]
+    meta = P(storage) / "recordings" / rid / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "segments.json").write_text("{}", encoding="utf-8")
+    r = client.get(f"/recordings/{rid}/artifacts/transcribe?file=segments.json")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")

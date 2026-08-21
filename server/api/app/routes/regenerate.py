@@ -45,13 +45,21 @@ async def regenerate(
     rec = _get(recording_id, session)
     if rec.state == RecordingState.uploading:
         raise HTTPException(status_code=409, detail="recording not uploaded yet")
+    if rec.state == RecordingState.processing:
+        raise HTTPException(status_code=409, detail="recording is already processing")
+
+    import logging
 
     try:
         from app import temporal_client
 
         workflow_id = await temporal_client.regenerate_stage(rec.id, body.stage, rec.duration_sec)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"temporal unavailable: {e}") from e
+        logging.getLogger("transcripter.api").exception("regenerate %s", rec.id)
+        detail = "temporal unavailable"
+        if "workflow already started" in str(e).lower():
+            detail = "workflow already running for this recording"
+        raise HTTPException(status_code=503, detail=detail) from e
 
     rec.state = RecordingState.processing
     session.commit()
@@ -63,15 +71,23 @@ def get_artifact(
     recording_id: str,
     stage: str,
     request: Request,
+    file: str | None = None,
     session: Session = Depends(get_session),
 ):
     _get(recording_id, session)
     if stage not in ARTIFACTS:
         raise HTTPException(status_code=404, detail=f"no artifacts for stage {stage}")
 
+    candidates = ARTIFACTS[stage]
+    if file:
+        wanted = f"meta/{Path(file).name}"
+        if wanted not in candidates:
+            raise HTTPException(status_code=400, detail=f"unknown artifact {file}")
+        candidates = [wanted]
+
     cfg = _cfg(request)
     rec_root = cfg.recordings_root / recording_id
-    for rel in ARTIFACTS[stage]:
+    for rel in candidates:
         p: Path = rec_root / rel
         if p.exists():
             media = "text/markdown" if p.suffix == ".md" else "application/json"
@@ -97,18 +113,34 @@ def get_audio(
     return FileResponse(p, media_type="audio/flac")
 
 
+_INFLIGHT: set[asyncio.Task] = set()  # keep refs so tasks are not GC'd
+
+
 def trigger_pipeline_async(rec_id: str, duration_sec: float | None) -> None:
-    """Called from sync finalize handler; schedules Temporal start."""
+    """Called from sync finalize handler (threadpool → no running loop)."""
 
     async def _start() -> None:
+        import logging
+
         from app import temporal_client
 
-        await temporal_client.start_pipeline(rec_id, duration_sec)
+        try:
+            await temporal_client.start_pipeline(rec_id, duration_sec)
+        except Exception:
+            logging.getLogger("transcripter.api").exception("start_pipeline failed for %s", rec_id)
+            from app.db_helpers import set_recording_failed
+
+            set_recording_failed(rec_id)
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_start())
     except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        task = loop.create_task(_start())
+        _INFLIGHT.add(task)
+        task.add_done_callback(_INFLIGHT.discard)
+    else:
         asyncio.run(_start())
 
 
