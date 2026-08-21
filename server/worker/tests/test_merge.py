@@ -52,8 +52,8 @@ def test_write_diarized(tmp_path: Path):
                 "language": "ru",
                 "segments": [],
                 "words": [
-                    {"start": 0.0, "end": 1.0, "text": " привет"},
-                    {"start": 1.2, "end": 2.0, "text": " пока"},
+                    {"start": 0.0, "end": 1.0, "text": " alpha"},
+                    {"start": 1.2, "end": 2.0, "text": " beta"},
                 ],
             }
         )
