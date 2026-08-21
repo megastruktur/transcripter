@@ -139,17 +139,35 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
     //   with FATAL_STOP; the UI resets to idle instead of retrying.
     let outcome = (|| -> Result<SpoolSession, (String, bool)> {
         let mut session = active.session.clone();
-        // A poisoned writer mutex never recovers: classify FATAL so the
-        // UI resets instead of an unstoppable "retryable" loop.
-        let writer = active
-            .writer
-            .lock()
-            .map_err(|poisoned| {
-                let inner = poisoned.into_inner();
-                drop(inner); // writer state is unknowable; treat as consumed
-                ("FATAL_STOP: writer lock poisoned".to_string(), true)
-            })?
-            .take();
+        // A poisoned writer mutex never recovers. Try to salvage: the
+        // guard still owns the writer — attempt finish() on it; only if
+        // that also fails is the recording truly lost (FATAL).
+        let writer = match active.writer.lock() {
+            Ok(mut g) => g.take(),
+            Err(poisoned) => {
+                let maybe_writer = poisoned.into_inner().take();
+                match maybe_writer {
+                    Some(w) => {
+                        let mut session = active.session.clone();
+                        session.duration_sec = active.started.elapsed().as_secs_f64();
+                        match w.finish(&spool.audio_path(&session.id)) {
+                            Ok(_) => {
+                                if let Err(e) = spool.write_session(&session) {
+                                    eprintln!("[recording] salvage write_session failed: {e}");
+                                }
+                                return Ok(session);
+                            }
+                            Err(e) => {
+                                return Err((format!("FATAL_STOP: salvage finish failed: {e}"), true));
+                            }
+                        }
+                    }
+                    None => {
+                        return Err(("FATAL_STOP: writer lock poisoned and consumed".to_string(), true));
+                    }
+                }
+            }
+        };
         session.duration_sec = active.started.elapsed().as_secs_f64();
         if let Some(w) = writer {
             let flac = spool.audio_path(&session.id);

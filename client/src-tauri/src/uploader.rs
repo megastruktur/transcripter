@@ -191,3 +191,29 @@ fn persist_session(spool_root: &std::path::Path, session: &SpoolSession) -> Resu
         .and_then(|s| s.write_session(session))
         .map_err(|e| UploadError::Io(e.to_string()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_gate_blocks_https_variants() {
+        for u in [
+            "https://x",
+            "HTTPS://x",
+            "Https://X",
+            "https:/x",
+            "https:\\\\x",
+            "  https://x  ",
+        ] {
+            assert!(!Uploader::scheme_supported(u), "should block: {u}");
+        }
+    }
+
+    #[test]
+    fn scheme_gate_allows_http_and_passthrough() {
+        for u in ["http://x", "HTTP://x", "  http://x  ", "localhost:8090", "not a url"] {
+            assert!(Uploader::scheme_supported(u), "should allow: {u}");
+        }
+    }
+}
