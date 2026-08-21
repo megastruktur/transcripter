@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-15          # arm64
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-15          # x86_64
+            args: '--target x86_64-apple-darwin'
+          - platform: windows-2022
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with: |
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-15' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+      - name: Install frontend deps
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tagName: v__VERSION__
+          releaseName: 'Transcripter v__VERSION__'
+          releaseBody: 'See the assets to download and install. SHA-256 checksums are attached as checksums.txt.'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
+      - name: Generate checksums
+        if: matrix.platform == 'windows-2022'
+        run: |
+          cd client/src-tauri/target/release/bundle
+          Get-ChildItem -Recurse -File | Where-Object { $_.FullName -match 'nsis|msi' } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$($hash.ToLower())  $(Split-Path $_.FullName -Leaf)" | Out-File -Append -Encoding utf8 checksums.txt
+          }
+          cat checksums.txt
+      - name: Upload checksums artifact
+        if: matrix.platform == 'windows-2022'
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: client/src-tauri/target/release/bundle/checksums.txt
