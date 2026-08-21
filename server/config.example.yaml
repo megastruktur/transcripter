@@ -1,0 +1,33 @@
+# Transcripter server configuration (copy to config.yaml, mount into containers)
+# Auth token is NOT set here: use env TRANSCRIPTER_TOKEN only.
+
+storage:
+  # Root dir for recording folders. Mount point inside containers is /storage;
+  # point the compose bind-mount at your NAS path on the host.
+  path: /storage
+
+transcribe:
+  # local = faster-whisper in worker container; api = OpenAI-compatible endpoint
+  backend: local
+  # faster-whisper model name (local) or model id (api)
+  model: small
+  # Used only when backend=api
+  base_url: ""
+  # Env var name holding the API key (never the key itself)
+  api_key_env: ""
+
+summarize:
+  # Disabled unless model is set — recording pipeline succeeds with stage=skipped
+  enabled: false
+  # OpenAI-compatible model id, e.g. via LiteLLM proxy
+  model: ""
+  base_url: ""
+  api_key_env: ""
+
+diarization:
+  # LinTO diarization service endpoint (compose service name)
+  endpoint: http://diarization:8080
+
+database:
+  # Inside containers; postgres compose service
+  url: postgresql+psycopg://transcripter:transcripter@postgres/transcripter

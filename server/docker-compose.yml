@@ -1,0 +1,103 @@
+name: transcripter
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8080:8080"
+    environment:
+      TRANSCRIPTER_TOKEN: ${TRANSCRIPTER_TOKEN:?set TRANSCRIPTER_TOKEN in .env}
+      TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
+    volumes:
+      - ./storage:/storage
+      - ./config.yaml:/etc/transcripter/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
+      TEMPORAL_ADDRESS: temporal:7233
+      DIARIZATION_ENDPOINT: http://diarization:8070
+    volumes:
+      - ./storage:/storage
+      - models:/models
+      - ./config.yaml:/etc/transcripter/config.yaml:ro
+    depends_on:
+      temporal:
+        condition: service_started
+      diarization:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: transcripter
+      POSTGRES_PASSWORD: transcripter
+      POSTGRES_DB: transcripter
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transcripter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  temporal:
+    image: temporalio/auto-setup:latest
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: transcripter
+      POSTGRES_PWD: transcripter
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "8081:8080"
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  diarization:
+    image: lintoai/linto-diarization-pyannote:latest
+    ports:
+      - "8070:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  models:

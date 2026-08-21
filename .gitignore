@@ -1,0 +1,10 @@
+storage/
+__pycache__/
+node_modules/
+target/
+build/
+.env
+.venv/
+*.egg-info/
+server/config.yaml
+.svelte-kit/

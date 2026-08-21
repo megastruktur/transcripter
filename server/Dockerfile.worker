@@ -1,0 +1,16 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+COPY worker/pyproject.toml worker/uv.lock* ./worker/
+RUN cd worker && uv sync --frozen --no-dev || uv sync --no-dev
+
+COPY worker/ ./worker/
+
+# Whisper model is downloaded on first start into /models (baked-in download
+# would bloat the image; see plan T3 for warm-up handling).
+CMD ["uv", "run", "--directory", "worker", "python", "-m", "worker.main"]
