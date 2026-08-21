@@ -6,8 +6,11 @@ import sys
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import create_engine
 
-app = FastAPI(title="Transcripter API")
+from app.config import ServerConfig, load_config
+from app.db import Base, init_engine
+from app.routes import recordings, settings
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
 
@@ -28,6 +31,20 @@ def _check_startup() -> None:
 
 
 _check_startup()
+
+cfg: ServerConfig = load_config()
+
+app = FastAPI(title="Transcripter API")
+app.state.config = cfg
+app.state.on_finalize = lambda rec_id: None  # wired to Temporal in T3
+
+db_url = os.environ.get("TRANSCRIPTER_DB_URL", cfg.database.url)
+engine = create_engine(db_url)
+init_engine(db_url)
+Base.metadata.create_all(bind=engine)
+
+app.include_router(recordings.router)
+app.include_router(settings.router)
 
 
 @app.middleware("http")

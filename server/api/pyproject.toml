@@ -22,8 +22,11 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
-[tool.ruff]
-line-length = 100
+[tool.ruff.lint]
+ignore = [
+	"B008",   # FastAPI Depends() in defaults is idiomatic
+	"ASYNC230", # small local files; async file IO not worth it here
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
