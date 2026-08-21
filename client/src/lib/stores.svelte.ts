@@ -32,6 +32,12 @@ function basePumpError(line: string): string {
 	return line.replace(/ \(×\d+\)$/, '');
 }
 
+/** Clear warnings + collapse counters (UI must use this, not direct assign). */
+export function clearWarnings(): void {
+	recorder.warnings = [];
+	pumpCounts.clear();
+}
+
 export async function startRecording(title: string): Promise<void> {
 	const report = await commands.preFlight(true);
 	preflight.current = report;
@@ -46,6 +52,7 @@ export async function startRecording(title: string): Promise<void> {
 	if (!report.system_device_present) {
 		recorder.warnings.push('system audio unavailable — recording mic only');
 	}
+	pumpCounts.clear();
 	recorder.sessionId = await commands.startRecording(title || null);
 	recorder.recording = true;
 	recorder.frames = 0;
@@ -62,11 +69,11 @@ export async function startRecording(title: string): Promise<void> {
 				// Transient pump error (disk, writer): keep draining.
 				// Collapse repeats — one line with a counter, no flood.
 				const msg = `pump error: ${e}`;
-				const last = recorder.warnings[recorder.warnings.length - 1];
-				if (last?.startsWith('pump error') && basePumpError(last) === msg) {
+				const idx = recorder.warnings.findLastIndex((w) => w.startsWith('pump error'));
+				if (idx >= 0 && basePumpError(recorder.warnings[idx]) === msg) {
 					const n = (pumpCounts.get(msg) ?? 1) + 1;
 					pumpCounts.set(msg, n);
-					recorder.warnings[recorder.warnings.length - 1] = `${msg} (×${n})`;
+					recorder.warnings[idx] = `${msg} (×${n})`;
 				} else {
 					pumpCounts.set(msg, 1);
 					recorder.warnings.push(msg);

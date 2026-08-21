@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { recorder, preflight, startRecording, stopRecording } from '$lib/stores.svelte';
+	import { clearWarnings, recorder, preflight, startRecording, stopRecording } from '$lib/stores.svelte';
 
 	let title = $state('');
 	let elapsed = $state(0);
@@ -46,7 +46,7 @@
 			disabled={starting}
 			onclick={async () => {
 				starting = true;
-				recorder.warnings = [];
+				clearWarnings();
 				try {
 					await startRecording(title);
 				} catch (e) {
