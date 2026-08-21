@@ -39,13 +39,15 @@ pub fn mic_permission() -> PermissionState {
 #[cfg(target_os = "macos")]
 impl From<objc2_avf_audio::AVAudioApplicationRecordPermission> for PermissionState {
     fn from(v: objc2_avf_audio::AVAudioApplicationRecordPermission) -> Self {
-        use objc2_avf_audio::AVAudioApplicationRecordPermission::*;
-        match v {
-            Undetermined => PermissionState::NotDetermined,
-            Denied => PermissionState::Denied,
-            Granted => PermissionState::Granted,
-            #[allow(unreachable_patterns)]
-            _ => PermissionState::Unavailable,
+        use objc2_avf_audio::AVAudioApplicationRecordPermission as P;
+        if v == P::Undetermined {
+            PermissionState::NotDetermined
+        } else if v == P::Denied {
+            PermissionState::Denied
+        } else if v == P::Granted {
+            PermissionState::Granted
+        } else {
+            PermissionState::Unavailable
         }
     }
 }
