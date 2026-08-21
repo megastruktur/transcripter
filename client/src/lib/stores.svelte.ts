@@ -10,6 +10,7 @@ export type UploadState = {
 // UI state shared across pages (Svelte 5 runes).
 export const recorder = $state({
 	recording: false,
+	stopping: false,
 	sessionId: '',
 	frames: 0,
 	warnings: [] as string[]
@@ -52,10 +53,10 @@ export async function startRecording(title: string): Promise<void> {
 }
 
 export async function stopRecording(): Promise<void> {
+	if (recorder.stopping) return;
+	recorder.stopping = true;
 	const cfg = loadApiConfig();
 	try {
-		if (stoppingFlag) return;
-		stoppingFlag = true;
 		const session = await commands.stopRecording(
 			cfg.baseUrl || null,
 			cfg.token || null
@@ -87,11 +88,9 @@ export async function stopRecording(): Promise<void> {
 			recorder.warnings.push(`stop failed (retry Stop): ${msg}`);
 		}
 	} finally {
-		stoppingFlag = false;
+		recorder.stopping = false;
 	}
 }
-
-let stoppingFlag = false;
 
 /** Retry pending spool uploads (server-side scan + enqueue). */
 export async function retryPendingUploads(): Promise<number> {

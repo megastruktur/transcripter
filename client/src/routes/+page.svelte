@@ -4,7 +4,6 @@
 	let title = $state('');
 	let elapsed = $state(0);
 	let starting = $state(false);
-	let stopping = $state(false);
 	let timer: ReturnType<typeof globalThis.setInterval> | null = null;
 
 	$effect(() => {
@@ -37,7 +36,7 @@
 	<input type="text" placeholder="Title (optional)" bind:value={title} disabled={recorder.recording} />
 
 	{#if recorder.recording}
-		<button class="stop" disabled={stopping} onclick={() => stopRecording()}
+		<button class="stop" disabled={recorder.stopping} onclick={() => stopRecording()}
 			>Stop ({fmt(elapsed)})</button
 		>
 		<p>frames buffered: {recorder.frames}</p>

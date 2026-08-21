@@ -16,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
 flacenc = "0.5"
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
