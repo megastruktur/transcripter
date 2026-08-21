@@ -52,7 +52,15 @@ export async function startRecording(title: string): Promise<void> {
 				if (pumpTimer === myTimer) pumpTimer = null;
 			} else {
 				// Transient pump error (disk, writer): keep draining.
-				recorder.warnings.push(`pump error: ${e}`);
+				// Collapse repeats — one line with a counter, no flood.
+				const msg = `pump error: ${e}`;
+				if (recorder.warnings[recorder.warnings.length - 1]?.startsWith('pump error')) {
+					const last = recorder.warnings.pop() as string;
+					const n = Number(last.match(/×(\d+)$/)?.[1] ?? 1) + 1;
+					recorder.warnings.push(`${msg} (×${n})`);
+				} else {
+					recorder.warnings.push(msg);
+				}
 			}
 		}
 	}, 500);
