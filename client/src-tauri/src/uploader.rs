@@ -37,6 +37,12 @@ impl Uploader {
         }
     }
 
+    /// This build has no TLS backend (ring does not compile under the
+    /// host toolchain); refuse https fast instead of burning retries.
+    pub fn scheme_supported(base_url: &str) -> bool {
+        !base_url.trim_start().starts_with("https://")
+    }
+
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         rb.bearer_auth(&self.token)
     }

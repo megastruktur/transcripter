@@ -5,6 +5,10 @@
 	let status = $state('');
 
 	async function onTest() {
+		if (cfg.baseUrl.startsWith('https://')) {
+			status = 'failed: https is unsupported by the uploader in this build (LAN MVP is http-only)';
+			return;
+		}
 		try {
 			const s = await testConnection(cfg);
 			status = `ok (${s})`;

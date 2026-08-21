@@ -166,6 +166,9 @@ async fn try_upload(
     if cfg.base_url.is_empty() {
         anyhow::bail!("no server URL configured");
     }
+    if !uploader::Uploader::scheme_supported(&cfg.base_url) {
+        anyhow::bail!("https unsupported in this build (LAN MVP is http-only)");
+    }
     let uploader = uploader::Uploader::new(cfg.base_url.clone(), cfg.token.clone());
     let mut delay = Duration::from_secs(2);
     for attempt in 0..6 {
@@ -185,8 +188,10 @@ async fn try_upload(
             }
             Err(e) => {
                 eprintln!("[uploader] attempt {}: {e}", attempt + 1);
-                tokio::time::sleep(delay).await;
-                delay *= 2;
+                if attempt < 5 {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                }
             }
         }
     }
