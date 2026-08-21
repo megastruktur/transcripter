@@ -41,15 +41,22 @@ export async function startRecording(title: string): Promise<void> {
 	recorder.sessionId = await commands.startRecording(title || null);
 	recorder.recording = true;
 	recorder.frames = 0;
-	pumpTimer = setInterval(async () => {
+	const myTimer: ReturnType<typeof globalThis.setInterval> = setInterval(async () => {
+		if (myTimer !== pumpTimer) return; // superseded by a new recording
 		try {
 			recorder.frames += await commands.pump();
-		} catch {
-			// Pump no longer has a session (stop raced us): stop draining.
-			if (pumpTimer) clearInterval(pumpTimer);
-			pumpTimer = null;
+		} catch (e) {
+			if (String(e).includes('no active session')) {
+				// Stop raced us: genuinely no session left to drain.
+				clearInterval(myTimer);
+				if (pumpTimer === myTimer) pumpTimer = null;
+			} else {
+				// Transient pump error (disk, writer): keep draining.
+				recorder.warnings.push(`pump error: ${e}`);
+			}
 		}
 	}, 500);
+	pumpTimer = myTimer;
 }
 
 export async function stopRecording(): Promise<void> {
