@@ -139,10 +139,16 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
     //   with FATAL_STOP; the UI resets to idle instead of retrying.
     let outcome = (|| -> Result<SpoolSession, (String, bool)> {
         let mut session = active.session.clone();
+        // A poisoned writer mutex never recovers: classify FATAL so the
+        // UI resets instead of an unstoppable "retryable" loop.
         let writer = active
             .writer
             .lock()
-            .map_err(|e| (e.to_string(), false))?
+            .map_err(|poisoned| {
+                let inner = poisoned.into_inner();
+                drop(inner); // writer state is unknowable; treat as consumed
+                ("FATAL_STOP: writer lock poisoned".to_string(), true)
+            })?
             .take();
         session.duration_sec = active.started.elapsed().as_secs_f64();
         if let Some(w) = writer {
@@ -168,7 +174,13 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
             dead.duration_sec = active.started.elapsed().as_secs_f64();
             dead.finalized = true; // terminal: excluded from pending()
             dead.title = format!("{} [ENCODE FAILED — pcm kept]", dead.title);
-            spool.write_session(&dead).ok();
+            if let Err(mark_err) = spool.write_session(&dead) {
+                eprintln!(
+                    "[recording] fatal-marker write failed for {}: {mark_err} \
+                    (session may re-enqueue as doomed upload; pcm sidecar kept)",
+                    dead.id
+                );
+            }
             Err(e)
         }
     }

@@ -39,8 +39,14 @@ impl Uploader {
 
     /// This build has no TLS backend (ring does not compile under the
     /// host toolchain); refuse https fast instead of burning retries.
+    /// Scheme check is parser-based: case-insensitive, slash-variants
+    /// (https:/x, https:\x) are normalized like fetch/reqwest would.
     pub fn scheme_supported(base_url: &str) -> bool {
-        !base_url.trim_start().starts_with("https://")
+        match url::Url::parse(base_url.trim()) {
+            Ok(u) => !u.scheme().eq_ignore_ascii_case("https"),
+            // Unparseable → let the request layer produce a real error.
+            Err(_) => true,
+        }
     }
 
     fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {

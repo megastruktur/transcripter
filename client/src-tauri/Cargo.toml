@@ -20,6 +20,7 @@ flacenc = "0.5"
 # build under the zig-cc/gnu.2.38 host toolchain; https baseUrls are
 # unsupported until the toolchain or a TLS impl builds. UI fetch still
 # supports https where the webview does.
+url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4"] }

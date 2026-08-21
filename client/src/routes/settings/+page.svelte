@@ -5,8 +5,15 @@
 	let status = $state('');
 
 	async function onTest() {
-		if (cfg.baseUrl.startsWith('https://')) {
-			status = 'failed: https is unsupported by the uploader in this build (LAN MVP is http-only)';
+		try {
+			const u = new URL(cfg.baseUrl.trim());
+			if (u.protocol === 'https:') {
+				status =
+					'failed: https is unsupported by the uploader in this build (LAN MVP is http-only)';
+				return;
+			}
+		} catch {
+			status = 'failed: invalid URL';
 			return;
 		}
 		try {
