@@ -24,6 +24,14 @@ export const settings = $state({ baseUrl: '', token: '' });
 
 let pumpTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
+/** Counters for collapsed pump-error lines (message → repeats). */
+const pumpCounts = new Map<string, number>();
+
+/** Strip the (×N) suffix from a collapsed warning line. */
+function basePumpError(line: string): string {
+	return line.replace(/ \(×\d+\)$/, '');
+}
+
 export async function startRecording(title: string): Promise<void> {
 	const report = await commands.preFlight(true);
 	preflight.current = report;
@@ -54,11 +62,13 @@ export async function startRecording(title: string): Promise<void> {
 				// Transient pump error (disk, writer): keep draining.
 				// Collapse repeats — one line with a counter, no flood.
 				const msg = `pump error: ${e}`;
-				if (recorder.warnings[recorder.warnings.length - 1]?.startsWith('pump error')) {
-					const last = recorder.warnings.pop() as string;
-					const n = Number(last.match(/×(\d+)$/)?.[1] ?? 1) + 1;
-					recorder.warnings.push(`${msg} (×${n})`);
+				const last = recorder.warnings[recorder.warnings.length - 1];
+				if (last?.startsWith('pump error') && basePumpError(last) === msg) {
+					const n = (pumpCounts.get(msg) ?? 1) + 1;
+					pumpCounts.set(msg, n);
+					recorder.warnings[recorder.warnings.length - 1] = `${msg} (×${n})`;
 				} else {
+					pumpCounts.set(msg, 1);
 					recorder.warnings.push(msg);
 				}
 			}

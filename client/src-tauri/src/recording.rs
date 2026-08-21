@@ -152,14 +152,16 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
                         session.duration_sec = active.started.elapsed().as_secs_f64();
                         match w.finish(&spool.audio_path(&session.id)) {
                             Ok(_) => {
-                                let mut delay_ms = 250;
-                                for attempt in 0..2 {
+                                for attempt in 0..3 {
+                                    if attempt > 0 {
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            250 * (1 << (attempt - 1)),
+                                        ));
+                                    }
                                     match spool.write_session(&session) {
                                         Ok(()) => break,
-                                        Err(e) if attempt == 0 => {
+                                        Err(e) if attempt < 2 => {
                                             eprintln!("[recording] salvage write_session retry: {e}");
-                                            std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-                                            delay_ms *= 2;
                                         }
                                         Err(e) => {
                                             eprintln!(
