@@ -39,6 +39,26 @@ class ProcessRecording:
         assert start in order, f"unknown stage {start}"
         idx = order.index(start)
 
+        try:
+            await self._run_stages(rec_id, idx, duration, result)
+        finally:
+            # Always set terminal recording state, even when a stage failed:
+            # stage rows already carry `failed` from the activity itself.
+            await workflow.execute_activity(
+                "finalize_recording",
+                rec_id,
+                start_to_close_timeout=timedelta(seconds=30),
+                retry_policy=_retry(),
+            )
+        return result
+
+    async def _run_stages(
+        self,
+        rec_id: str,
+        idx: int,
+        duration: float | None,
+        result: PipelineResult,
+    ) -> None:
         if idx <= 0:
             result["transcribe"] = await workflow.execute_activity(
                 "transcribe",
@@ -68,9 +88,3 @@ class ProcessRecording:
                 start_to_close_timeout=timedelta(seconds=180),
                 retry_policy=_retry(),
             )
-        await workflow.execute_activity(
-            "finalize_recording",
-            rec_id,
-            start_to_close_timeout=timedelta(seconds=30),
-        )
-        return result

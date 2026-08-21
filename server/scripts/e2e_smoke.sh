@@ -89,7 +89,7 @@ while [ $SECONDS -lt $DEADLINE ]; do
   STATES=$(auth "$API/recordings/$RID" | jq -r '[.stages[].status] | join(",")')
   echo "  stages: $STATES"
   # all stages reached terminal state?
-  DONE=$(echo "$STATES" | tr ',' '\n' | grep -cE 'done|failed|skipped')
+  DONE=$(echo "$STATES" | tr ',' '\n' | grep -cE 'done|failed|skipped' || true)
   [ "$DONE" = "4" ] && break
   sleep 15
 done
