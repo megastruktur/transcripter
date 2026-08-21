@@ -61,11 +61,9 @@ export async function stopRecording(): Promise<void> {
 	}
 }
 
-/** Retry pending spool uploads (called on Recordings mount). */
-export async function retryPendingUploads(): Promise<void> {
+/** Retry pending spool uploads (server-side scan + enqueue). */
+export async function retryPendingUploads(): Promise<number> {
 	const cfg = loadApiConfig();
-	if (!cfg.baseUrl || !cfg.token) return;
-	// Rust spool scan is not exposed as a list; cmd_upload_now per session
-	// comes from the stop-time queue — this is the explicit retry hook.
-	await commands.uploadNow(cfg.baseUrl, cfg.token, 'pending');
+	if (!cfg.baseUrl || !cfg.token) return 0;
+	return commands.retryPending(cfg.baseUrl, cfg.token);
 }

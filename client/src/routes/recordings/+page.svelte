@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { retryPendingUploads } from '$lib/stores.svelte';
 	import {
 		listRecordings,
 		regenerate,
@@ -30,6 +31,7 @@
 
 	onMount(() => {
 		refresh();
+		retryPendingUploads().catch(() => {});
 		pollTimer = setInterval(refresh, 3000);
 		return () => {
 			if (pollTimer) clearInterval(pollTimer);

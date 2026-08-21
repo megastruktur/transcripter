@@ -26,6 +26,7 @@ pub fn run() {
             cmd_stop_recording,
             cmd_pump,
             cmd_upload_now,
+            cmd_retry_pending,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -68,6 +69,26 @@ fn cmd_stop_recording(
         eprintln!("[uploader] no server config from UI; recording stays in spool");
     }
     Ok(session)
+}
+
+#[tauri::command]
+fn cmd_retry_pending(
+    app: AppHandle,
+    base_url: String,
+    token: String,
+) -> Result<u32, String> {
+    let spool = spool_from_app(&app)?;
+    let pending = spool.pending().map_err(|e| e.to_string())?;
+    let count = pending.len() as u32;
+    let spool_dir = spool.root().to_path_buf();
+    for session in pending {
+        enqueue_upload(
+            spool_dir.clone(),
+            session,
+            UploadCfg { base_url: base_url.clone(), token: token.clone() },
+        );
+    }
+    Ok(count)
 }
 
 #[tauri::command]
@@ -159,7 +180,13 @@ async fn try_upload(
     let uploader = uploader::Uploader::new(cfg.base_url.clone(), cfg.token.clone());
     let mut delay = Duration::from_secs(2);
     for attempt in 0..6 {
-        let res = uploader.upload(spool_dir, session, &mut |_p| {}).await;
+        // Re-read session.json each attempt: upload() persists server_rec_id
+        // there on first create, and we must resume THAT recording.
+        let current = Spool::new(spool_dir)
+            .ok()
+            .and_then(|s| s.read_session(&session.id).ok())
+            .unwrap_or_else(|| session.clone());
+        let res = uploader.upload(spool_dir, &current, &mut |_p| {}).await;
         match res {
             Ok(()) => {
                 if let Ok(s) = Spool::new(spool_dir) {

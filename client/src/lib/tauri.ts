@@ -40,5 +40,8 @@ export const commands = {
 	},
 	pump(): Promise<number> {
 		return invoke('cmd_pump');
+	},
+	retryPending(baseUrl: string, token: string): Promise<number> {
+		return invoke('cmd_retry_pending', { baseUrl, token });
 	}
 };
