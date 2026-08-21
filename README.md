@@ -144,6 +144,49 @@ works.
 - Client tests: `cd client/src-tauri && cargo test`
 - Lint: `uvx ruff check .` / `uvx pyright` (server), `cargo clippy -- -D warnings` (client)
 
+## Building the client for Windows / macOS
+
+Cross-compiling a Tauri app from Linux is not supported — build **on the
+target OS**. Prerequisites on both: [Node 22+](https://nodejs.org),
+[pnpm](https://pnpm.io), and a [Rust toolchain](https://rustup.rs)
+(`rustup default stable`).
+
+**Windows** (Windows 10/11, x64):
+
+```powershell
+# one-time: VS Build Tools 2022 (Desktop development with C++)
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+# clone + build
+git clone https://github.com/megastruktur/transcripter && cd transcripter\client
+pnpm install
+pnpm tauri build            # bundles appear in src-tauri\target\release\bundle\
+```
+
+Installers land in `bundle\nsis\*.exe` (recommended) and `bundle\msi\*.msi`.
+For a quick test without installing: run
+`src-tauri\target\release\transcripter.exe`.
+
+**macOS** (12+, Xcode Command Line Tools: `xcode-select --install`):
+
+```bash
+git clone https://github.com/megastruktur/transcripter && cd transcripter/client
+pnpm install
+pnpm tauri build            # bundle/macos/*.app + bundle/dmg/*.dmg
+```
+
+Note: the `.app`/`.dmg` will be unsigned — right-click → Open on first
+launch, or [sign it yourself](https://v2.tauri.app/distribute/sign/macos/).
+
+**First run after install:** Settings → Server URL
+`http://<server-LAN-IP>:8090` + your `TRANSCRIPTER_TOKEN`. Windows Firewall
+will prompt on first upload — allow it.
+
+**What to test on Windows** (system audio = WASAPI loopback, fully wired):
+record a call (mic + system), stop, watch upload → stages → artifacts in
+Recordings; regenerate a stage; kill the app mid-upload and restart
+(spool resumes); pre-flight denial (deny mic permission in Windows
+Settings → Privacy → Microphone, then hit Record).
+
 ## Scope & limitations (MVP)
 
 - Single user, bearer token; no TLS termination in the compose stack — put it
