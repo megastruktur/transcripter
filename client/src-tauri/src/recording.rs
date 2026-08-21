@@ -130,26 +130,37 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
     drop(active.mic.take());
     drop(active.system.take());
 
-    // From here on, any failure re-inserts the session so the error
-    // honestly means "still live and stop-retryable" (capture streams
-    // are already dropped; buffers no longer grow).
-    let outcome = (|| -> Result<SpoolSession, String> {
-        let writer = active.writer.lock().map_err(|e| e.to_string())?.take();
+    // Failure semantics:
+    // - writer-lock / write_session failures: retryable — session
+    //   re-inserted, stop can run again.
+    // - encode-finish failure: FATAL — writer is consumed (finish(mut
+    //   self)); a re-inserted session would be a recording zombie with
+    //   no writer and a flac that never completes. Prefix such errors
+    //   with FATAL_STOP; the UI resets to idle instead of retrying.
+    let outcome = (|| -> Result<SpoolSession, (String, bool)> {
         let mut session = active.session.clone();
+        let writer = active
+            .writer
+            .lock()
+            .map_err(|e| (e.to_string(), false))?
+            .take();
+        session.duration_sec = active.started.elapsed().as_secs_f64();
         if let Some(w) = writer {
             let flac = spool.audio_path(&session.id);
-            w.finish(&flac).map_err(|e| e.to_string())?;
+            w.finish(&flac)
+                .map_err(|e| (format!("FATAL_STOP: encode failed: {e}"), true))?;
         }
-        session.duration_sec = active.started.elapsed().as_secs_f64();
-        spool.write_session(&session).map_err(|e| e.to_string())?;
+        spool.write_session(&session)
+            .map_err(|e: anyhow::Error| (e.to_string(), false))?;
         Ok(session)
     })();
     match outcome {
         Ok(session) => Ok(session),
-        Err(e) => {
+        Err((e, fatal)) if !fatal => {
             *guard = Some(active);
             Err(e)
         }
+        Err((e, _)) => Err(e),
     }
 }
 

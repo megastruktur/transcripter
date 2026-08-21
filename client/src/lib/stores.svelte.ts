@@ -70,9 +70,20 @@ export async function stopRecording(): Promise<void> {
 			recorder.warnings.push('no server configured — recording saved locally in spool');
 		}
 	} catch (e) {
-		// Stop failed: Rust session is still live — keep draining (pump
-		// timer untouched) and stay in recording state so Stop can retry.
-		recorder.warnings.push(`stop failed (retry Stop): ${e}`);
+		const msg = String(e);
+		if (msg.startsWith('FATAL_STOP')) {
+			// Writer consumed, recording unrecoverable: reset to idle.
+			if (pumpTimer) {
+				clearInterval(pumpTimer);
+				pumpTimer = null;
+			}
+			recorder.recording = false;
+			recorder.warnings.push(`recording lost: ${msg.replace('FATAL_STOP: ', '')}`);
+		} else {
+			// Retryable: Rust session is still live — keep draining and
+			// stay in recording state so Stop can be retried.
+			recorder.warnings.push(`stop failed (retry Stop): ${msg}`);
+		}
 	}
 }
 
