@@ -20,15 +20,24 @@ pub struct CaptureStatus {
 }
 
 #[derive(Default)]
-pub(crate) struct SampleBuffer {
+pub struct SampleBuffer {
     pub samples: Vec<f32>,
     pub errors: Vec<String>,
 }
 
-pub(crate) struct CapturedStream {
+pub struct CapturedStream {
     _stream: Stream,
     pub buffer: Arc<Mutex<SampleBuffer>>,
     pub config: StreamConfig,
+}
+
+impl CapturedStream {
+    pub fn drain(&self) -> Vec<f32> {
+        match self.buffer.lock() {
+            Ok(mut b) => std::mem::take(&mut b.samples),
+            Err(_) => Vec::new(),
+        }
+    }
 }
 
 /// Open the default input device (microphone).
@@ -44,7 +53,7 @@ pub fn system_device() -> Result<Device, String> {
         .ok_or_else(|| "no system output device".into())
 }
 
-pub(crate) fn open_stream(
+pub fn open_stream(
     device: &Device,
     buffer: Arc<Mutex<SampleBuffer>>,
 ) -> Result<CapturedStream, String> {
@@ -52,44 +61,52 @@ pub(crate) fn open_stream(
     let fmt: SampleFormat = config.sample_format();
     let stream_config: StreamConfig = config.into();
 
-    let err_fn = |e| {
-        if let Ok(mut b) = buffer.lock() {
+    let err_buf = buffer.clone();
+    let err_fn = move |e: cpal::StreamError| {
+        if let Ok(mut b) = err_buf.lock() {
             b.errors.push(e.to_string());
         }
     };
 
     let buf = buffer.clone();
     let stream = match fmt {
-        SampleFormat::F32 => device.build_input_stream(
-            &stream_config,
-            move |data: &[f32], _| {
-                if let Ok(mut b) = buf.lock() {
-                    b.samples.extend_from_slice(data);
-                }
-            },
-            err_fn,
-            None,
-        )?,
-        SampleFormat::I16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[i16], _| {
-                if let Ok(mut b) = buf.lock() {
-                    b.samples.extend(data.iter().map(|&s| s as f32 / 32768.0));
-                }
-            },
-            err_fn,
-            None,
-        )?,
-        SampleFormat::U16 => device.build_input_stream(
-            &stream_config,
-            move |data: &[u16], _| {
-                if let Ok(mut b) = buf.lock() {
-                    b.samples.extend(data.iter().map(|&s| (s as f32 - 32768.0) / 32768.0));
-                }
-            },
-            err_fn,
-            None,
-        )?,
+        SampleFormat::F32 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[f32], _| {
+                    if let Ok(mut b) = buf.lock() {
+                        b.samples.extend_from_slice(data);
+                    }
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| e.to_string())?,
+        SampleFormat::I16 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[i16], _| {
+                    if let Ok(mut b) = buf.lock() {
+                        b.samples.extend(data.iter().map(|&s| s as f32 / 32768.0));
+                    }
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| e.to_string())?,
+        SampleFormat::U16 => device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[u16], _| {
+                    if let Ok(mut b) = buf.lock() {
+                        b.samples
+                            .extend(data.iter().map(|&s| (s as f32 - 32768.0) / 32768.0));
+                    }
+                },
+                err_fn,
+                None,
+            )
+            .map_err(|e| e.to_string())?,
         other => return Err(format!("unsupported sample format {other:?}")),
     };
     stream.play().map_err(|e| e.to_string())?;

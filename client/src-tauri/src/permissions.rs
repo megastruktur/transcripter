@@ -43,7 +43,8 @@ impl From<objc2_avf_audio::AVAudioApplicationRecordPermission> for PermissionSta
             Undetermined => PermissionState::NotDetermined,
             Denied => PermissionState::Denied,
             Granted => PermissionState::Granted,
-            @unknown => PermissionState::Unavailable,
+            #[allow(unreachable_patterns)]
+            _ => PermissionState::Unavailable,
         }
     }
 }

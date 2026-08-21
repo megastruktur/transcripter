@@ -96,3 +96,58 @@ impl Spool {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: &str) -> SpoolSession {
+        SpoolSession {
+            id: id.into(),
+            title: "t".into(),
+            started_at: "0".into(),
+            duration_sec: 1.5,
+            sample_rate: 48000,
+            channels: 2,
+            mic_active: true,
+            system_active: false,
+            uploaded_offset: 0,
+            finalized: false,
+        }
+    }
+
+    #[test]
+    fn create_read_roundtrip() {
+        let tmp = std::env::temp_dir().join(format!("spool-test-{}", uuid::Uuid::new_v4()));
+        let spool = Spool::new(&tmp).unwrap();
+        spool.create(&session("abc")).unwrap();
+        let loaded = spool.read_session("abc").unwrap();
+        assert_eq!(loaded.id, "abc");
+        assert_eq!(loaded.duration_sec, 1.5);
+        assert!(spool.audio_path("abc").ends_with("audio.flac"));
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn pending_excludes_finalized() {
+        let tmp = std::env::temp_dir().join(format!("spool-test-{}", uuid::Uuid::new_v4()));
+        let spool = Spool::new(&tmp).unwrap();
+        spool.create(&session("open")).unwrap();
+        let mut done = session("done");
+        done.finalized = true;
+        spool.create(&done).unwrap();
+        let ids: Vec<String> = spool.pending().unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["open".to_string()]);
+        std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn remove_deletes_dir() {
+        let tmp = std::env::temp_dir().join(format!("spool-test-{}", uuid::Uuid::new_v4()));
+        let spool = Spool::new(&tmp).unwrap();
+        spool.create(&session("gone")).unwrap();
+        spool.remove("gone").unwrap();
+        assert!(!spool.session_dir("gone").exists());
+        std::fs::remove_dir_all(tmp).ok();
+    }
+}

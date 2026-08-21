@@ -38,13 +38,13 @@ impl Uploader {
         }
     }
 
-    fn auth(&self) -> reqwest::RequestBuilder -> reqwest::RequestBuilder {
-        move |rb| rb.bearer_auth(&self.token)
+    fn auth(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        rb.bearer_auth(&self.token)
     }
 
     async fn create_recording(&self, s: &SpoolSession) -> Result<String, UploadError> {
         let rb = self.client.post(format!("{}/recordings", self.base_url));
-        let rb = (self.auth())(rb);
+        let rb = self.auth(rb);
         let resp = rb
             .json(&serde_json::json!({
                 "title": s.title,
@@ -75,7 +75,7 @@ impl Uploader {
 
     async fn committed(&self, rec_id: &str) -> Result<u64, UploadError> {
         let rb = self.client.get(format!("{}/recordings/{rec_id}", self.base_url));
-        let rb = (self.auth())(rb);
+        let rb = self.auth(rb);
         let resp = rb
             .send()
             .await
@@ -118,7 +118,7 @@ impl Uploader {
                 "{}/recordings/{rec_id}/audio?offset={offset}",
                 self.base_url
             ));
-            let rb = (self.auth())(rb);
+            let rb = self.auth(rb);
             let resp = rb
                 .header("content-length", chunk.len().to_string())
                 .body(chunk.to_vec())
@@ -149,7 +149,7 @@ impl Uploader {
 
         let sha = crate::encode::file_sha256(&audio).map_err(|e| UploadError::Io(e.to_string()))?;
         let rb = self.client.post(format!("{}/recordings/{rec_id}/finalize", self.base_url));
-        let rb = (self.auth())(rb);
+        let rb = self.auth(rb);
         let resp = rb
             .json(&serde_json::json!({
                 "sha256": sha,

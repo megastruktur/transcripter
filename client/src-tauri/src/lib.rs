@@ -21,7 +21,6 @@ pub fn run() {
 use tauri::AppHandle;
 
 use crate::permissions::PreFlightReport;
-use crate::recording;
 use crate::spool::Spool;
 
 #[tauri::command]

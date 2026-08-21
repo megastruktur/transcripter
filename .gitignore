@@ -8,3 +8,6 @@ build/
 *.egg-info/
 server/config.yaml
 .svelte-kit/
+.link-libs/
+.artifacts/
+*.pcm
