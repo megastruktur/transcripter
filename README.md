@@ -5,16 +5,16 @@ desktop, upload in the background, and get a **transcript with speaker labels
 and a summary** — every stage re-runnable on demand.
 
 ```
-┌────────────────────────┐            ┌─────────────────────────────────────┐
-│   Client (Tauri v2)    │  FLAC via  │  Server (Docker Compose)            │
-│ ┌────────────────────┐ │ resumable  │ ┌─────────┐   ┌───────────────────┐ │
-│ │ mic + system audio │─┼──PUT───────┼▶│   API   │──▶│ Temporal worker   │ │
-│ │ FLAC encode        │ │  chunks    │ │ FastAPI │   │ transcribe        │ │
-│ │ spool + retry      │ │            │ │  :8090  │   │ → diarize → merge │ │
-│ └────────────────────┘ │            │ └─────────┘   │ → summarize       │ │
-│ SvelteKit UI           │            │               └───────────────────┘ │
-└────────────────────────┘             │ PostgreSQL · Temporal UI :8082     │
-                                       │ NAS-backed recording storage       │
+┌──────────────────────────┐          ┌─────────────────────────────────────┐
+│ Client (Tauri v2)        │  FLAC    │ Server (Docker Compose)             │
+│ ┌──────────────────────┐ │  via     │ ┌────────┐  ┌────────────────────┐  │
+│ │ mic + system audio   │─┼──PUT─────┼▶│  API   │─▶│ Temporal worker    │  │
+│ │ FLAC encode          │ │ resumable│ │FastAPI │  │ transcribe         │  │
+│ │ spool + retry        │ │ chunks   │ │ :8090  │  │ → diarize → merge  │  │
+│ └──────────────────────┘ │          │ └────────┘  │ → summarize        │  │
+│ SvelteKit UI             │          │             └────────────────────┘  │
+                                      │ PostgreSQL · Temporal UI :8082      │
+                                      │ NAS-backed recording storage        │
                                       └─────────────────────────────────────┘
 ```
 
