@@ -57,9 +57,7 @@ fn cmd_stop_recording(
     if let (Some(url), Some(token)) = (server_url, server_token) {
         let for_upload = session.clone();
         let spool_dir = spool.root().to_path_buf();
-        RUNTIME.spawn(async move {
-            upload_with_retry(&spool_dir, &for_upload, UploadCfg { base_url: url, token });
-        });
+        enqueue_upload(spool_dir, for_upload, UploadCfg { base_url: url, token });
     } else {
         eprintln!("[uploader] no server config from UI; recording stays in spool");
     }
@@ -139,6 +137,7 @@ static UPLOAD_QUEUE: std::sync::LazyLock<
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
     RUNTIME.spawn(async move {
         while let Some(QueueMsg::Job(job)) = rx.recv().await {
+            QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
             if let Err(e) = try_upload(&job.spool_dir, &job.session, &job.cfg).await {
                 eprintln!("[uploader] session {} failed: {e}", job.session.id);
             }
@@ -147,15 +146,20 @@ static UPLOAD_QUEUE: std::sync::LazyLock<
     tx
 });
 
+/// Sessions already queued (dedup between stop-path and cmd_retry_pending).
+static QUEUED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Enqueue an upload; the single queue worker processes jobs sequentially.
 /// Returns immediately; failures are logged and the spool entry stays pending.
 fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: UploadCfg) {
-    let _ = UPLOAD_QUEUE.send(QueueMsg::Job(UploadJob { spool_dir, session, cfg }));
-}
-
-/// Enqueue an upload (kept as a named step for the stop-path call site).
-fn upload_with_retry(spool_dir: &std::path::Path, session: &SpoolSession, cfg: UploadCfg) {
-    enqueue_upload(spool_dir.to_path_buf(), session.clone(), cfg);
+    if QUEUED
+        .lock()
+        .map(|mut q| q.insert(session.id.clone()))
+        .unwrap_or(false)
+    {
+        let _ = UPLOAD_QUEUE.send(QueueMsg::Job(UploadJob { spool_dir, session, cfg }));
+    }
 }
 
 async fn try_upload(
@@ -174,10 +178,19 @@ async fn try_upload(
     for attempt in 0..6 {
         // Re-read session.json each attempt: upload() persists server_rec_id
         // there on first create, and we must resume THAT recording.
-        let current = Spool::open_root(spool_dir)
-            .ok()
-            .and_then(|s| s.read_session(&session.id).ok())
-            .unwrap_or_else(|| session.clone());
+        let current = match Spool::open_root(spool_dir)
+            .map_err(|e| anyhow::anyhow!("spool open: {e}"))
+            .and_then(|s| {
+                s.read_session(&session.id)
+                    .map_err(|e| anyhow::anyhow!("session re-read: {e}"))
+            }) {
+            Ok(s) => s,
+            Err(e) => {
+                // Spool entry vanished (deleted/uploaded elsewhere): stop.
+                eprintln!("[uploader] session {} gone: {e}", session.id);
+                return Ok(());
+            }
+        };
         let res = uploader.upload(spool_dir, &current, &mut |_p| {}).await;
         match res {
             Ok(()) => {
