@@ -32,7 +32,8 @@ pub(crate) fn probe_mic(threshold_rms: f32) -> Result<bool, String> {
 #[cfg(target_os = "macos")]
 pub fn mic_permission() -> PermissionState {
     // macOS 14+: AVAudioApplication shared record permission.
-    objc2_avf_audio::AVAudioApplication::sharedInstanceAuthorizationStatus().into()
+    // (unsafe: ObjC method call; sharedInstance never nil for this class.)
+    unsafe { objc2_avf_audio::AVAudioApplication::sharedInstance().recordPermission().into() }
 }
 
 #[cfg(target_os = "macos")]
