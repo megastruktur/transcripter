@@ -7,7 +7,13 @@ import os
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from .activities import diarize, merge_speakers, summarize, transcribe
+from .activities import (
+    diarize,
+    finalize_recording,
+    merge_speakers,
+    summarize,
+    transcribe,
+)
 from .config import load_config
 from .db import init_engine
 from .workflows import ProcessRecording
@@ -36,7 +42,7 @@ async def amain() -> None:
         client,
         task_queue=TASK_QUEUE,
         workflows=[ProcessRecording],
-        activities=[transcribe, diarize, merge_speakers, summarize],
+        activities=[transcribe, diarize, merge_speakers, summarize, finalize_recording],
     )
     log.info("worker started on queue %s", TASK_QUEUE)
     await worker.run()

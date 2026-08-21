@@ -8,7 +8,13 @@ from pathlib import Path
 from temporalio import activity
 
 from .config import WorkerConfig, load_config
-from .db import StageStatus, set_stage
+from .db import (
+    Recording,
+    RecordingState,
+    StageStatus,
+    session,
+    set_stage,
+)
 from .transcribe import (
     ApiTranscriber,
     LocalTranscriber,
@@ -116,6 +122,19 @@ async def summarize(rec_id: str) -> dict:
         log.exception("summarize failed for %s", rec_id)
         set_stage(rec_id, "summarize", StageStatus.failed, error=str(e))
         raise
+
+
+@activity.defn
+async def finalize_recording(rec_id: str) -> dict:
+    """Mark recording done/failed based on its stage statuses."""
+    with session() as s:
+        rec = s.query(Recording).filter(Recording.id == rec_id).one()
+        failed = any(
+            st.status == StageStatus.failed for st in rec.stages
+        )
+        rec.state = RecordingState.failed if failed else RecordingState.done
+        s.commit()
+    return {"state": rec.state.value}
 
 
 def default_retry() -> dict:

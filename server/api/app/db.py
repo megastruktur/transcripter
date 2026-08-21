@@ -25,14 +25,14 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-class RecordingState(str, enum.Enum):
+class RecordingState(enum.Enum):
     uploading = "uploading"
     processing = "processing"
     done = "done"
     failed = "failed"
 
 
-class StageStatus(str, enum.Enum):
+class StageStatus(enum.Enum):
     pending = "pending"
     running = "running"
     done = "done"
@@ -49,7 +49,7 @@ class Recording(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     title: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[RecordingState] = mapped_column(
-        Enum(RecordingState), default=RecordingState.uploading
+        Enum(RecordingState, name="recording_state"), default=RecordingState.uploading
     )
     # Resumable upload bookkeeping
     committed_bytes: Mapped[int] = mapped_column(default=0)
@@ -71,8 +71,10 @@ class Stage(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     recording_id: Mapped[str] = mapped_column(ForeignKey("recordings.id", ondelete="CASCADE"))
-    kind: Mapped[str] = mapped_column(Enum(*STAGE_KINDS))
-    status: Mapped[StageStatus] = mapped_column(Enum(StageStatus), default=StageStatus.pending)
+    kind: Mapped[str] = mapped_column(Enum(*STAGE_KINDS, name="stage_kind"))
+    status: Mapped[StageStatus] = mapped_column(
+        Enum(StageStatus, name="stage_status"), default=StageStatus.pending
+    )
     attempts: Mapped[int] = mapped_column(default=0)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
     details: Mapped[dict] = mapped_column(JSON, default=dict)

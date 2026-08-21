@@ -1,4 +1,4 @@
-"""Diarization via LinTO HTTP service (T4 completes error handling)."""
+"""Diarization via LinTO HTTP service."""
 
 import logging
 from pathlib import Path
@@ -24,7 +24,11 @@ async def diarize_audio(audio: Path, cfg) -> DiarizationResult:
     endpoint = cfg.diarization.endpoint.rstrip("/")
     async with httpx.AsyncClient(timeout=3600) as client:
         with open(audio, "rb") as f:
-            r = await client.post(f"{endpoint}/diarization", files={"file": (audio.name, f)})
+            r = await client.post(
+                f"{endpoint}/diarization",
+                files={"file": (audio.name, f)},
+                headers={"accept": "application/json"},
+            )
     r.raise_for_status()
     data = r.json()
 

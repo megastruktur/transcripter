@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8080:8080"
+      - "8090:8080"
     environment:
       TRANSCRIPTER_TOKEN: ${TRANSCRIPTER_TOKEN:?set TRANSCRIPTER_TOKEN in .env}
       TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
@@ -33,7 +33,7 @@ services:
     environment:
       TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
       TEMPORAL_ADDRESS: temporal:7233
-      DIARIZATION_ENDPOINT: http://diarization:8070
+      DIARIZATION_ENDPOINT: http://diarization:80
     volumes:
       - ./storage:/storage
       - models:/models
@@ -68,9 +68,6 @@ services:
       POSTGRES_USER: transcripter
       POSTGRES_PWD: transcripter
       POSTGRES_SEEDS: postgres
-      DYNAMIC_CONFIG_FILE_PATH: /etc/temporal/config/dynamicconfig/docker.yaml
-    volumes:
-      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,17 +78,19 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
-      - "8081:8080"
+      - "8082:8080"
     depends_on:
       - temporal
     restart: unless-stopped
 
   diarization:
     image: lintoai/linto-diarization-pyannote:2.3.0
+    environment:
+      SERVICE_MODE: http
     ports:
-      - "8070:8080"
+      - "8070:80"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8080/healthcheck', timeout=5)\" || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:80/healthcheck', timeout=5)\" || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 5

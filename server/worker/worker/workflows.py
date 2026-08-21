@@ -42,7 +42,7 @@ class ProcessRecording:
         if idx <= 0:
             result["transcribe"] = await workflow.execute_activity(
                 "transcribe",
-                args=rec_id,
+                rec_id,
                 start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 12)),
                 retry_policy=_retry(),
                 heartbeat_timeout=timedelta(seconds=120),
@@ -50,22 +50,27 @@ class ProcessRecording:
         if idx <= 1:
             result["diarize"] = await workflow.execute_activity(
                 "diarize",
-                args=rec_id,
+                rec_id,
                 start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 30)),
                 retry_policy=_retry(),
             )
         if idx <= 2:
             result["merge_speakers"] = await workflow.execute_activity(
                 "merge_speakers",
-                args=rec_id,
+                rec_id,
                 start_to_close_timeout=timedelta(seconds=120),
                 retry_policy=_retry(),
             )
         if idx <= 3:
             result["summarize"] = await workflow.execute_activity(
                 "summarize",
-                args=rec_id,
+                rec_id,
                 start_to_close_timeout=timedelta(seconds=180),
                 retry_policy=_retry(),
             )
+        await workflow.execute_activity(
+            "finalize_recording",
+            rec_id,
+            start_to_close_timeout=timedelta(seconds=30),
+        )
         return result
