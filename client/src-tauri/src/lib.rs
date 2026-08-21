@@ -164,13 +164,6 @@ static UPLOAD_QUEUE: std::sync::LazyLock<
                     }
                 }
             };
-            if let Err(panic) = &result {
-                eprintln!(
-                    "[uploader] session {} PANICKED: {:?}",
-                    job.session.id,
-                    panic.downcast_ref::<&str>().copied().or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                );
-            }
             if let Err(e) = result {
                 eprintln!("[uploader] session {} failed: {e}", job.session.id);
             }
