@@ -137,10 +137,12 @@ static UPLOAD_QUEUE: std::sync::LazyLock<
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
     RUNTIME.spawn(async move {
         while let Some(QueueMsg::Job(job)) = rx.recv().await {
-            QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
             if let Err(e) = try_upload(&job.spool_dir, &job.session, &job.cfg).await {
                 eprintln!("[uploader] session {} failed: {e}", job.session.id);
             }
+            // Remove only after processing: an in-flight job still counts
+            // as queued so stop-path/pending-scan re-enqueues are deduped.
+            QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
         }
     });
     tx
@@ -158,7 +160,13 @@ fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: Upl
         .map(|mut q| q.insert(session.id.clone()))
         .unwrap_or(false)
     {
-        let _ = UPLOAD_QUEUE.send(QueueMsg::Job(UploadJob { spool_dir, session, cfg }));
+        if UPLOAD_QUEUE
+            .send(QueueMsg::Job(UploadJob { spool_dir, session: session.clone(), cfg }))
+            .is_err()
+        {
+            // Worker gone: roll back so a future enqueue can retry.
+            QUEUED.lock().map(|mut q| q.remove(&session.id)).ok();
+        }
     }
 }
 
