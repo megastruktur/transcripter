@@ -21,6 +21,7 @@ export type SpoolSession = {
 	mic_active: boolean;
 	system_active: boolean;
 	uploaded_offset: number;
+	server_rec_id?: string | null;
 	finalized: boolean;
 };
 

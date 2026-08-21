@@ -51,13 +51,20 @@ export async function stopRecording(): Promise<void> {
 		pumpTimer = null;
 	}
 	const cfg = loadApiConfig();
-	const session = await commands.stopRecording(
-		cfg.baseUrl || null,
-		cfg.token || null
-	);
-	recorder.recording = false;
-	if (!session.finalized) {
-		recorder.warnings.push(`recording queued for upload (${session.id.slice(0, 8)}…)`);
+	try {
+		const session = await commands.stopRecording(
+			cfg.baseUrl || null,
+			cfg.token || null
+		);
+		if (cfg.baseUrl && cfg.token) {
+			recorder.warnings.push(`recording queued for upload (${session.id.slice(0, 8)}…)`);
+		} else {
+			recorder.warnings.push('no server configured — recording saved locally in spool');
+		}
+	} catch (e) {
+		recorder.warnings.push(`stop failed: ${e}`);
+	} finally {
+		recorder.recording = false;
 	}
 }
 

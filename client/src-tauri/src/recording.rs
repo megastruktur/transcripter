@@ -23,6 +23,12 @@ unsafe impl Sync for ActiveSession {}
 
 pub static SESSION: Mutex<Option<ActiveSession>> = Mutex::new(None);
 
+/// Id of the in-flight recording session, if any (lock-guarded read).
+pub fn active_session_id() -> Option<String> {
+    let guard = SESSION.lock().ok()?;
+    guard.as_ref().map(|a| a.session.id.clone())
+}
+
 pub fn pre_flight_check(probe: bool) -> PreFlightReport {
     pre_flight(probe)
 }

@@ -84,8 +84,10 @@ impl Spool {
         Ok(())
     }
 
-    /// All sessions not yet finalized (uploader worklist).
+    /// All sessions not yet finalized and not currently active
+    /// (uploader worklist; the active session's audio is still growing).
     pub fn pending(&self) -> anyhow::Result<Vec<SpoolSession>> {
+        let active_id = crate::recording::active_session_id();
         let mut out = Vec::new();
         if !self.root.exists() {
             return Ok(out);
@@ -96,6 +98,9 @@ impl Spool {
                 continue;
             }
             let id = entry.file_name().to_string_lossy().to_string();
+            if Some(&id) == active_id.as_ref() {
+                continue;
+            }
             if let Ok(s) = self.read_session(&id) {
                 if !s.finalized {
                     out.push(s);

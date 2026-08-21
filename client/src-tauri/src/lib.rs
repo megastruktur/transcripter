@@ -17,8 +17,8 @@ static RUNTIME: std::sync::LazyLock<Runtime> =
     std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime"));
 
 pub fn run() {
-    // Retry spool entries from previous runs once the frontend provides
-    // config (it calls cmd_upload_now per pending session after Settings ok).
+    // Spool entries from previous runs are retried when the frontend calls
+    // cmd_retry_pending (Recordings mount, with configured credentials).
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             cmd_pre_flight,
@@ -58,12 +58,7 @@ fn cmd_stop_recording(
         let for_upload = session.clone();
         let spool_dir = spool.root().to_path_buf();
         RUNTIME.spawn(async move {
-            if let Err(e) = upload_with_retry(&spool_dir, &for_upload, UploadCfg {
-                base_url: url,
-                token,
-            }).await {
-                eprintln!("[uploader] session {} failed: {e}", for_upload.id);
-            }
+            upload_with_retry(&spool_dir, &for_upload, UploadCfg { base_url: url, token });
         });
     } else {
         eprintln!("[uploader] no server config from UI; recording stays in spool");
@@ -158,15 +153,9 @@ fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: Upl
     let _ = UPLOAD_QUEUE.send(QueueMsg::Job(UploadJob { spool_dir, session, cfg }));
 }
 
-/// Upload with backoff; gives up after ~5 min and leaves the spool entry
-/// pending (pending() scan on next start or cmd_upload_now retries it).
-async fn upload_with_retry(
-    spool_dir: &std::path::Path,
-    session: &SpoolSession,
-    cfg: UploadCfg,
-) -> anyhow::Result<()> {
+/// Enqueue an upload (kept as a named step for the stop-path call site).
+fn upload_with_retry(spool_dir: &std::path::Path, session: &SpoolSession, cfg: UploadCfg) {
     enqueue_upload(spool_dir.to_path_buf(), session.clone(), cfg);
-    Ok(())
 }
 
 async fn try_upload(

@@ -41,13 +41,13 @@ impl Uploader {
         rb.bearer_auth(&self.token)
     }
 
-    async fn create_recording(&self, s: &SpoolSession) -> Result<String, UploadError> {
+    async fn create_recording(&self, s: &SpoolSession, total: u64) -> Result<String, UploadError> {
         let rb = self.client.post(format!("{}/recordings", self.base_url));
         let rb = self.auth(rb);
         let resp = rb
             .json(&serde_json::json!({
                 "title": s.title,
-                "total_bytes": None::<u64>,
+                "total_bytes": total,
             }))
             .send()
             .await
@@ -103,7 +103,7 @@ impl Uploader {
         let rec_id = match &session.server_rec_id {
             Some(id) => id.clone(),
             None => {
-                let id = self.create_recording(session).await?;
+                let id = self.create_recording(session, total).await?;
                 let mut updated = session.clone();
                 updated.server_rec_id = Some(id.clone());
                 persist_session(spool_root, &updated)?;
@@ -175,9 +175,7 @@ impl Uploader {
 }
 
 fn persist_session(spool_root: &std::path::Path, session: &SpoolSession) -> Result<(), UploadError> {
-    std::fs::write(
-        spool_root.join(&session.id).join("session.json"),
-        serde_json::to_string_pretty(session).unwrap_or_default(),
-    )
-    .map_err(|e| UploadError::Io(e.to_string()))
+    crate::spool::Spool::open_root(spool_root)
+        .and_then(|s| s.write_session(session))
+        .map_err(|e| UploadError::Io(e.to_string()))
 }
