@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
 
   temporal:
-    image: temporalio/auto-setup:latest
+    image: temporalio/auto-setup:1.28.2
     environment:
       DB: postgres12
       DB_PORT: 5432
@@ -77,7 +77,7 @@ services:
     restart: unless-stopped
 
   temporal-ui:
-    image: temporalio/ui:latest
+    image: temporalio/ui:2.35.0
     environment:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
@@ -87,7 +87,7 @@ services:
     restart: unless-stopped
 
   diarization:
-    image: lintoai/linto-diarization-pyannote:latest
+    image: lintoai/linto-diarization-pyannote:2.3.0
     ports:
       - "8070:8080"
     healthcheck:
