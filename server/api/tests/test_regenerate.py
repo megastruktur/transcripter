@@ -111,7 +111,6 @@ def test_artifact_served_when_present(client: TestClient) -> None:
 
 
 def _sha(data: bytes) -> str:
-    import hashlib
 
     return hashlib.sha256(data).hexdigest()
 
