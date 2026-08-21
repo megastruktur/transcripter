@@ -11,3 +11,7 @@ server/config.yaml
 .link-libs/
 .artifacts/
 *.pcm
+.roborev/
+.ship-it/
+backups/
+MEMORY.md
