@@ -58,9 +58,16 @@ async function req(
 }
 
 export async function testConnection(cfg: ApiConfig): Promise<string> {
-	const resp = await fetch(`${cfg.baseUrl.replace(/\/$/, '')}/health`);
-	if (!resp.ok) throw new Error(`health ${resp.status}`);
-	return (await resp.json()).status;
+	const base = cfg.baseUrl.replace(/\/$/, '');
+	const health = await fetch(`${base}/health`);
+	if (!health.ok) throw new Error(`health ${health.status}`);
+	// Token check: /health is public, so probe an authed endpoint too.
+	const authed = await fetch(`${base}/recordings`, {
+		headers: { authorization: `Bearer ${cfg.token}` }
+	});
+	if (authed.status === 401) throw new Error('unauthorized: wrong token');
+	if (!authed.ok) throw new Error(`recordings ${authed.status}`);
+	return 'ok';
 }
 
 export async function listRecordings(cfg: ApiConfig): Promise<Recording[]> {

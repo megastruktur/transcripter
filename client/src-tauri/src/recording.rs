@@ -47,8 +47,10 @@ pub fn start(spool: &Spool, title: &str, with_system: bool) -> Result<String, St
             )
             .ok()
         }) {
-            Some(s) => (Some(s), true),
-            None => (None, false), // plan Scenario 1: record mic-only + warn
+            // Stream opened but its audio is NOT persisted in MVP (drain+discard);
+            // system_active stays false so session.json tells the truth.
+            Some(s) => (Some(s), false),
+            None => (None, false),
         }
     } else {
         (None, false)
@@ -85,10 +87,19 @@ pub fn start(spool: &Spool, title: &str, with_system: bool) -> Result<String, St
     Ok(id)
 }
 
-/// Drain captured mic buffers into the FLAC writer. Called on a timer.
+/// Drain captured buffers into the FLAC writer. Called on a timer.
+///
+/// Mic samples feed the encoder. The system stream, where a host exposes a
+/// duplex default device, is drained-and-discarded: cpal 0.15 has no loopback
+/// capture on Win/mac (plan Scenario 1; real system-audio path is the
+/// win/mac targets' work). Draining prevents unbounded buffer growth.
 pub fn pump(_spool: &Spool) -> Result<u64, String> {
     let guard = SESSION.lock().map_err(|e| e.to_string())?;
     let active = guard.as_ref().ok_or("no active session")?;
+
+    if let Some(system) = &active.system {
+        system.drain(); // discard: not muxed into FLAC in MVP
+    }
 
     let samples = active.mic.drain();
     let frames = (samples.len() / active.session.channels as usize) as u64;

@@ -5,8 +5,8 @@ import os
 import sys
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
 from app.config import ServerConfig, load_config
 from app.db import Base, engine, init_engine
 from app.routes import recordings, regenerate, settings
@@ -34,6 +34,13 @@ _check_startup()
 cfg: ServerConfig = load_config()
 
 app = FastAPI(title="Transcripter API")
+# LAN clients: Tauri webview (tauri://localhost, http://localhost:5173 dev)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=".*",  # single-user LAN; token is the auth boundary
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.state.config = cfg
 app.state.on_finalize = lambda rec_id, duration: regenerate.trigger_pipeline_async(rec_id, duration)
 

@@ -3,6 +3,7 @@
 
 	let title = $state('');
 	let elapsed = $state(0);
+	let starting = $state(false);
 	let timer: ReturnType<typeof globalThis.setInterval> | null = null;
 
 	$effect(() => {
@@ -40,9 +41,17 @@
 	{:else}
 		<button
 			class="start"
+			disabled={starting}
 			onclick={async () => {
+				starting = true;
 				recorder.warnings = [];
-				await startRecording(title);
+				try {
+					await startRecording(title);
+				} catch (e) {
+					recorder.warnings.push(String(e));
+				} finally {
+					starting = false;
+				}
 			}}>Record</button
 		>
 	{/if}

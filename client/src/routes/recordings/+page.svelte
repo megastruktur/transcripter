@@ -75,15 +75,22 @@
 					<td>
 						{#if rec.state === 'done' || rec.state === 'failed'}
 							{#each STAGES as stage}
-								<button onclick={() => regenerate(loadApiConfig(), rec.id, stage).then(refresh)}>
-									↻ {stage.slice(0, 4)}
-								</button>
+								<button
+									onclick={async () => {
+										try {
+											await regenerate(loadApiConfig(), rec.id, stage);
+										} catch (e) {
+											error = String(e);
+										}
+										refresh();
+									}}>↻ {stage.slice(0, 4)}</button
+								>
 							{/each}
 						{/if}
 					</td>
 				</tr>
 			{:else}
-				<tr><td colspan="6">No recordings yet</td></tr>
+				<tr><td colspan="7">No recordings yet</td></tr>
 			{/each}
 		</tbody>
 	</table>
