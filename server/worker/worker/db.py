@@ -1,16 +1,16 @@
-"""SQLAlchemy catalog: recordings + stages.
+"""Catalog access for the worker (same schema as API).
 
-Worker writes stage transitions directly (plan T3); API reads.
+Worker owns stage transitions while executing activities.
 """
 
 import enum
-import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, Enum, ForeignKey, String, Text, create_engine
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
+    Session,
     mapped_column,
     relationship,
     sessionmaker,
@@ -46,16 +46,15 @@ STAGE_KINDS = ("transcribe", "diarize", "merge_speakers", "summarize")
 class Recording(Base):
     __tablename__ = "recordings"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[RecordingState] = mapped_column(
         Enum(RecordingState), default=RecordingState.uploading
     )
-    # Resumable upload bookkeeping
     committed_bytes: Mapped[int] = mapped_column(default=0)
     total_bytes: Mapped[int | None] = mapped_column(default=None)
     sha256: Mapped[str | None] = mapped_column(String(64), default=None)
-    duration_sec: Mapped[float | None] = mapped_column(Float, default=None)
+    duration_sec: Mapped[float | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
@@ -91,15 +90,34 @@ def init_engine(url: str) -> None:
     _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
 
 
-def engine():
-    assert _engine is not None, "init_engine() must be called first"
-    return _engine
-
-
-def get_session():
+def session() -> Session:
     assert _SessionLocal is not None, "init_engine() must be called first"
-    session = _SessionLocal()
-    try:
-        yield session
-    finally:
-        session.close()
+    return _SessionLocal()
+
+
+def set_stage(
+    rec_id: str,
+    kind: str,
+    status: StageStatus,
+    error: str | None = None,
+    details: dict | None = None,
+    inc_attempts: bool = False,
+) -> None:
+    with session() as s:
+        stage = s.query(Stage).filter_by(recording_id=rec_id, kind=kind).one()
+        stage.status = status
+        if error is not None:
+            stage.last_error = error
+        if details is not None:
+            stage.details = details
+        if inc_attempts:
+            stage.attempts += 1
+        s.commit()
+
+
+def set_recording_state(rec_id: str, state: RecordingState) -> None:
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        rec.state = state
+        s.commit()

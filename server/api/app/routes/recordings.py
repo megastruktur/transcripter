@@ -123,9 +123,7 @@ async def upload_chunk(
 
     body = await request.body()
     if len(body) != content_length:
-        raise HTTPException(
-            status_code=400, detail="body size does not match Content-Length"
-        )
+        raise HTTPException(status_code=400, detail="body size does not match Content-Length")
 
     # Resume: discard bytes already committed, then append the rest.
     target = audio_path(cfg, rec.id)
@@ -153,6 +151,12 @@ def finalize(
         return {"state": rec.state.value}
 
     target = audio_path(cfg, rec.id)
+    if not target.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="no audio uploaded yet — send chunks before finalize",
+        )
+
     h = hashlib.sha256()
     size = 0
     with open(target, "rb") as f:
@@ -161,7 +165,6 @@ def finalize(
             size += len(chunk)
 
     if h.hexdigest() != body.sha256:
-        # Session survives; client resumes from committed offset or re-finalizes.
         raise HTTPException(
             status_code=409,
             detail=f"sha256 mismatch: server={h.hexdigest()} client={body.sha256}",
@@ -180,9 +183,7 @@ def finalize(
 def list_recordings(
     session: Session = Depends(get_session),
 ) -> list[dict]:
-    recs = session.scalars(
-        select(Recording).order_by(Recording.created_at.desc())
-    ).all()
+    recs = session.scalars(select(Recording).order_by(Recording.created_at.desc())).all()
     return [serialize_recording(r) for r in recs]
 
 

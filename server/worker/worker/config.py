@@ -1,4 +1,4 @@
-"""Server configuration loading (config.yaml + env overrides)."""
+"""Shared config for worker (subset of API config; see server/api/app/config.py)."""
 
 import os
 from pathlib import Path
@@ -7,12 +7,8 @@ import yaml
 from pydantic import BaseModel, Field
 
 
-class StorageConfig(BaseModel):
-    path: Path = Path("/storage")
-
-
 class TranscribeConfig(BaseModel):
-    backend: str = "local"  # local | api
+    backend: str = "local"
     model: str = "small"
     base_url: str = ""
     api_key_env: str = ""
@@ -33,25 +29,31 @@ class DatabaseConfig(BaseModel):
     url: str = "postgresql+psycopg://transcripter:transcripter@postgres/transcripter"
 
 
-class ServerConfig(BaseModel):
-    storage: StorageConfig = Field(default_factory=StorageConfig)
+class StorageConfig(BaseModel):
+    path: Path = Path("/storage")
+
+
+class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
 
     @property
     def recordings_root(self) -> Path:
         return self.storage.path / "recordings"
 
 
-def load_config() -> ServerConfig:
+def load_config() -> WorkerConfig:
     path = os.environ.get("TRANSCRIPTER_CONFIG", "/etc/transcripter/config.yaml")
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
-    cfg = ServerConfig.model_validate(raw)
+    cfg = WorkerConfig.model_validate(raw)
     if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
         cfg.storage.path = Path(env_storage)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
+    if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):
+        cfg.diarization.endpoint = env_diar
     return cfg

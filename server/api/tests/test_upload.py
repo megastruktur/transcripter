@@ -107,7 +107,6 @@ def test_resume_from_committed_offset(client: TestClient) -> None:
 
 def test_finalize_bad_hash_409(client: TestClient) -> None:
     data = b"abc" * 100
-    rid, r = _upload_full.__wrapped__ if False else (None, None)
     r0 = client.post("/recordings", json={})
     rid = r0.json()["id"]
     r = client.put(
@@ -120,6 +119,14 @@ def test_finalize_bad_hash_409(client: TestClient) -> None:
     bad = "0" * 64
     r = client.post(f"/recordings/{rid}/finalize", json={"sha256": bad})
     assert r.status_code == 409
+
+
+def test_finalize_without_audio_409(client: TestClient) -> None:
+    r = client.post("/recordings", json={})
+    rid = r.json()["id"]
+    r = client.post(f"/recordings/{rid}/finalize", json={"sha256": "0" * 64})
+    assert r.status_code == 409
+    assert "no audio" in r.json()["detail"]
 
 
 def test_offset_out_of_range_409(client: TestClient) -> None:

@@ -20,6 +20,13 @@ dev = [
     "pytest>=8.3",
 ]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff.lint]
+ignore = ["ASYNC230"] # local file IO, small files
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"

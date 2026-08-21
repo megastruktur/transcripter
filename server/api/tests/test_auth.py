@@ -59,9 +59,7 @@ def test_missing_config_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
         importlib.reload(main)
 
 
-def test_config_directory_fails_fast(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_config_directory_fails_fast(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("TRANSCRIPTER_TOKEN", "sekrit")
     monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(tmp_path))
     from app import main
