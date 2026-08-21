@@ -41,7 +41,13 @@ export async function startRecording(title: string): Promise<void> {
 	recorder.recording = true;
 	recorder.frames = 0;
 	pumpTimer = setInterval(async () => {
-		recorder.frames += await commands.pump();
+		try {
+			recorder.frames += await commands.pump();
+		} catch {
+			// Pump no longer has a session (stop raced us): stop draining.
+			if (pumpTimer) clearInterval(pumpTimer);
+			pumpTimer = null;
+		}
 	}, 500);
 }
 

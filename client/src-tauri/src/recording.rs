@@ -10,7 +10,7 @@ use crate::spool::{Spool, SpoolSession};
 
 pub struct ActiveSession {
     pub session: SpoolSession,
-    pub mic: CapturedStream,
+    pub mic: Option<CapturedStream>,
     pub system: Option<CapturedStream>,
     pub writer: Mutex<Option<FlacWriter>>,
     pub started: Instant,
@@ -86,7 +86,7 @@ pub fn start(spool: &Spool, title: &str, with_system: bool) -> Result<String, St
 
     *guard = Some(ActiveSession {
         session,
-        mic,
+        mic: Some(mic),
         system,
         writer: Mutex::new(Some(writer)),
         started: Instant::now(),
@@ -108,7 +108,7 @@ pub fn pump(_spool: &Spool) -> Result<u64, String> {
         system.drain(); // discard: not muxed into FLAC in MVP
     }
 
-    let samples = active.mic.drain();
+    let samples = active.mic.as_ref().map(|m| m.drain()).unwrap_or_default();
     let frames = (samples.len() / active.session.channels as usize) as u64;
     if samples.is_empty() {
         return Ok(0);
@@ -126,20 +126,31 @@ pub fn pump(_spool: &Spool) -> Result<u64, String> {
 
 pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
     let mut guard = SESSION.lock().map_err(|e| e.to_string())?;
-    let active = guard.take().ok_or("no active session")?;
-    drop(active.mic);
-    drop(active.system);
+    let mut active = guard.take().ok_or("no active session")?;
+    drop(active.mic.take());
+    drop(active.system.take());
 
-    let writer = active.writer.lock().map_err(|e| e.to_string())?.take();
-    if let Some(w) = writer {
-        let flac = spool.audio_path(&active.session.id);
-        w.finish(&flac).map_err(|e| e.to_string())?;
+    // From here on, any failure re-inserts the session so the error
+    // honestly means "still live and stop-retryable" (capture streams
+    // are already dropped; buffers no longer grow).
+    let outcome = (|| -> Result<SpoolSession, String> {
+        let writer = active.writer.lock().map_err(|e| e.to_string())?.take();
+        let mut session = active.session.clone();
+        if let Some(w) = writer {
+            let flac = spool.audio_path(&session.id);
+            w.finish(&flac).map_err(|e| e.to_string())?;
+        }
+        session.duration_sec = active.started.elapsed().as_secs_f64();
+        spool.write_session(&session).map_err(|e| e.to_string())?;
+        Ok(session)
+    })();
+    match outcome {
+        Ok(session) => Ok(session),
+        Err(e) => {
+            *guard = Some(active);
+            Err(e)
+        }
     }
-
-    let mut session = active.session;
-    session.duration_sec = active.started.elapsed().as_secs_f64();
-    spool.write_session(&session).map_err(|e| e.to_string())?;
-    Ok(session)
 }
 
 fn unix_now_iso() -> String {
