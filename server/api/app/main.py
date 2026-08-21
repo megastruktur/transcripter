@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import ServerConfig, load_config
 from app.db import Base, engine, init_engine
-from app.routes import recordings, settings
+from app.routes import recordings, regenerate, settings
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
 
@@ -35,12 +35,15 @@ cfg: ServerConfig = load_config()
 
 app = FastAPI(title="Transcripter API")
 app.state.config = cfg
-app.state.on_finalize = lambda rec_id: None  # wired to Temporal in T3
+app.state.on_finalize = lambda rec_id: regenerate.trigger_pipeline_async(
+    rec_id, None
+)  # duration known post-finalize via catalog; workflow reads it from DB
 
 init_engine(cfg.database.url)
 Base.metadata.create_all(bind=engine())
 
 app.include_router(recordings.router)
+app.include_router(regenerate.router)
 app.include_router(settings.router)
 
 
