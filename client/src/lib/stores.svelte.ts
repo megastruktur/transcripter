@@ -46,25 +46,27 @@ export async function startRecording(title: string): Promise<void> {
 }
 
 export async function stopRecording(): Promise<void> {
-	if (pumpTimer) {
-		clearInterval(pumpTimer);
-		pumpTimer = null;
-	}
 	const cfg = loadApiConfig();
 	try {
 		const session = await commands.stopRecording(
 			cfg.baseUrl || null,
 			cfg.token || null
 		);
+		// Confirmed stop: stop draining and reset state.
+		if (pumpTimer) {
+			clearInterval(pumpTimer);
+			pumpTimer = null;
+		}
+		recorder.recording = false;
 		if (cfg.baseUrl && cfg.token) {
 			recorder.warnings.push(`recording queued for upload (${session.id.slice(0, 8)}…)`);
 		} else {
 			recorder.warnings.push('no server configured — recording saved locally in spool');
 		}
 	} catch (e) {
-		recorder.warnings.push(`stop failed: ${e}`);
-	} finally {
-		recorder.recording = false;
+		// Stop failed: Rust session is still live — keep draining (pump
+		// timer untouched) and stay in recording state so Stop can retry.
+		recorder.warnings.push(`stop failed (retry Stop): ${e}`);
 	}
 }
 
