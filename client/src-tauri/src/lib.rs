@@ -120,6 +120,14 @@ fn cmd_upload_now(
     Ok(())
 }
 
+/// catch_unwind for futures (tokio has no built-in; use futures crate).
+async fn futures_catch<F: std::future::Future>(
+    fut: std::panic::AssertUnwindSafe<F>,
+) -> Result<F::Output, Box<dyn std::any::Any + Send>> {
+    use futures::FutureExt;
+    fut.catch_unwind().await
+}
+
 #[derive(Clone)]
 struct UploadJob {
     spool_dir: std::path::PathBuf,
@@ -137,11 +145,37 @@ static UPLOAD_QUEUE: std::sync::LazyLock<
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
     RUNTIME.spawn(async move {
         while let Some(QueueMsg::Job(job)) = rx.recv().await {
-            if let Err(e) = try_upload(&job.spool_dir, &job.session, &job.cfg).await {
+            let result = {
+                let fut = std::panic::AssertUnwindSafe(try_upload(
+                    &job.spool_dir,
+                    &job.session,
+                    &job.cfg,
+                ));
+                match futures_catch(fut).await {
+                    Ok(res) => res,
+                    Err(panic) => {
+                        eprintln!(
+                            "[uploader] session {} PANICKED: {:?}",
+                            job.session.id,
+                            panic
+                        );
+                        QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
+                        continue;
+                    }
+                }
+            };
+            if let Err(panic) = &result {
+                eprintln!(
+                    "[uploader] session {} PANICKED: {:?}",
+                    job.session.id,
+                    panic.downcast_ref::<&str>().copied().or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                );
+            }
+            if let Err(e) = result {
                 eprintln!("[uploader] session {} failed: {e}", job.session.id);
             }
-            // Remove only after processing: an in-flight job still counts
-            // as queued so stop-path/pending-scan re-enqueues are deduped.
+            // Remove after processing (incl. panic): in-flight jobs still
+            // dedupe re-enqueues; a panicked worker does not leak the id.
             QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
         }
     });
@@ -164,7 +198,8 @@ fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: Upl
             .send(QueueMsg::Job(UploadJob { spool_dir, session: session.clone(), cfg }))
             .is_err()
         {
-            // Worker gone: roll back so a future enqueue can retry.
+            // Worker gone (until restart): roll back the id so a
+            // post-restart enqueue is not deduped by a stale entry.
             QUEUED.lock().map(|mut q| q.remove(&session.id)).ok();
         }
     }
