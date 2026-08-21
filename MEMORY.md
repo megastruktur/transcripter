@@ -22,3 +22,11 @@
 ## Running State
 
 - 2026-08-21: Brainstorm + stack research complete (SvelteKit↔Tauri confirmed via official docs; cpal capture verified in reference source). Plan saved to `.ship-it/plans/transcripter-mvp-2026-08-21.md`, adversarial review loop started. Diarization research: `~/.hermes/kanban/attachments/t_cae49ae2/diarization-research.md`.
+
+## Running State — 2026-08-21 MVP complete
+
+- All 12 tasks shipped; e2e green end-to-end: upload w/ drop+resume → sha256 bit-identity → transcribe/diarize/merge done, summarize skipped (no model) → state=done, 4 artifacts.
+- Host quirks: ports 8080/8081 busy (traefik/llama.cpp) → api:8090, ui:8082; LinTO wants SERVICE_MODE=http, listens :80; host shell itself runs in a container (docker can't see /tmp; /usr/lib64 nearly empty on host).
+- Toolchain: zigcc linker (glibc 2.38 target), dockerized pkg-config, client .link-libs so-copies (gitignored).
+- Roborev review loop ran per commit; all findings addressed in follow-up commits.
+- Config backup: backups/config.yaml.20260821.
