@@ -1,20 +1,35 @@
 <script lang="ts">
-	let serverUrl = $state('');
-	let token = $state('');
+	import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
+
+	let cfg = $state(loadApiConfig());
+	let status = $state('');
+
+	async function onTest() {
+		try {
+			const s = await testConnection(cfg);
+			status = `ok (${s})`;
+			saveApiConfig(cfg);
+		} catch (e) {
+			status = `failed: ${e}`;
+		}
+	}
 </script>
 
 <section>
 	<h1>Settings</h1>
 	<label>
 		Server URL
-		<input type="url" placeholder="http://megaserver:8080" bind:value={serverUrl} />
+		<input type="url" bind:value={cfg.baseUrl} />
 	</label>
 	<label>
 		Token
-		<input type="password" bind:value={token} />
+		<input type="password" bind:value={cfg.token} />
 	</label>
-	<button disabled>Test connection</button>
-	<p>Stub — wiring lands in T10.</p>
+	<button onclick={onTest}>Test connection</button>
+	{#if status}
+		<p class:ok={status.startsWith('ok')} class:fail={!status.startsWith('ok')}>{status}</p>
+	{/if}
+	<p><small>Settings persist locally after successful test.</small></p>
 </section>
 
 <style>
@@ -25,5 +40,13 @@
 	input {
 		display: block;
 		margin-top: 0.25rem;
+		width: 100%;
+		max-width: 24rem;
+	}
+	.ok {
+		color: green;
+	}
+	.fail {
+		color: #b00;
 	}
 </style>
