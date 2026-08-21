@@ -16,7 +16,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 cpal = "0.15"
 flacenc = "0.5"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# NOTE: no TLS backend on purpose for the LAN MVP — ring (rustls) cannot
+# build under the zig-cc/gnu.2.38 host toolchain; https baseUrls are
+# unsupported until the toolchain or a TLS impl builds. UI fetch still
+# supports https where the webview does.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
