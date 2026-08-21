@@ -193,15 +193,13 @@ fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: Upl
         .lock()
         .map(|mut q| q.insert(session.id.clone()))
         .unwrap_or(false)
-    {
-        if UPLOAD_QUEUE
+        && UPLOAD_QUEUE
             .send(QueueMsg::Job(UploadJob { spool_dir, session: session.clone(), cfg }))
             .is_err()
-        {
-            // Worker gone (until restart): roll back the id so a
-            // post-restart enqueue is not deduped by a stale entry.
-            QUEUED.lock().map(|mut q| q.remove(&session.id)).ok();
-        }
+    {
+        // Worker gone (until restart): roll back the id so a
+        // post-restart enqueue is not deduped by a stale entry.
+        QUEUED.lock().map(|mut q| q.remove(&session.id)).ok();
     }
 }
 
