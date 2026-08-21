@@ -152,9 +152,26 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
                         session.duration_sec = active.started.elapsed().as_secs_f64();
                         match w.finish(&spool.audio_path(&session.id)) {
                             Ok(_) => {
-                                if let Err(e) = spool.write_session(&session) {
-                                    eprintln!("[recording] salvage write_session failed: {e}");
+                                let mut written = false;
+                                for retry in 0..2 {
+                                    match spool.write_session(&session) {
+                                        Ok(()) => {
+                                            written = true;
+                                            break;
+                                        }
+                                        Err(e) if retry == 0 => {
+                                            eprintln!("[recording] salvage write_session retry: {e}");
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[recording] salvage write_session failed: {e} \
+                                                (duration {}s not persisted)",
+                                                session.duration_sec
+                                            );
+                                        }
+                                    }
                                 }
+                                let _ = written;
                                 return Ok(session);
                             }
                             Err(e) => {
