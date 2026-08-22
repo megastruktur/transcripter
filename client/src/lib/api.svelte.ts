@@ -33,7 +33,7 @@ export function loadApiConfig(): ApiConfig {
 	} catch {
 		// ignore corrupt storage
 	}
-	return { baseUrl: 'http://localhost:8080', token: '' };
+	return { baseUrl: 'http://localhost:8090', token: '' };
 }
 
 export function saveApiConfig(cfg: ApiConfig): void {

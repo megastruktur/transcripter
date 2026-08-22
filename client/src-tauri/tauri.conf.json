@@ -10,11 +10,16 @@
     "frontendDist": "../build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Transcripter",
-        "width": 900,
-        "height": 700
+        "width": 440,
+        "height": 720,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false
       }
     ],
     "security": {

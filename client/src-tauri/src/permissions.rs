@@ -15,11 +15,9 @@ pub enum PermissionState {
 }
 
 /// 1-second probe capture to verify the mic actually delivers samples.
-pub(crate) fn probe_mic(threshold_rms: f32) -> Result<bool, String> {
-    let device = capture::mic_device()?;
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(
-        capture::SampleBuffer::default(),
-    ));
+pub(crate) fn probe_mic(threshold_rms: f32, device_name: Option<&str>) -> Result<bool, String> {
+    let device = capture::mic_device(device_name)?;
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default()));
     let _stream = capture::open_stream(&device, buffer.clone())?;
     std::thread::sleep(std::time::Duration::from_secs(1));
     let buf = buffer.lock().map_err(|e| e.to_string())?;
@@ -33,7 +31,11 @@ pub(crate) fn probe_mic(threshold_rms: f32) -> Result<bool, String> {
 pub fn mic_permission() -> PermissionState {
     // macOS 14+: AVAudioApplication shared record permission.
     // (unsafe: ObjC method call; sharedInstance never nil for this class.)
-    unsafe { objc2_avf_audio::AVAudioApplication::sharedInstance().recordPermission().into() }
+    unsafe {
+        objc2_avf_audio::AVAudioApplication::sharedInstance()
+            .recordPermission()
+            .into()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -69,7 +71,12 @@ pub struct PreFlightReport {
 }
 
 /// Run all pre-flight checks. `probe` enables the 1s RMS probe.
-pub fn pre_flight(probe: bool) -> PreFlightReport {
+pub fn pre_flight(
+    probe: bool,
+    microphone: Option<&str>,
+    system_output: Option<&str>,
+    check_system: bool,
+) -> PreFlightReport {
     let mut report = PreFlightReport {
         mic_permission: mic_permission(),
         mic_device_present: true,
@@ -78,7 +85,7 @@ pub fn pre_flight(probe: bool) -> PreFlightReport {
         error: None,
     };
 
-    match capture::mic_device() {
+    match capture::mic_device(microphone) {
         Ok(_) => {}
         Err(e) => {
             report.mic_device_present = false;
@@ -86,13 +93,17 @@ pub fn pre_flight(probe: bool) -> PreFlightReport {
             return report;
         }
     }
-    match capture::system_device() {
-        Ok(_) => {}
-        Err(_) => report.system_device_present = false,
+    if check_system {
+        match capture::system_device(system_output) {
+            Ok(_) => {}
+            Err(_) => report.system_device_present = false,
+        }
+    } else {
+        report.system_device_present = false;
     }
 
     if probe {
-        match probe_mic(0.0015) {
+        match probe_mic(0.0015, microphone) {
             Ok(signal) => report.mic_signal = Some(signal),
             Err(e) => report.error = Some(e),
         }

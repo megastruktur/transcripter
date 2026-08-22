@@ -1,7 +1,7 @@
 //! Microphone + system audio capture via cpal (reference: ActaVoces).
 //!
-//! System audio: input stream on the default OUTPUT device (WASAPI loopback
-//! on Windows, CoreAudio trick on macOS — see plan Scenario 1).
+//! System audio: input stream on the selected output device, falling back to
+//! the OS default (WASAPI loopback on Windows, CoreAudio path on macOS).
 //! Each source is captured independently; missing system stream does not
 //! block mic recording.
 
@@ -17,6 +17,14 @@ pub struct CaptureStatus {
     pub system_active: bool,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AudioDevices {
+    pub microphones: Vec<String>,
+    pub system_outputs: Vec<String>,
+    pub default_microphone: Option<String>,
+    pub default_system_output: Option<String>,
 }
 
 #[derive(Default)]
@@ -40,15 +48,60 @@ impl CapturedStream {
     }
 }
 
-/// Open the default input device (microphone).
-pub fn mic_device() -> Result<Device, String> {
+pub fn list_devices() -> Result<AudioDevices, String> {
     let host = cpal::default_host();
-    host.default_input_device().ok_or_else(|| "no microphone".into())
+    let mut microphones = host
+        .input_devices()
+        .map_err(|e| e.to_string())?
+        .filter_map(|device| device.name().ok())
+        .collect::<Vec<_>>();
+    let mut system_outputs = host
+        .output_devices()
+        .map_err(|e| e.to_string())?
+        .filter_map(|device| device.name().ok())
+        .collect::<Vec<_>>();
+
+    microphones.sort();
+    microphones.dedup();
+    system_outputs.sort();
+    system_outputs.dedup();
+
+    Ok(AudioDevices {
+        microphones,
+        system_outputs,
+        default_microphone: host
+            .default_input_device()
+            .and_then(|device| device.name().ok()),
+        default_system_output: host
+            .default_output_device()
+            .and_then(|device| device.name().ok()),
+    })
 }
 
-/// Open the default output device as an input (loopback) stream.
-pub fn system_device() -> Result<Device, String> {
+/// Open the selected input device, or the OS default when no name is provided.
+pub fn mic_device(name: Option<&str>) -> Result<Device, String> {
     let host = cpal::default_host();
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        return host
+            .input_devices()
+            .map_err(|e| e.to_string())?
+            .find(|device| device.name().ok().as_deref() == Some(name))
+            .ok_or_else(|| format!("microphone not found: {name}"));
+    }
+    host.default_input_device()
+        .ok_or_else(|| "no microphone".into())
+}
+
+/// Open the selected output device for the platform system-audio path.
+pub fn system_device(name: Option<&str>) -> Result<Device, String> {
+    let host = cpal::default_host();
+    if let Some(name) = name.filter(|name| !name.is_empty()) {
+        return host
+            .output_devices()
+            .map_err(|e| e.to_string())?
+            .find(|device| device.name().ok().as_deref() == Some(name))
+            .ok_or_else(|| format!("system output not found: {name}"));
+    }
     host.default_output_device()
         .ok_or_else(|| "no system output device".into())
 }

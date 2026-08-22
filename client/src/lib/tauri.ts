@@ -11,6 +11,13 @@ export type PreFlightReport = {
 	error: string | null;
 };
 
+export type AudioDevices = {
+	microphones: string[];
+	system_outputs: string[];
+	default_microphone: string | null;
+	default_system_output: string | null;
+};
+
 export type SpoolSession = {
 	id: string;
 	title: string;
@@ -27,11 +34,14 @@ export type SpoolSession = {
 
 // Thin command bindings; each adds error normalization on top of invoke.
 export const commands = {
-	preFlight(probe: boolean): Promise<PreFlightReport> {
-		return invoke('cmd_pre_flight', { probe });
+	listAudioDevices(): Promise<AudioDevices> {
+		return invoke('cmd_list_audio_devices');
 	},
-	startRecording(title: string | null): Promise<string> {
-		return invoke('cmd_start_recording', { title });
+	preFlight(probe: boolean, microphone: string | null, systemOutput: string | null, checkSystem: boolean): Promise<PreFlightReport> {
+		return invoke('cmd_pre_flight', { probe, microphone, systemOutput, checkSystem });
+	},
+	startRecording(title: string | null, microphone: string | null, systemOutput: string | null, captureSystem: boolean): Promise<string> {
+		return invoke('cmd_start_recording', { title, microphone, systemOutput, captureSystem });
 	},
 	stopRecording(serverUrl: string | null, serverToken: string | null): Promise<SpoolSession> {
 		return invoke('cmd_stop_recording', { serverUrl, serverToken });
