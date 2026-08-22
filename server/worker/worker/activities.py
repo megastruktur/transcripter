@@ -1,5 +1,6 @@
 """Temporal activities for the recording pipeline."""
 
+import json
 import logging
 import os
 from datetime import timedelta
@@ -74,11 +75,15 @@ async def transcribe(rec_id: str) -> dict:
 @activity.defn
 async def diarize(rec_id: str) -> dict:
     set_stage(rec_id, "diarize", StageStatus.running, inc_attempts=True)
+    # Drop a previous run's output up front: merge_speakers keys off this
+    # file's presence, so a stale one would mask a failure here.
+    out = meta_dir(rec_id) / "diarization.json"
+    out.unlink(missing_ok=True)
     try:
         from .diarize import diarize_audio
 
         result = await diarize_audio(audio_file(rec_id), cfg())
-        (meta_dir(rec_id) / "diarization.json").write_text(result.model_dump_json())
+        out.write_text(result.model_dump_json())
         details = {"speakers": result.speakers}
         set_stage(rec_id, "diarize", StageStatus.done, details=details)
         return details
@@ -93,6 +98,16 @@ async def merge_speakers(rec_id: str) -> dict:
     set_stage(rec_id, "merge_speakers", StageStatus.running, inc_attempts=True)
     try:
         from .merge import write_diarized_transcript
+
+        # No diarization (stage failed, or it found no speakers) means there
+        # is nothing to attribute: skip rather than emit a transcript whose
+        # every turn is labelled `None`. Drop a previous run's artifact too,
+        # so the UI cannot keep serving stale speaker attribution.
+        diar = meta_dir(rec_id) / "diarization.json"
+        if not diar.exists() or not json.loads(diar.read_text()).get("segments"):
+            (meta_dir(rec_id) / "diarized-transcript.md").unlink(missing_ok=True)
+            set_stage(rec_id, "merge_speakers", StageStatus.skipped)
+            return {"skipped": "no diarization"}
 
         turns = write_diarized_transcript(meta_dir(rec_id))
         details = {"turns": turns}
@@ -124,13 +139,19 @@ async def summarize(rec_id: str) -> dict:
         raise
 
 
+# Diarization (and the merge that depends on it) is best-effort: a recording
+# with a good transcript is still useful, so these stages do not fail it.
+BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers"})
+
+
 @activity.defn
 async def finalize_recording(rec_id: str) -> dict:
     """Mark recording done/failed based on its stage statuses."""
     with session() as s:
         rec = s.query(Recording).filter(Recording.id == rec_id).one()
         failed = any(
-            st.status == StageStatus.failed for st in rec.stages
+            st.status == StageStatus.failed and st.kind not in BEST_EFFORT_STAGES
+            for st in rec.stages
         )
         rec.state = RecordingState.failed if failed else RecordingState.done
         s.commit()

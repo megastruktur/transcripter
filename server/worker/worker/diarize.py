@@ -32,8 +32,14 @@ async def diarize_audio(audio: Path, cfg) -> DiarizationResult:
     r.raise_for_status()
     data = r.json()
 
+    # LinTO speaks seg_begin/seg_end/spk_id; the rest of the pipeline
+    # (merge.py) speaks start/end/speaker. Translate at this boundary only.
     segments = [
-        DiarSegment(start=float(s["start"]), end=float(s["end"]), speaker=str(s["speaker"]))
+        DiarSegment(
+            start=float(s["seg_begin"]),
+            end=float(s["seg_end"]),
+            speaker=str(s["spk_id"]),
+        )
         for s in data.get("segments", [])
     ]
     speakers = sorted({s.speaker for s in segments})

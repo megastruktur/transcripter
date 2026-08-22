@@ -6,6 +6,7 @@ from typing import TypedDict
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
+from temporalio.exceptions import ActivityError
 
 with workflow.unsafe.imports_passed_through():
     from .activities import timeout_for
@@ -67,13 +68,22 @@ class ProcessRecording:
                 retry_policy=_retry(),
                 heartbeat_timeout=timedelta(seconds=120),
             )
+        # `merge_speakers` still runs and marks itself skipped when there is
+        # no usable diarization, so the stage never sits pending forever.
         if idx <= 1:
-            result["diarize"] = await workflow.execute_activity(
-                "diarize",
-                rec_id,
-                start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 30)),
-                retry_policy=_retry(),
-            )
+            # Diarization is best-effort: it is flaky on short, quiet, or
+            # single-speaker audio. A failure must not throw away a good
+            # transcript, so degrade to transcript-only instead of aborting.
+            # The stage row keeps `failed` + last_error for the UI.
+            try:
+                result["diarize"] = await workflow.execute_activity(
+                    "diarize",
+                    rec_id,
+                    start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 30)),
+                    retry_policy=_retry(),
+                )
+            except ActivityError:
+                workflow.logger.warning("diarize failed for %s; transcript-only", rec_id)
         if idx <= 2:
             result["merge_speakers"] = await workflow.execute_activity(
                 "merge_speakers",

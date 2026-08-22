@@ -235,6 +235,12 @@ async fn try_upload(
             }
             Err(e) => {
                 eprintln!("[uploader] attempt {}: {e}", attempt + 1);
+                if e.is_permanent() {
+                    // Server rejected the payload itself; retrying just
+                    // burns the backoff. Keep the spool entry so the audio
+                    // is not lost, and surface the reason.
+                    anyhow::bail!("permanent rejection, not retrying: {e}");
+                }
                 if attempt < 5 {
                     tokio::time::sleep(delay).await;
                     delay *= 2;
