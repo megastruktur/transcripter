@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
-	import { preflight, recorder, uploads } from '$lib/stores.svelte';
+	import { checkServerConnection, connection, preflight, recorder, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let { children } = $props();
@@ -29,16 +29,26 @@
 					? 'Audio needs attention'
 					: 'Audio ready'
 	);
-	const audioTone = $derived(
-		recorder.recording ? 'recording' : !preflight.current ? 'idle' : audioStatus === 'Audio ready' ? 'ready' : 'issue'
+	const serverStatus = $derived(
+		connection.phase === 'checking'
+			? 'Checking server'
+			: connection.phase === 'connected'
+				? 'Server connected'
+				: connection.phase === 'unavailable'
+					? 'Server unavailable'
+					: 'Server not configured'
+	);
+	const serverTone = $derived(
+		connection.phase === 'connected' ? 'ready' : connection.phase === 'checking' ? 'issue' : connection.phase === 'unavailable' ? 'unavailable' : 'idle'
 	);
 	const collapsedStatus = $derived(
-		`${audioStatus}${pendingUploads ? ` · ${pendingUploads} pending ${pendingUploads === 1 ? 'upload' : 'uploads'}` : ''}`
+		`${audioStatus} · ${serverStatus}${pendingUploads ? ` · ${pendingUploads} pending ${pendingUploads === 1 ? 'upload' : 'uploads'}` : ''}`
 	);
 	const routeName = $derived(
 		page.url.pathname === '/' ? 'Recorder' : page.url.pathname === '/recordings' ? 'Recordings' : 'Settings'
 	);
 	onMount(async () => {
+		void checkServerConnection();
 		if (!isTauri()) return;
 		try {
 			const appWindow = getCurrentWindow();
@@ -168,7 +178,7 @@
 			<main class="workspace">
 				<div class="context-bar">
 					<span class="context-name">{routeName}</span>
-					<span class:live={audioTone === 'recording'} class:ready={audioTone === 'ready'} class:issue={audioTone === 'issue'} class="status-lamp" aria-hidden="true"></span>
+					<span class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'} class="status-lamp" aria-hidden="true"></span>
 				</div>
 				<div class="page-scroll">
 					{@render children()}
@@ -177,7 +187,7 @@
 		</div>
 
 		<footer class="status-strip">
-			<span><i class:live={audioTone === 'recording'} class:ready={audioTone === 'ready'} class:issue={audioTone === 'issue'}></i>{audioStatus}</span>
+			<span><i class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'}></i>{serverStatus}</span>
 			<span>{pendingUploads ? `${pendingUploads} pending uploads` : 'No pending uploads'}</span>
 		</footer>
 	</div>
@@ -241,7 +251,7 @@
 	.context-bar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
 	.context-name { font-size: 14px; font-weight: 650; color: #c8bbaa; }
 	.status-lamp, .status-strip i { width: 6px; height: 6px; border-radius: 50%; background: #6b655e; box-shadow: 0 0 0 2px rgba(107, 101, 94, 0.12); }
-	.status-lamp.live, .status-strip i.live { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }
+	.status-lamp.unavailable, .status-strip i.unavailable { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }
 	.status-lamp.ready, .status-strip i.ready { background: var(--cyan); box-shadow: 0 0 0 3px rgba(112, 215, 208, 0.1), 0 0 10px rgba(112, 215, 208, 0.65); }
 	.status-lamp.issue, .status-strip i.issue { background: var(--brass); box-shadow: 0 0 0 3px rgba(215, 167, 71, 0.1), 0 0 10px rgba(215, 167, 71, 0.55); }
 	.page-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
@@ -258,7 +268,6 @@
 
 	:global(.page) { padding: 18px 18px 24px; }
 	:global(.page-title) { margin: 0; font-size: 30px; font-weight: 760; line-height: 1.05; letter-spacing: -0.035em; color: var(--bone); }
-	:global(.page-intro) { margin: 9px 0 0; max-width: 32rem; color: var(--ash); font-size: 13px; line-height: 1.5; }
 	:global(.panel) { background: linear-gradient(145deg, rgba(255,255,255,0.026), rgba(0,0,0,0.08)); border: 1px solid var(--line); border-radius: 4px; }
 	:global(.field-label) { display: block; margin-bottom: 8px; font-size: 11px; font-weight: 650; color: #b8ac9d; }
 	:global(input), :global(select) { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid rgba(231, 214, 190, 0.18); border-radius: 3px; background: rgba(7, 6, 5, 0.58); color: var(--bone); font-size: 13px; transition: border-color 120ms ease, background 120ms ease; }
