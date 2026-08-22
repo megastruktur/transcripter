@@ -165,3 +165,30 @@ def test_list_and_delete(client: TestClient) -> None:
     r = client.delete(f"/recordings/{rid}")
     assert r.status_code == 204
     assert client.get(f"/recordings/{rid}").status_code == 404
+
+
+def _flac(payload: bytes = b"") -> bytes:
+    """fLaC + a last-block STREAMINFO header, then `payload` as frame bytes."""
+    streaminfo = bytes([0x80, 0x00, 0x00, 0x22]) + bytes(34)
+    return b"fLaC" + streaminfo + payload
+
+
+def test_finalize_rejects_flac_without_audio_frames(client: TestClient) -> None:
+    """A capture that recorded no samples must not enter the pipeline."""
+    rid, r = _upload_full(client, _flac())
+    assert r.status_code == 422, r.text
+    assert "no audio frames" in r.json()["detail"]
+    # Unrecoverable, so it must not sit in `uploading` inviting retries.
+    assert client.get(f"/recordings/{rid}").json()["state"] == "failed"
+
+
+def test_finalize_accepts_flac_with_audio_frames(client: TestClient) -> None:
+    rid, r = _upload_full(client, _flac(b"\xff\xf8frame-bytes"))
+    assert r.status_code == 200, r.text
+    assert client.get(f"/recordings/{rid}").json()["state"] == "processing"
+
+
+def test_finalize_accepts_non_flac_payload(client: TestClient) -> None:
+    """Container validation belongs to the decoder, not the upload layer."""
+    _, r = _upload_full(client, b"not-a-flac-at-all")
+    assert r.status_code == 200, r.text

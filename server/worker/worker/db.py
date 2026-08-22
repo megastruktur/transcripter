@@ -108,6 +108,10 @@ def set_stage(
         stage.status = status
         if error is not None:
             stage.last_error = error
+        elif status == StageStatus.running:
+            # Fresh attempt: drop the previous run's error so a stage that
+            # now succeeds does not keep showing a stale failure in the UI.
+            stage.last_error = None
         if details is not None:
             stage.details = details
         if inc_attempts:

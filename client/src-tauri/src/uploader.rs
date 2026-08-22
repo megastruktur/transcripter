@@ -22,6 +22,20 @@ pub enum UploadError {
     Io(String),
 }
 
+impl UploadError {
+    /// True when retrying cannot possibly help: the server rejected the
+    /// payload itself (bad token, silent capture, hash mismatch) rather
+    /// than failing transiently. 408/429 stay retryable.
+    pub fn is_permanent(&self) -> bool {
+        match self {
+            UploadError::Server { status, .. } => {
+                (400..500).contains(status) && !matches!(status, 408 | 429)
+            }
+            _ => false,
+        }
+    }
+}
+
 pub struct Uploader {
     pub base_url: String,
     pub token: String,
@@ -215,5 +229,25 @@ mod tests {
         for u in ["http://x", "HTTP://x", "  http://x  ", "localhost:8090", "not a url"] {
             assert!(Uploader::scheme_supported(u), "should allow: {u}");
         }
+    }
+
+    #[test]
+    fn permanent_rejections_are_not_retried() {
+        // 422 = silent capture, 401 = bad token, 409 = hash mismatch:
+        // no amount of retrying changes the outcome.
+        for status in [400, 401, 403, 409, 413, 422] {
+            let e = UploadError::Server { status, detail: String::new() };
+            assert!(e.is_permanent(), "should be permanent: {status}");
+        }
+    }
+
+    #[test]
+    fn transient_failures_stay_retryable() {
+        for status in [408, 429, 500, 502, 503, 507] {
+            let e = UploadError::Server { status, detail: String::new() };
+            assert!(!e.is_permanent(), "should be retryable: {status}");
+        }
+        assert!(!UploadError::Network("reset".into()).is_permanent());
+        assert!(!UploadError::Io("disk".into()).is_permanent());
     }
 }

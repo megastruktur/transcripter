@@ -72,6 +72,39 @@ def free_bytes(path: Path) -> int:
     return st.f_bavail * st.f_frsize
 
 
+# METADATA_BLOCK_HEADER: 1 byte (last-block flag + type) + 3 bytes big-endian
+# length. A FLAC that captured no samples is magic + STREAMINFO and nothing
+# more.
+FLAC_MAGIC = b"fLaC"
+
+
+def has_audio_frames(path: Path) -> bool:
+    """True when the FLAC carries at least one audio frame after the metadata.
+
+    A recording that captured no samples (mic held by another process, muted
+    input) still encodes to a valid header-only stream. Whisper happily
+    returns an empty transcript for it and diarization then 500s deep in the
+    pipeline, so reject it here where the client can still act on it.
+
+    Non-FLAC payloads pass: container validation belongs to the decoder, not
+    to the upload layer.
+    """
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        if f.read(len(FLAC_MAGIC)) != FLAC_MAGIC:
+            return True
+        # Walk the metadata blocks; audio frames follow the one whose
+        # last-block flag is set.
+        while True:
+            header = f.read(4)
+            if len(header) < 4:
+                return False  # truncated metadata: no frames to be had
+            last = header[0] & 0x80
+            f.seek(int.from_bytes(header[1:4], "big"), os.SEEK_CUR)
+            if last:
+                return f.tell() < size
+
+
 @router.post("", status_code=201)
 def create_recording(
     body: CreateRecording,
@@ -168,6 +201,20 @@ def finalize(
         raise HTTPException(
             status_code=409,
             detail=f"sha256 mismatch: server={h.hexdigest()} client={body.sha256}",
+        )
+
+    if not has_audio_frames(target):
+        # Unrecoverable: no retry can add samples that were never captured.
+        # Mark it failed so it shows up in the UI instead of sitting in
+        # `uploading` while the client retries a doomed finalize.
+        rec.state = RecordingState.failed
+        session.commit()
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "recording contains no audio frames — the capture produced "
+                "silence; check microphone permissions and input device"
+            ),
         )
 
     rec.sha256 = body.sha256
