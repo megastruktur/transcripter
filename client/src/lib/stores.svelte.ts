@@ -38,9 +38,23 @@ export function clearWarnings(): void {
 	pumpCounts.clear();
 }
 
-export async function startRecording(title: string): Promise<void> {
-	const report = await commands.preFlight(true);
+export async function checkAudio(
+	microphone: string | null,
+	systemOutput: string | null,
+	checkSystem: boolean
+): Promise<PreFlightReport> {
+	const report = await commands.preFlight(true, microphone, systemOutput, checkSystem);
 	preflight.current = report;
+	return report;
+}
+
+export async function startRecording(
+	title: string,
+	microphone: string | null,
+	systemOutput: string | null,
+	captureSystem: boolean
+): Promise<void> {
+	const report = await checkAudio(microphone, systemOutput, captureSystem);
 	if (!report.mic_device_present || report.error) {
 		recorder.warnings.push(report.error ?? 'no microphone available');
 		return;
@@ -49,11 +63,11 @@ export async function startRecording(title: string): Promise<void> {
 		recorder.warnings.push('no mic signal detected (check input device/mute)');
 		return;
 	}
-	if (!report.system_device_present) {
+	if (captureSystem && !report.system_device_present) {
 		recorder.warnings.push('system audio unavailable — recording mic only');
 	}
 	pumpCounts.clear();
-	recorder.sessionId = await commands.startRecording(title || null);
+	recorder.sessionId = await commands.startRecording(title || null, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
 	recorder.frames = 0;
 	const myTimer: ReturnType<typeof globalThis.setInterval> = setInterval(async () => {

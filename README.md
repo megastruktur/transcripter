@@ -103,7 +103,8 @@ pnpm tauri dev     # desktop app window
 ```
 
 In-app **Settings**: Server URL (`http://<server-host>:8090`) + the token from
-your `.env`. That's the whole onboarding.
+your `.env`. On **Record**, select the microphone and system output, then run
+**Check selected devices** before recording.
 
 ## API
 

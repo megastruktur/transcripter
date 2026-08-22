@@ -7,7 +7,12 @@ pub mod uploader;
 
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{
+    image::Image,
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager,
+};
 use tokio::runtime::Runtime;
 
 use crate::permissions::PreFlightReport;
@@ -16,11 +21,55 @@ use crate::spool::{Spool, SpoolSession};
 static RUNTIME: std::sync::LazyLock<Runtime> =
     std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime"));
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     // Spool entries from previous runs are retried when the frontend calls
     // cmd_retry_pending (Recordings mount, with configured credentials).
     tauri::Builder::default()
+        .setup(|app| {
+            let show = MenuItemBuilder::with_id("show", "Show Transcripter").build(app)?;
+            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+
+            #[cfg(target_os = "macos")]
+            let tray_icon_bytes: &[u8] = include_bytes!("../icons/tray/32x32.png");
+            #[cfg(not(target_os = "macos"))]
+            let tray_icon_bytes: &[u8] = include_bytes!("../icons/32x32.png");
+
+            TrayIconBuilder::with_id("transcripter-tray")
+                .icon(Image::from_bytes(tray_icon_bytes)?)
+                .icon_as_template(cfg!(target_os = "macos"))
+                .tooltip("Transcripter")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            cmd_list_audio_devices,
             cmd_pre_flight,
             cmd_start_recording,
             cmd_stop_recording,
@@ -33,14 +82,41 @@ pub fn run() {
 }
 
 #[tauri::command]
-fn cmd_pre_flight(probe: Option<bool>) -> PreFlightReport {
-    recording::pre_flight_check(probe.unwrap_or(false))
+fn cmd_list_audio_devices() -> Result<capture::AudioDevices, String> {
+    capture::list_devices()
 }
 
 #[tauri::command]
-fn cmd_start_recording(app: AppHandle, title: Option<String>) -> Result<String, String> {
+fn cmd_pre_flight(
+    probe: Option<bool>,
+    microphone: Option<String>,
+    system_output: Option<String>,
+    check_system: Option<bool>,
+) -> PreFlightReport {
+    recording::pre_flight_check(
+        probe.unwrap_or(false),
+        microphone.as_deref(),
+        system_output.as_deref(),
+        check_system.unwrap_or(true),
+    )
+}
+
+#[tauri::command]
+fn cmd_start_recording(
+    app: AppHandle,
+    title: Option<String>,
+    microphone: Option<String>,
+    system_output: Option<String>,
+    capture_system: Option<bool>,
+) -> Result<String, String> {
     let spool = spool_from_app(&app)?;
-    recording::start(&spool, title.as_deref().unwrap_or(""), true)
+    recording::start(
+        &spool,
+        title.as_deref().unwrap_or(""),
+        microphone.as_deref(),
+        system_output.as_deref(),
+        capture_system.unwrap_or(true),
+    )
 }
 
 #[tauri::command]
@@ -57,7 +133,14 @@ fn cmd_stop_recording(
     if let (Some(url), Some(token)) = (server_url, server_token) {
         let for_upload = session.clone();
         let spool_dir = spool.root().to_path_buf();
-        enqueue_upload(spool_dir, for_upload, UploadCfg { base_url: url, token });
+        enqueue_upload(
+            spool_dir,
+            for_upload,
+            UploadCfg {
+                base_url: url,
+                token,
+            },
+        );
     } else {
         eprintln!("[uploader] no server config from UI; recording stays in spool");
     }
@@ -65,11 +148,7 @@ fn cmd_stop_recording(
 }
 
 #[tauri::command]
-fn cmd_retry_pending(
-    app: AppHandle,
-    base_url: String,
-    token: String,
-) -> Result<u32, String> {
+fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<u32, String> {
     let spool = spool_from_app(&app)?;
     let pending = spool.pending().map_err(|e| e.to_string())?;
     let count = pending.len() as u32;
@@ -78,7 +157,10 @@ fn cmd_retry_pending(
         enqueue_upload(
             spool_dir.clone(),
             session,
-            UploadCfg { base_url: base_url.clone(), token: token.clone() },
+            UploadCfg {
+                base_url: base_url.clone(),
+                token: token.clone(),
+            },
         );
     }
     Ok(count)
@@ -112,11 +194,7 @@ fn cmd_upload_now(
     let spool = spool_from_app(&app)?;
     let session = spool.read_session(&session_id).map_err(|e| e.to_string())?;
     let spool_dir = spool.root().to_path_buf();
-    enqueue_upload(
-        spool_dir,
-        session.clone(),
-        UploadCfg { base_url, token },
-    );
+    enqueue_upload(spool_dir, session.clone(), UploadCfg { base_url, token });
     Ok(())
 }
 
@@ -139,41 +217,39 @@ enum QueueMsg {
     Job(UploadJob),
 }
 
-static UPLOAD_QUEUE: std::sync::LazyLock<
-    tokio::sync::mpsc::UnboundedSender<QueueMsg>,
-> = std::sync::LazyLock::new(|| {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
-    RUNTIME.spawn(async move {
-        while let Some(QueueMsg::Job(job)) = rx.recv().await {
-            let result = {
-                let fut = std::panic::AssertUnwindSafe(try_upload(
-                    &job.spool_dir,
-                    &job.session,
-                    &job.cfg,
-                ));
-                match futures_catch(fut).await {
-                    Ok(res) => res,
-                    Err(panic) => {
-                        eprintln!(
-                            "[uploader] session {} PANICKED: {:?}",
-                            job.session.id,
-                            panic
-                        );
-                        QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
-                        continue;
+static UPLOAD_QUEUE: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<QueueMsg>> =
+    std::sync::LazyLock::new(|| {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
+        RUNTIME.spawn(async move {
+            while let Some(QueueMsg::Job(job)) = rx.recv().await {
+                let result = {
+                    let fut = std::panic::AssertUnwindSafe(try_upload(
+                        &job.spool_dir,
+                        &job.session,
+                        &job.cfg,
+                    ));
+                    match futures_catch(fut).await {
+                        Ok(res) => res,
+                        Err(panic) => {
+                            eprintln!(
+                                "[uploader] session {} PANICKED: {:?}",
+                                job.session.id, panic
+                            );
+                            QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
+                            continue;
+                        }
                     }
+                };
+                if let Err(e) = result {
+                    eprintln!("[uploader] session {} failed: {e}", job.session.id);
                 }
-            };
-            if let Err(e) = result {
-                eprintln!("[uploader] session {} failed: {e}", job.session.id);
+                // Remove after processing (incl. panic): in-flight jobs still
+                // dedupe re-enqueues; a panicked worker does not leak the id.
+                QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
             }
-            // Remove after processing (incl. panic): in-flight jobs still
-            // dedupe re-enqueues; a panicked worker does not leak the id.
-            QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
-        }
+        });
+        tx
     });
-    tx
-});
 
 /// Sessions already queued (dedup between stop-path and cmd_retry_pending).
 static QUEUED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -187,7 +263,11 @@ fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: Upl
         .map(|mut q| q.insert(session.id.clone()))
         .unwrap_or(false)
         && UPLOAD_QUEUE
-            .send(QueueMsg::Job(UploadJob { spool_dir, session: session.clone(), cfg }))
+            .send(QueueMsg::Job(UploadJob {
+                spool_dir,
+                session: session.clone(),
+                cfg,
+            }))
             .is_err()
     {
         // Worker gone (until restart): roll back the id so a

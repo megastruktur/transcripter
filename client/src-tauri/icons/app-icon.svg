@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="8" y1="6" x2="56" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2b1916"/>
+      <stop offset="0.55" stop-color="#171311"/>
+      <stop offset="1" stop-color="#0b0908"/>
+    </linearGradient>
+    <linearGradient id="brass" x1="18" y1="10" x2="47" y2="55" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f0c96a"/>
+      <stop offset="1" stop-color="#a66b20"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+  <rect x="3" y="3" width="58" height="58" rx="13" fill="none" stroke="#d7a747" stroke-opacity=".42"/>
+  <path d="M7 49 49 7h8L15 57H7z" fill="#7b1c18" opacity=".28"/>
+  <g transform="translate(6.4 6.4) scale(.8)">
+    <path d="M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1-2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z" fill="#171311" stroke="url(#brass)" stroke-width="2"/>
+    <circle cx="32" cy="32" r="14" fill="#210e0d" stroke="#d52d24" stroke-width="2.8"/>
+    <path d="M32 18v28M25 24h14M25 40h14M22 32h20" fill="none" stroke="#f2e8d8" stroke-width="2.8" stroke-linecap="square"/>
+  </g>
+</svg>

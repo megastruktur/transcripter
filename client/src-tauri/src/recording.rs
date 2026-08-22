@@ -29,24 +29,35 @@ pub fn active_session_id() -> Option<String> {
     guard.as_ref().map(|a| a.session.id.clone())
 }
 
-pub fn pre_flight_check(probe: bool) -> PreFlightReport {
-    pre_flight(probe)
+pub fn pre_flight_check(
+    probe: bool,
+    microphone: Option<&str>,
+    system_output: Option<&str>,
+    check_system: bool,
+) -> PreFlightReport {
+    pre_flight(probe, microphone, system_output, check_system)
 }
 
-pub fn start(spool: &Spool, title: &str, with_system: bool) -> Result<String, String> {
+pub fn start(
+    spool: &Spool,
+    title: &str,
+    microphone: Option<&str>,
+    system_output: Option<&str>,
+    with_system: bool,
+) -> Result<String, String> {
     let mut guard = SESSION.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
         return Err("recording already active".into());
     }
 
-    let mic_dev = capture::mic_device()?;
+    let mic_dev = capture::mic_device(microphone)?;
     let mic = capture::open_stream(
         &mic_dev,
         std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default())),
     )?;
 
     let (system, system_active) = if with_system {
-        match capture::system_device().ok().and_then(|d| {
+        match capture::system_device(system_output).ok().and_then(|d| {
             capture::open_stream(
                 &d,
                 std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default())),
@@ -113,12 +124,7 @@ pub fn pump(_spool: &Spool) -> Result<u64, String> {
     if samples.is_empty() {
         return Ok(0);
     }
-    if let Some(w) = active
-        .writer
-        .lock()
-        .map_err(|e| e.to_string())?
-        .as_mut()
-    {
+    if let Some(w) = active.writer.lock().map_err(|e| e.to_string())?.as_mut() {
         w.write_interleaved(&samples).map_err(|e| e.to_string())?;
     }
     Ok(frames)
@@ -161,7 +167,9 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
                                     match spool.write_session(&session) {
                                         Ok(()) => break,
                                         Err(e) if attempt < 2 => {
-                                            eprintln!("[recording] salvage write_session retry: {e}");
+                                            eprintln!(
+                                                "[recording] salvage write_session retry: {e}"
+                                            );
                                         }
                                         Err(e) => {
                                             eprintln!(
@@ -175,12 +183,18 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
                                 return Ok(session);
                             }
                             Err(e) => {
-                                return Err((format!("FATAL_STOP: salvage finish failed: {e}"), true));
+                                return Err((
+                                    format!("FATAL_STOP: salvage finish failed: {e}"),
+                                    true,
+                                ));
                             }
                         }
                     }
                     None => {
-                        return Err(("FATAL_STOP: writer lock poisoned and consumed".to_string(), true));
+                        return Err((
+                            "FATAL_STOP: writer lock poisoned and consumed".to_string(),
+                            true,
+                        ));
                     }
                 }
             }
@@ -191,7 +205,8 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
             w.finish(&flac)
                 .map_err(|e| (format!("FATAL_STOP: encode failed: {e}"), true))?;
         }
-        spool.write_session(&session)
+        spool
+            .write_session(&session)
             .map_err(|e: anyhow::Error| (e.to_string(), false))?;
         Ok(session)
     })();
