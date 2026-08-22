@@ -1,5 +1,5 @@
 import { commands, type PreFlightReport } from '$lib/tauri';
-import { loadApiConfig } from '$lib/api.svelte';
+import { loadApiConfig, saveApiConfig, testConnection, type ApiConfig } from '$lib/api.svelte';
 
 export type UploadState = {
 	sessionId: string;
@@ -20,7 +20,92 @@ export const preflight = $state<{ current: PreFlightReport | null }>({ current: 
 
 export const uploads = $state<{ [id: string]: UploadState }>({});
 
-export const settings = $state({ baseUrl: '', token: '' });
+export type ConnectionPhase = 'unconfigured' | 'checking' | 'connected' | 'unavailable';
+
+export const connection = $state<{
+	phase: ConnectionPhase;
+	detail: string;
+}>({
+	phase: 'unconfigured',
+	detail: 'Add a bearer token in Settings.'
+});
+
+const CONNECTION_TIMEOUT_MS = 5000;
+let connectionCheck: Promise<boolean> | null = null;
+let connectionKey = '';
+
+function normalizedApiConfig(cfg: ApiConfig): ApiConfig {
+	return {
+		baseUrl: cfg.baseUrl.trim().replace(/\/+$/, ''),
+		token: cfg.token.trim()
+	};
+}
+
+export async function checkServerConnection(
+	input: ApiConfig = loadApiConfig(),
+	persist = false
+): Promise<boolean> {
+	const cfg = normalizedApiConfig(input);
+	const key = `${cfg.baseUrl}\u0000${cfg.token}`;
+
+	while (connectionCheck) {
+		if (connectionKey === key) return connectionCheck;
+		await connectionCheck;
+	}
+
+	if (!cfg.token) {
+		connection.phase = 'unconfigured';
+		connection.detail = 'Add a bearer token in Settings.';
+		return false;
+	}
+
+	try {
+		const url = new URL(cfg.baseUrl);
+		if (url.protocol !== 'http:') {
+			connection.phase = 'unavailable';
+			connection.detail = 'HTTPS is unsupported by the uploader in this build. Use an HTTP address on your trusted LAN.';
+			return false;
+		}
+	} catch {
+		connection.phase = 'unavailable';
+		connection.detail = 'Invalid server address.';
+		return false;
+	}
+
+	connection.phase = 'checking';
+	connection.detail = 'Checking health and authorization…';
+	connectionKey = key;
+
+	let timeoutId: ReturnType<typeof globalThis.setTimeout>;
+	let task!: Promise<boolean>;
+	task = Promise.race([
+		testConnection(cfg),
+		new Promise<never>((_, reject) => {
+			timeoutId = globalThis.setTimeout(() => reject(new Error('Connection timed out.')), CONNECTION_TIMEOUT_MS);
+		})
+	])
+		.then(() => {
+			if (persist) saveApiConfig(cfg);
+			connection.phase = 'connected';
+			connection.detail = 'Health and authorization verified.';
+			return true;
+		})
+		.catch((error: unknown) => {
+			connection.phase = 'unavailable';
+			connection.detail = error instanceof TypeError ? 'Could not reach the server.' : error instanceof Error ? error.message : String(error);
+			return false;
+		})
+		.finally(() => {
+			globalThis.clearTimeout(timeoutId);
+			if (connectionCheck === task) {
+				connectionCheck = null;
+				connectionKey = '';
+			}
+		});
+
+	connectionCheck = task;
+	return task;
+}
 
 let pumpTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 

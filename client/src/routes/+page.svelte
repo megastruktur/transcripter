@@ -114,7 +114,6 @@
 <section class="page capture-page">
 	<header>
 		<h1 class="page-title">Record audio</h1>
-		<p class="page-intro">Capture microphone and system audio, then send it to your server for transcription.</p>
 	</header>
 
 	{#if preflight.current?.error}
@@ -192,37 +191,37 @@
 </section>
 
 <style>
-	.capture-page { display: flex; flex-direction: column; gap: 16px; }
+	.capture-page { display: flex; flex-direction: column; gap: 10px; }
 	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
 	.notice.error { border-color: var(--red); background: rgba(213, 45, 36, 0.08); }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
 	.notice.error strong { color: var(--red); }
 	.notice span { color: #c6baaa; }
-	.recorder-core { padding: 16px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
+	.recorder-core { padding: 12px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
 	.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
 	.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
-	.meter { height: 54px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; }
+	.meter { height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; }
 	.meter i { width: 3px; height: calc(var(--bar-height) * 0.42); background: #4c4640; border-radius: 1px; transform-origin: center; }
 	.active .meter i { background: linear-gradient(to top, var(--red), var(--brass)); animation: signal 780ms ease-in-out infinite alternate; animation-delay: var(--delay); box-shadow: 0 0 7px rgba(213, 45, 36, 0.25); }
-	.timer { margin-top: 3px; text-align: center; font: 300 40px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
-	.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin: 9px 0 17px; padding-bottom: 13px; border-bottom: 1px solid var(--line); font-size: 10px; color: #8d847a; }
-	.title-field { display: block; margin-bottom: 12px; }
-	.record-control { width: 100%; min-height: 58px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
+	.timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
+	.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin: 5px 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 10px; color: #8d847a; }
+	.title-field { display: block; margin-bottom: 10px; }
+	.record-control { width: 100%; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
 	.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
 	.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }
 	.control-symbol { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.42); border-radius: 50%; line-height: 0; }
 	.record-control strong, .record-control small { display: block; }
 	.record-control strong { font-size: 14px; letter-spacing: 0.01em; }
 	.record-control small { margin-top: 4px; font-size: 10px; opacity: 0.74; }
-	.device-panel { display: grid; gap: 12px; padding: 12px; }
-	.device-control { display: grid; gap: 7px; }
+	.device-panel { display: grid; gap: 10px; padding: 10px; }
+	.device-control { display: grid; gap: 6px; }
 	.device-heading { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 7px; min-width: 0; }
 	.device-heading label { color: #c9bdad; font-size: 11px; font-weight: 650; }
 	.device-icon { width: 22px; height: 22px; display: grid; place-items: center; color: var(--brass); line-height: 0; }
 	.device-status { max-width: 100px; overflow: hidden; color: #8d847a; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 	.device-status.ready { color: var(--cyan); }
 	.device-status.issue { color: var(--brass); }
-	.check-devices { min-height: 38px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.check-devices { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
 	.check-devices:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }
 	.device-error { margin: 0; color: #df756b; font-size: 10px; line-height: 1.4; }
 	@keyframes signal { to { height: var(--bar-height); } }

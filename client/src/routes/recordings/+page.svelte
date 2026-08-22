@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { retryPendingUploads } from '$lib/stores.svelte';
-	import { listRecordings, regenerate, fetchArtifact, loadApiConfig, type Recording, type StageStatus } from '$lib/api.svelte';
+	import { listRecordings, regenerate, fetchArtifact, loadApiConfig, type Recording } from '$lib/api.svelte';
 
 	let recordings = $state<Recording[]>([]);
 	let error = $state('');
@@ -57,10 +57,6 @@
 		return `${minutes}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
 	}
 
-	function stageStatus(recording: Recording, stage: (typeof STAGES)[number]): StageStatus {
-		return recording.stages.find((item) => item.kind === stage)?.status ?? 'pending';
-	}
-
 	async function rerun(recording: Recording, stage: (typeof STAGES)[number]): Promise<void> {
 		try {
 			await regenerate(loadApiConfig(), recording.id, stage);
@@ -87,13 +83,11 @@
 <section class="page archive-page">
 	<header>
 		<h1 class="page-title">Recordings</h1>
-		<p class="page-intro">Find recordings, follow processing progress, and open transcripts or summaries.</p>
 	</header>
 
 	<div class="archive-tools">
-		<label class="search-wrap">
+		<label>
 			<span class="sr-only">Search recordings</span>
-			<span class="search-icon" aria-hidden="true"><Icon name="search" size={15} /></span>
 			<input type="search" placeholder="Search recordings" bind:value={query} />
 		</label>
 		<label>
@@ -120,14 +114,6 @@
 					<span class="record-name"><strong>{recording.title || 'Untitled capture'}</strong><small>{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)}</small></span>
 					<span class={`state-label ${recording.state}`}>{recording.state}</span>
 				</button>
-
-				<div class="stage-line" aria-label="Processing stages">
-					{#each STAGES as stage (stage)}
-						<span class={`stage ${stageStatus(recording, stage)}`} title={`${stageNames[stage]}: ${stageStatus(recording, stage)}`}>
-							<i></i>{stageNames[stage]}
-						</span>
-					{/each}
-				</div>
 
 				{#if selected?.id === recording.id}
 					<div class="record-actions">
@@ -166,9 +152,11 @@
 
 <style>
 	.archive-page { display: flex; flex-direction: column; gap: 14px; }
-	.archive-tools { display: grid; grid-template-columns: 1fr 116px; gap: 7px; }
-	.search-wrap { position: relative; }
-	.search-icon { position: absolute; left: 11px; top: 12px; display: grid; place-items: center; color: var(--brass); z-index: 1; line-height: 0; }
+	.archive-tools { display: grid; grid-template-columns: 1fr 116px; gap: 7px; align-items: stretch; }
+	.archive-tools label { display: grid; }
+	.archive-tools input, .archive-tools select { height: 42px; }
+	.archive-tools input[type='search'] { -webkit-appearance: none; appearance: none; }
+	.archive-tools input[type='search']::-webkit-search-cancel-button { -webkit-appearance: none; }
 	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 	.archive-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.archive-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
@@ -190,16 +178,6 @@
 	.state-label.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
 	.state-label.processing, .state-label.uploading { color: var(--brass); border-color: rgba(215,167,71,.25); }
 	.state-label.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
-	.stage-line { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); }
-	.stage { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 8px 5px; border-right: 1px solid var(--line); color: #766f67; font-size: 9px; text-transform: none; }
-	.stage:last-child { border-right: 0; }
-	.stage i { width: 4px; height: 4px; flex: 0 0 auto; border-radius: 50%; background: #55504a; }
-	.stage.done { color: #9bcbc8; }
-	.stage.done i { background: var(--cyan); }
-	.stage.running { color: var(--brass); }
-	.stage.running i { background: var(--brass); box-shadow: 0 0 6px var(--brass); }
-	.stage.failed { color: #d7675f; }
-	.stage.failed i { background: var(--red); }
 	.record-actions { padding: 9px 10px 10px; border-top: 1px solid var(--line); background: rgba(0,0,0,.14); }
 	.artifact-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
 	.artifact-actions button, .rerun-row button { min-height: 32px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 9px; font-weight: 700; cursor: pointer; line-height: 0; }

@@ -1,31 +1,28 @@
 <script lang="ts">
-	import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
+	import { loadApiConfig } from '$lib/api.svelte';
+	import { checkServerConnection, connection } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let cfg = $state(loadApiConfig());
-	let status = $state('');
-	let testing = $state(false);
 	let showToken = $state(false);
 
-	const connected = $derived(status.startsWith('ok'));
+	const connected = $derived(connection.phase === 'connected');
+	const testing = $derived(connection.phase === 'checking');
+	const linkLabel = $derived(
+		connection.phase === 'checking'
+			? 'Checking'
+			: connection.phase === 'connected'
+				? 'Connected'
+				: connection.phase === 'unavailable'
+					? 'Unavailable'
+					: 'Not configured'
+	);
+	const resultTitle = $derived(
+		connected ? 'Connection established' : testing ? 'Checking connection' : 'Connection failed'
+	);
 
 	async function onTest(): Promise<void> {
-		testing = true;
-		status = '';
-		try {
-			const url = new URL(cfg.baseUrl.trim());
-			if (url.protocol === 'https:') {
-				status = 'failed: HTTPS is unsupported by the uploader in this build. Use an HTTP address on your trusted LAN.';
-				return;
-			}
-			const serverStatus = await testConnection(cfg);
-			status = `ok (${serverStatus})`;
-			saveApiConfig(cfg);
-		} catch (error) {
-			status = `failed: ${error instanceof TypeError ? 'invalid server address' : error}`;
-		} finally {
-			testing = false;
-		}
+		if (await checkServerConnection(cfg, true)) cfg = loadApiConfig();
 	}
 </script>
 
@@ -34,14 +31,13 @@
 <section class="page settings-page">
 	<header>
 		<h1 class="page-title">Server connection</h1>
-		<p class="page-intro">Connect to the transcription server on your trusted network.</p>
 	</header>
 
 	<form class="connection-panel panel" onsubmit={(event) => { event.preventDefault(); onTest(); }}>
 		<div class="panel-heading">
 			<div class="antenna" aria-hidden="true"><Icon name="link" size={17} /></div>
 			<div><span>SERVER</span><strong>Transcription server</strong></div>
-			<div class:connected class="link-state"><i></i>{connected ? 'Connected' : 'Not connected'}</div>
+			<div class:connected class="link-state"><i></i>{linkLabel}</div>
 		</div>
 
 		<div class="form-body">
@@ -64,10 +60,10 @@
 		</div>
 	</form>
 
-	{#if status}
+	{#if connection.phase !== 'unconfigured'}
 		<div class:success={connected} class="result" role="status">
 			<i aria-hidden="true"></i>
-			<div><strong>{connected ? 'Connection established' : 'Connection failed'}</strong><span>{status}</span></div>
+			<div><strong>{resultTitle}</strong><span>{connection.detail}</span></div>
 		</div>
 	{/if}
 

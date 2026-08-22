@@ -36,6 +36,15 @@ and a summary** — every stage re-runnable on demand.
   before capture begins — no more silent empty first recordings.
 - **Single-user by design.** One bearer token, LAN-oriented, zero accounts.
 
+## Design language
+
+The client uses a techno-religious industrial design language: compact machine
+panels, square geometry, blackened iron surfaces, bone text, arterial red,
+aged brass, and diagnostic cyan. Structure and state carry the theme; ornamental
+fantasy styling does not. See [`DESIGN_GUIDELINES.md`](./DESIGN_GUIDELINES.md)
+for the canonical palette, component rules, motion, accessibility, copy, and
+review checklist.
+
 ## Pipeline
 
 | Stage        | Engine                                   | Notes                                              |
@@ -102,9 +111,11 @@ pnpm install
 pnpm tauri dev     # desktop app window
 ```
 
-In-app **Settings**: Server URL (`http://<server-host>:8090`) + the token from
-your `.env`. On **Record**, select the microphone and system output, then run
-**Check selected devices** before recording.
+In-app **Settings**: enter the server URL (`http://<server-host>:8090`) and the
+token from your `.env`, then select **Test and save connection** once. Saved
+credentials are checked automatically on later launches. On **Record**, select
+the microphone and system output; **Start recording** always runs audio preflight,
+while **Check selected devices** remains available as an optional diagnostic.
 
 ## API
 
