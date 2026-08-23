@@ -34,12 +34,25 @@ class StorageConfig(BaseModel):
     path: Path = Path("/storage")
 
 
+class TranscriptsConfig(BaseModel):
+    """Note-export settings. Container path is FIXED (/transcripts): the only
+    host-side knob is the compose bind source (TRANSCRIPTS_DIR in .env) — a
+    divergent in-container override would silently write into the container
+    layer and be lost on recreate."""
+
+    path: Path = Path("/transcripts")
+    # Boot-race guard, e.g. ".obsidian": when set, export refuses to run
+    # unless this entry exists under path (empty-mountpoint detection).
+    sentinel: str = ""
+
+
 class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
 
     @property
     def recordings_root(self) -> Path:

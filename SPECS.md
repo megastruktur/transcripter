@@ -24,6 +24,11 @@
   always re-run.
 - Summarize: disabled until a model is configured (OpenAI-compatible,
   base_url + key_env).
+- Transcript export: every finished recording is exported as one consolidated
+  Markdown note (frontmatter + summary + transcript) into a configurable host
+  directory (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`);
+  best-effort, subprocess-isolated, regenerate overwrites, `worker.backfill`
+  re-exports.
 - Pre-flight opens and probes every selected source before recording. A selected
   system source that cannot start blocks recording; microphone-only capture is
   available only when System audio is explicitly Off.

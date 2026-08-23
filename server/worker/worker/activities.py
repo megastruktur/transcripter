@@ -1,8 +1,11 @@
 """Temporal activities for the recording pipeline."""
 
+import asyncio
 import json
 import logging
 import os
+import signal
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -180,3 +183,81 @@ def timeout_for(duration_sec: float | None, base: float, per_min: float) -> int:
     if duration_sec:
         return int(base + per_min * (duration_sec / 60)) + 120
     return int(base + 30 * per_min) + 120
+
+
+# --- Transcript note export -------------------------------------------------
+
+_EXPORT_TIMEOUT_SEC = 20
+_EXPORT_MAX_CHILDREN = 4
+
+
+class _ExportRegistry:
+    """Live/abandoned export-subprocess PIDs with honest accounting.
+
+    Before each spawn, a non-blocking reap sweep removes exited children
+    (ECHILD => already reaped by asyncio's child watcher). Abandoned
+    (SIGKILLed, never waited) PIDs stay registered and count against the cap:
+    a persistently dead NAS mount must leak at most _EXPORT_MAX_CHILDREN
+    processes, never unbounded.
+    """
+
+    def __init__(self) -> None:
+        self._pids: set[int] = set()
+
+    def _sweep(self) -> None:
+        for pid in list(self._pids):
+            try:
+                pid_, status = os.waitpid(pid, os.WNOHANG)
+                if pid_ != 0 or os.WIFEXITED(status) or os.WIFSIGNALED(status):
+                    self._pids.discard(pid)
+            except ChildProcessError:  # ECHILD: reaped elsewhere
+                self._pids.discard(pid)
+
+    def register(self, pid: int) -> None:
+        self._pids.add(pid)
+
+    def try_acquire(self) -> bool:
+        self._sweep()
+        return len(self._pids) < _EXPORT_MAX_CHILDREN
+
+    def discard(self, pid: int) -> None:
+        self._pids.discard(pid)
+
+
+_export_children = _ExportRegistry()
+
+
+@activity.defn
+async def export_transcript(rec_id: str) -> dict:
+    """Export the consolidated note; best-effort, fully process-isolated.
+
+    The actual I/O runs in `python -m worker.export_once` (start_new_session
+    => own process group). On timeout the group gets SIGKILL and is ABANDONED
+    — never waited: a D-state child parked on a dead mount cannot be waited
+    on, and waiting would hang the activity. Errors (never exceptions to
+    Temporal) land in the workflow result as transcript_note.
+    """
+    if not _export_children.try_acquire():
+        return {"transcript_note": f"error: too many stuck export subprocesses (>{_EXPORT_MAX_CHILDREN}); skipping"}
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "worker.export_once", rec_id,
+        start_new_session=True,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _export_children.register(proc.pid)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=_EXPORT_TIMEOUT_SEC)
+        if proc.returncode == 0:
+            note = out.decode().strip() if out else ""
+            return {"transcript_note": note} if note else {"transcript_note": "skipped"}
+        tail = (err or b"").decode(errors="replace").strip().splitlines()[-3:]
+        return {"transcript_note": "error: " + (" | ".join(tail) or f"exit {proc.returncode}")}
+    except TimeoutError:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return {"transcript_note": f"error: export subprocess timed out after {_EXPORT_TIMEOUT_SEC}s (killed; possible stale mount)"}
+    finally:
+        _export_children.discard(proc.pid)

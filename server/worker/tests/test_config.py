@@ -41,3 +41,22 @@ def test_local_backend_needs_no_base_url(tmp_path, monkeypatch):
     monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
     cfg = load_config()
     assert cfg.transcribe.backend == "local"
+
+
+def test_transcripts_defaults(tmp_path, monkeypatch):
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n  model: small\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert str(cfg.transcripts.path) == "/transcripts"
+    assert cfg.transcripts.sentinel == ""
+
+
+def test_transcripts_sentinel_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "transcripts:\n  sentinel: '.obsidian'\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.transcripts.sentinel == ".obsidian"
+    assert str(cfg.transcripts.path) == "/transcripts"

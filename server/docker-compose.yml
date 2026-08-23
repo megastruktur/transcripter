@@ -37,6 +37,9 @@ services:
       DIARIZATION_ENDPOINT: ${DIARIZATION_ENDPOINT:-}
     volumes:
       - ./storage:/storage
+      # Host-side transcripts dir (Obsidian vault); empty default keeps the
+      # feature working locally (./storage/transcripts) for tests/e2e.
+      - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts
       - models:/models
       - ./config.yaml:/etc/transcripter/config.yaml:ro
     depends_on:
