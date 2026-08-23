@@ -56,7 +56,10 @@ app.include_router(settings.router)
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
     token = os.environ.get("TRANSCRIPTER_TOKEN", "")
-    if token and request.url.path not in PUBLIC_PATHS:
+    # This middleware is added after CORSMiddleware, so it wraps it: preflight
+    # would be rejected here before CORS could answer. Preflight carries no
+    # credentials by spec, so let OPTIONS through — the real request is authed.
+    if token and request.method != "OPTIONS" and request.url.path not in PUBLIC_PATHS:
         auth = request.headers.get("authorization", "")
         if not hmac.compare_digest(auth, f"Bearer {token}"):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
