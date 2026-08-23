@@ -142,8 +142,9 @@ export async function startRecording(
 		return;
 	}
 	if (report.mic_state === 'silent') {
-		recorder.warnings.push('no mic signal detected — speak during the check, verify the input device and its level (Windows: Settings → System → Sound → Input)');
-		return;
+		// Non-fatal: an open-but-quiet mic still delivers frames; the stall
+		// detector in the recorder watches delivery, not signal level.
+		recorder.warnings.push('mic is quiet — recording will start anyway; speak or check the input level (Windows: Settings → System → Sound → Input)');
 	}
 	if (captureSystem && ['permission_denied', 'unavailable', 'failed'].includes(report.system_state)) {
 		recorder.warnings.push(report.error ?? 'system audio unavailable');
