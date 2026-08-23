@@ -130,12 +130,19 @@ export async function startRecording(
 	captureSystem: boolean
 ): Promise<void> {
 	const report = await checkAudio(microphone, systemOutput, captureSystem);
-	if (report.error || report.mic_state === 'permission_denied' || report.mic_state === 'unavailable' || report.mic_state === 'failed') {
+	if (report.mic_state === 'permission_denied') {
+		const hint = navigator.userAgent.includes('Windows')
+			? 'microphone blocked — enable it in Windows Settings → Privacy & security → Microphone (Let desktop apps access your microphone)'
+			: 'microphone blocked — enable it in System Settings → Privacy & Security → Microphone';
+		recorder.warnings.push(hint);
+		return;
+	}
+	if (report.error || report.mic_state === 'unavailable' || report.mic_state === 'failed') {
 		recorder.warnings.push(report.error ?? 'microphone unavailable');
 		return;
 	}
 	if (report.mic_state === 'silent') {
-		recorder.warnings.push('no mic signal detected (check input device or mute)');
+		recorder.warnings.push('no mic signal detected — speak during the check, verify the input device and its level (Windows: Settings → System → Sound → Input)');
 		return;
 	}
 	if (captureSystem && ['permission_denied', 'unavailable', 'failed'].includes(report.system_state)) {

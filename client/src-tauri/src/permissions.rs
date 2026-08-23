@@ -57,7 +57,26 @@ impl From<objc2_avf_audio::AVAudioApplicationRecordPermission> for PermissionSta
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn mic_permission() -> PermissionState {
+    // Desktop (Win32) apps have no per-app permission prompt on Windows; access
+    // for non-packaged apps is gated by the global "Let desktop apps access
+    // your microphone" toggle, readable from HKCU ConsentStore\microphone
+    // \NonPackaged. When denied, WASAPI opens the stream without error but
+    // delivers silence, so surface it here instead of reporting "no signal".
+    let value = windows_registry::CURRENT_USER
+        .open(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone\\NonPackaged",
+        )
+        .and_then(|key| key.get_string("Value"));
+    match value.as_deref() {
+        Ok("Deny") => PermissionState::Denied,
+        Ok(_) => PermissionState::Granted,
+        Err(_) => PermissionState::NotDetermined,
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn mic_permission() -> PermissionState {
     PermissionState::NotDetermined
 }
