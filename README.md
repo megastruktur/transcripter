@@ -112,6 +112,28 @@ Same-host separate stacks can instead share a docker network
 (`docker network create voice`, uncomment the `voice` block in
 `docker-compose.yml`) and use service DNS names directly.
 
+Working example — the megaserver platform speaches (LAN, bearer auth,
+CPU, accuracy-tuned):
+
+```yaml
+# config.yaml
+transcribe:
+  backend: api
+  model: Systran/faster-whisper-large-v3   # or deepdml/faster-whisper-large-v3-turbo-ct2
+  base_url: http://192.168.3.23:8010/v1
+  api_key_env: SPEACHES_API_KEY
+```
+
+```bash
+# .env next to docker-compose.yml (compose passes it to the worker;
+# docker compose up -d worker to apply — restart alone keeps old env)
+SPEACHES_API_KEY=<key from 1Password, vault Secrets>
+```
+
+Word timestamps (`timestamp_granularities[]=word`) are what the diarization
+merge keys off — the endpoint MUST return them (platform speaches does;
+a LiteLLM hop in front of it currently drops the parameter, avoid proxying).
+
 Verify with `STT=speaches bash server/scripts/e2e_smoke.sh` — it asserts
 non-empty word timestamps end-to-end. Image updates go through
 [SECURITY.md](./SECURITY.md) (pinned tags, pre-update checklist).
