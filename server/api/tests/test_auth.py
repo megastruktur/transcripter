@@ -43,6 +43,21 @@ def test_protected_accepts_valid_token(client: TestClient) -> None:
     assert r.status_code == 200
 
 
+def test_cors_preflight_bypasses_auth(client: TestClient) -> None:
+    # Browsers/webviews never send Authorization on preflight; a 401 here makes
+    # every cross-origin client unable to reach the API at all.
+    r = client.options(
+        "/recordings",
+        headers={
+            "origin": "http://localhost:5173",
+            "access-control-request-method": "GET",
+            "access-control-request-headers": "authorization",
+        },
+    )
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
 def test_no_token_env_allows_all(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRANSCRIPTER_TOKEN", raising=False)
     main = _load_app(monkeypatch)
