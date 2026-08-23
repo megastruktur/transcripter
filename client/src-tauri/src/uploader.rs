@@ -1,6 +1,5 @@
 //! Resumable uploader: spool → server, chunked offset PUT, retry, cleanup.
 
-
 use crate::spool::SpoolSession;
 
 pub const CHUNK_SIZE: usize = 8 * 1024 * 1024;
@@ -85,8 +84,10 @@ impl Uploader {
                 detail: resp.text().await.unwrap_or_default(),
             });
         }
-        let data: serde_json::Value =
-            resp.json().await.map_err(|e| UploadError::Network(e.to_string()))?;
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| UploadError::Network(e.to_string()))?;
         data["id"]
             .as_str()
             .map(String::from)
@@ -97,7 +98,9 @@ impl Uploader {
     }
 
     async fn committed(&self, rec_id: &str) -> Result<u64, UploadError> {
-        let rb = self.client.get(format!("{}/recordings/{rec_id}", self.base_url));
+        let rb = self
+            .client
+            .get(format!("{}/recordings/{rec_id}", self.base_url));
         let rb = self.auth(rb);
         let resp = rb
             .send()
@@ -110,8 +113,10 @@ impl Uploader {
                 detail: resp.text().await.unwrap_or_default(),
             });
         }
-        let data: serde_json::Value =
-            resp.json().await.map_err(|e| UploadError::Network(e.to_string()))?;
+        let data: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| UploadError::Network(e.to_string()))?;
         Ok(data["committed_bytes"].as_u64().unwrap_or(0))
     }
 
@@ -180,7 +185,9 @@ impl Uploader {
         }
 
         let sha = crate::encode::file_sha256(&audio).map_err(|e| UploadError::Io(e.to_string()))?;
-        let rb = self.client.post(format!("{}/recordings/{rec_id}/finalize", self.base_url));
+        let rb = self
+            .client
+            .post(format!("{}/recordings/{rec_id}/finalize", self.base_url));
         let rb = self.auth(rb);
         let resp = rb
             .json(&serde_json::json!({
@@ -200,7 +207,10 @@ impl Uploader {
     }
 }
 
-fn persist_session(spool_root: &std::path::Path, session: &SpoolSession) -> Result<(), UploadError> {
+fn persist_session(
+    spool_root: &std::path::Path,
+    session: &SpoolSession,
+) -> Result<(), UploadError> {
     crate::spool::Spool::open_root(spool_root)
         .and_then(|s| s.write_session(session))
         .map_err(|e| UploadError::Io(e.to_string()))
@@ -226,7 +236,13 @@ mod tests {
 
     #[test]
     fn scheme_gate_allows_http_and_passthrough() {
-        for u in ["http://x", "HTTP://x", "  http://x  ", "localhost:8090", "not a url"] {
+        for u in [
+            "http://x",
+            "HTTP://x",
+            "  http://x  ",
+            "localhost:8090",
+            "not a url",
+        ] {
             assert!(Uploader::scheme_supported(u), "should allow: {u}");
         }
     }
@@ -236,7 +252,10 @@ mod tests {
         // 422 = silent capture, 401 = bad token, 409 = hash mismatch:
         // no amount of retrying changes the outcome.
         for status in [400, 401, 403, 409, 413, 422] {
-            let e = UploadError::Server { status, detail: String::new() };
+            let e = UploadError::Server {
+                status,
+                detail: String::new(),
+            };
             assert!(e.is_permanent(), "should be permanent: {status}");
         }
     }
@@ -244,7 +263,10 @@ mod tests {
     #[test]
     fn transient_failures_stay_retryable() {
         for status in [408, 429, 500, 502, 503, 507] {
-            let e = UploadError::Server { status, detail: String::new() };
+            let e = UploadError::Server {
+                status,
+                detail: String::new(),
+            };
             assert!(!e.is_permanent(), "should be retryable: {status}");
         }
         assert!(!UploadError::Network("reset".into()).is_permanent());

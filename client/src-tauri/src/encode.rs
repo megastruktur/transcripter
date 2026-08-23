@@ -116,7 +116,6 @@ impl flacenc::source::Source for FileSource {
         block_size: usize,
         framebuf: &mut F,
     ) -> Result<usize, flacenc::error::SourceError> {
-
         let want = block_size * self.channels * 2; // bytes
         let mut bytes = vec![0u8; want];
         let mut filled = 0usize;
@@ -209,8 +208,9 @@ mod tests {
         let base = tmpdir().join(format!("t-{}", uuid::Uuid::new_v4()));
         let flac = base.with_extension("flac");
         let mut w = FlacWriter::create(&flac, 44100, 1).unwrap();
-        let samples: Vec<f32> =
-            (0..BLOCK_SIZE * 3 + 17).map(|i| (i % 100) as f32 / 300.0).collect();
+        let samples: Vec<f32> = (0..BLOCK_SIZE * 3 + 17)
+            .map(|i| (i % 100) as f32 / 300.0)
+            .collect();
         w.write_interleaved(&samples).unwrap();
         let frames = w.finish(&flac).unwrap();
         assert_eq!(frames as usize, BLOCK_SIZE * 3 + 17);
