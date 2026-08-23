@@ -15,6 +15,13 @@ trap 'rm -rf "$WORK"' EXIT  # keep under project path: containers can't see host
 
 auth() { curl -s -H "authorization: Bearer $TOKEN" "$@"; }
 
+# Portable helpers: GNU coreutils are absent on macOS/BSD hosts.
+fsize() { wc -c < "$1" | tr -d ' '; }
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
 echo "== 1. health"
 curl -sf "$API/health" | jq -e '.status == "ok"' >/dev/null && echo OK
 
@@ -38,14 +45,19 @@ with wave.open(sys.argv[1], "wb") as w:
 print("wav written")
 PY
 
-# Convert to FLAC inside container (host has no ffmpeg).
-docker run --rm -i -v "$WORK:/w" -v /usr:/hu:ro gcc:14 bash -c '
-  apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq ffmpeg >/dev/null 2>&1
-  ffmpeg -v error -y -i /w/test.wav /w/test.flac
-' && test -s "$WORK/test.flac" && echo "flac: $(stat -c%s "$WORK/test.flac") bytes"
+# Prefer host ffmpeg; fall back to a throwaway container when absent.
+if command -v ffmpeg >/dev/null 2>&1; then
+  ffmpeg -v error -y -i "$WORK/test.wav" "$WORK/test.flac"
+else
+  docker run --rm -i -v "$WORK:/w" gcc:14 bash -c '
+    apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq ffmpeg >/dev/null 2>&1
+    ffmpeg -v error -y -i /w/test.wav /w/test.flac
+  '
+fi
+test -s "$WORK/test.flac" && echo "flac: $(fsize "$WORK/test.flac") bytes"
 
-SHA=$(docker run --rm -i -v "$WORK:/w" gcc:14 bash -c 'sha256sum /w/test.flac' | cut -d' ' -f1)
-SIZE=$(stat -c%s "$WORK/test.flac")
+SHA=$(sha256 "$WORK/test.flac")
+SIZE=$(fsize "$WORK/test.flac")
 echo "sha256=$SHA size=$SIZE"
 
 echo "== 3. create recording"
@@ -64,7 +76,7 @@ test "$HTTP" = "200" && echo "first half committed: $(jq -r .committed "$WORK/ac
 echo "== 5. resume from overlap (offset earlier than committed)"
 OVERLAP=$((HALF - 1024))
 tail -c +"$((OVERLAP + 1))" "$WORK/test.flac" > "$WORK/part2"
-P2SIZE=$(stat -c%s "$WORK/part2")
+P2SIZE=$(fsize "$WORK/part2")
 HTTP=$(curl -s -o "$WORK/ack2" -w '%{http_code}' -X PUT \
   -H "authorization: Bearer $TOKEN" -H "content-length: $P2SIZE" \
   --data-binary "@$WORK/part2" "$API/recordings/$RID/audio?offset=$OVERLAP")
@@ -74,7 +86,7 @@ echo "resumed to $COMMITTED (expect $SIZE)"
 test "$COMMITTED" = "$SIZE"
 
 echo "== 6. verify server-side bytes are bit-identical"
-SERVER_SHA=$(docker run --rm -v "$STORAGE_DIR:/s" gcc:14 bash -c "sha256sum /s/recordings/$RID/audio.flac" | cut -d' ' -f1)
+SERVER_SHA=$(sha256 "$STORAGE_DIR/recordings/$RID/audio.flac")
 test "$SERVER_SHA" = "$SHA" && echo "sha256 match"
 
 echo "== 7. finalize"
