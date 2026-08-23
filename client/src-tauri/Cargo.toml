@@ -14,8 +14,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", default-features = false, features = ["wry", "compression", "x11", "macos-private-api", "tray-icon", "image-png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-cpal = "0.15"
-flacenc = "0.5"
+cpal = "=0.18.2"
+flacenc = "=0.5.1"
+ringbuf = "=0.5.1"
 # NOTE: no TLS backend on purpose for the LAN MVP — ring (rustls) cannot
 # build under the zig-cc/gnu.2.38 host toolchain; https baseUrls are
 # unsupported until the toolchain or a TLS impl builds. UI fetch still
@@ -30,5 +31,8 @@ anyhow = "1"
 thiserror = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-avf-audio = { version = "0.3", features = ["AVAudioApplication"] }
+objc2 = "=0.6.4"
+objc2-avf-audio = { version = "=0.3.2", features = ["AVAudioApplication"] }
+objc2-core-audio = { version = "=0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
+objc2-core-foundation = "=0.3.2"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSValue"] }

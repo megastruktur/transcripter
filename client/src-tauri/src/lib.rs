@@ -1,4 +1,8 @@
 pub mod capture;
+#[cfg(target_os = "macos")]
+mod capture_macos;
+#[cfg(target_os = "windows")]
+mod capture_windows;
 pub mod encode;
 pub mod permissions;
 pub mod recording;
@@ -73,7 +77,7 @@ pub fn run() {
             cmd_pre_flight,
             cmd_start_recording,
             cmd_stop_recording,
-            cmd_pump,
+            cmd_recording_frames,
             cmd_upload_now,
             cmd_retry_pending,
         ])
@@ -167,9 +171,8 @@ fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<
 }
 
 #[tauri::command]
-fn cmd_pump(app: AppHandle) -> Result<u64, String> {
-    let spool = spool_from_app(&app)?;
-    recording::pump(&spool)
+fn cmd_recording_frames() -> Result<u64, String> {
+    recording::frames_written()
 }
 
 fn spool_from_app(app: &AppHandle) -> Result<Spool, String> {

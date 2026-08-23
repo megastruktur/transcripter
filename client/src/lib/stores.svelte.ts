@@ -107,20 +107,10 @@ export async function checkServerConnection(
 	return task;
 }
 
-let pumpTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+let recordingStatusTimer: number | null = null;
 
-/** Counters for collapsed pump-error lines (message → repeats). */
-const pumpCounts = new Map<string, number>();
-
-/** Strip the (×N) suffix from a collapsed warning line. */
-function basePumpError(line: string): string {
-	return line.replace(/ \(×\d+\)$/, '');
-}
-
-/** Clear warnings + collapse counters (UI must use this, not direct assign). */
 export function clearWarnings(): void {
 	recorder.warnings = [];
-	pumpCounts.clear();
 }
 
 export async function checkAudio(
@@ -140,47 +130,37 @@ export async function startRecording(
 	captureSystem: boolean
 ): Promise<void> {
 	const report = await checkAudio(microphone, systemOutput, captureSystem);
-	if (!report.mic_device_present || report.error) {
-		recorder.warnings.push(report.error ?? 'no microphone available');
+	if (report.error || report.mic_state === 'permission_denied' || report.mic_state === 'unavailable' || report.mic_state === 'failed') {
+		recorder.warnings.push(report.error ?? 'microphone unavailable');
 		return;
 	}
-	if (report.mic_signal === false) {
-		recorder.warnings.push('no mic signal detected (check input device/mute)');
+	if (report.mic_state === 'silent') {
+		recorder.warnings.push('no mic signal detected (check input device or mute)');
 		return;
 	}
-	if (captureSystem && !report.system_device_present) {
-		recorder.warnings.push('system audio unavailable — recording mic only');
+	if (captureSystem && ['permission_denied', 'unavailable', 'failed'].includes(report.system_state)) {
+		recorder.warnings.push(report.error ?? 'system audio unavailable');
+		return;
 	}
-	pumpCounts.clear();
+	if (captureSystem && report.system_state === 'silent') {
+		recorder.warnings.push('system audio is connected but no sound is playing yet');
+	}
 	recorder.sessionId = await commands.startRecording(title || null, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
 	recorder.frames = 0;
-	const myTimer: ReturnType<typeof globalThis.setInterval> = setInterval(async () => {
-		if (myTimer !== pumpTimer) return; // superseded by a new recording
+	recordingStatusTimer = globalThis.setInterval(async () => {
 		try {
-			recorder.frames += await commands.pump();
-		} catch (e) {
-			if (String(e).includes('no active session')) {
-				// Stop raced us: genuinely no session left to drain.
-				clearInterval(myTimer);
-				if (pumpTimer === myTimer) pumpTimer = null;
-			} else {
-				// Transient pump error (disk, writer): keep draining.
-				// Collapse repeats — one line with a counter, no flood.
-				const msg = `pump error: ${e}`;
-				const idx = recorder.warnings.findLastIndex((w) => w.startsWith('pump error'));
-				if (idx >= 0 && basePumpError(recorder.warnings[idx]) === msg) {
-					const n = (pumpCounts.get(msg) ?? 1) + 1;
-					pumpCounts.set(msg, n);
-					recorder.warnings[idx] = `${msg} (×${n})`;
-				} else {
-					pumpCounts.set(msg, 1);
-					recorder.warnings.push(msg);
-				}
+			recorder.frames = await commands.recordingFrames();
+		} catch (error) {
+			if (recorder.stopping || !recorder.recording) return;
+			if (recordingStatusTimer) {
+				clearInterval(recordingStatusTimer);
+				recordingStatusTimer = null;
 			}
+			recorder.warnings.push(String(error));
+			void stopRecording();
 		}
 	}, 500);
-	pumpTimer = myTimer;
 }
 
 export async function stopRecording(): Promise<void> {
@@ -192,10 +172,9 @@ export async function stopRecording(): Promise<void> {
 			cfg.baseUrl || null,
 			cfg.token || null
 		);
-		// Confirmed stop: stop draining and reset state.
-		if (pumpTimer) {
-			clearInterval(pumpTimer);
-			pumpTimer = null;
+		if (recordingStatusTimer) {
+			clearInterval(recordingStatusTimer);
+			recordingStatusTimer = null;
 		}
 		recorder.recording = false;
 		if (cfg.baseUrl && cfg.token) {
@@ -206,10 +185,9 @@ export async function stopRecording(): Promise<void> {
 	} catch (e) {
 		const msg = String(e);
 		if (msg.startsWith('FATAL_STOP')) {
-			// Writer consumed, recording unrecoverable: reset to idle.
-			if (pumpTimer) {
-				clearInterval(pumpTimer);
-				pumpTimer = null;
+			if (recordingStatusTimer) {
+				clearInterval(recordingStatusTimer);
+				recordingStatusTimer = null;
 			}
 			recorder.recording = false;
 			recorder.warnings.push(`recording lost: ${msg.replace('FATAL_STOP: ', '')}`);

@@ -114,8 +114,10 @@ pnpm tauri dev     # desktop app window
 In-app **Settings**: enter the server URL (`http://<server-host>:8090`) and the
 token from your `.env`, then select **Test and save connection** once. Saved
 credentials are checked automatically on later launches. On **Record**, select
-the microphone and system output; **Start recording** always runs audio preflight,
-while **Check selected devices** remains available as an optional diagnostic.
+the microphone and system output. **Start recording** opens and probes both
+capture paths; if selected system audio cannot start, recording is blocked rather
+than silently falling back to microphone-only. Select **Off** for an intentional
+microphone-only recording.
 
 ## API
 
@@ -191,21 +193,23 @@ launch, or [sign it yourself](https://v2.tauri.app/distribute/sign/macos/).
 
 **First run after install:** Settings → Server URL
 `http://<server-LAN-IP>:8090` + your `TRANSCRIPTER_TOKEN`. Windows Firewall
-will prompt on first upload — allow it.
+will prompt on first upload — allow it. macOS 14.2+ prompts separately for
+Microphone and System Audio Recording access; grant both when system audio is
+enabled.
 
-**What to test on Windows** (system audio = WASAPI loopback, fully wired):
-record a call (mic + system), stop, watch upload → stages → artifacts in
-Recordings; regenerate a stage; kill the app mid-upload and restart
-(spool resumes); pre-flight denial (deny mic permission in Windows
-Settings → Privacy → Microphone, then hit Record).
+**Platform capture verification:** on macOS, test both an output-only device and
+a duplex USB/headset output. On Windows 10 1703+ or Windows 11, select a render
+endpoint and play non-DRM audio while recording. In both cases, speak a separate
+microphone marker and confirm both markers exist in the saved FLAC/transcript.
 
 ## Scope & limitations (MVP)
 
 - Single user, bearer token; no TLS termination in the compose stack — put it
   behind a reverse proxy (e.g. Traefik/Caddy) if you expose it beyond LAN.
-- System-audio capture works fully on Windows/macOS loopback targets; on other
-  platforms the client records mic only (system stream is drained honestly,
-  `system_active=false`).
+- System audio uses a Core Audio process tap on macOS 14.2+ and WASAPI shared-mode
+  loopback on Windows 10 1703+/Windows 11. Linux remains microphone-only.
+- Windows may exclude DRM/protected playback from loopback capture. This is an OS
+  restriction, not an application fallback.
 - The Rust uploader speaks plain HTTP (LAN). TLS support tracks a toolchain
   upgrade — see project memory notes.
 

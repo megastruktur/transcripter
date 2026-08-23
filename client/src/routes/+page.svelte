@@ -15,8 +15,16 @@
 	let selectedMicrophone = $state('');
 	let selectedSystemOutput = $state(SYSTEM_AUDIO_OFF);
 
-	const micState = $derived(!preflight.current ? 'Not checked' : !preflight.current.mic_device_present ? 'Unavailable' : preflight.current.mic_signal === false ? 'No signal' : 'Ready');
-	const systemState = $derived(selectedSystemOutput === SYSTEM_AUDIO_OFF ? 'Off' : !preflight.current ? 'Not checked' : preflight.current.system_device_present ? 'Ready' : 'Unavailable');
+	function sourceLabel(state: 'disabled' | 'ready' | 'silent' | 'permission_denied' | 'unavailable' | 'failed'): string {
+		if (state === 'ready') return 'Ready';
+		if (state === 'silent') return 'No signal';
+		if (state === 'permission_denied') return 'Permission denied';
+		if (state === 'disabled') return 'Off';
+		return 'Unavailable';
+	}
+
+	const micState = $derived(!preflight.current ? 'Not checked' : sourceLabel(preflight.current.mic_state));
+	const systemState = $derived(selectedSystemOutput === SYSTEM_AUDIO_OFF ? 'Off' : !preflight.current ? 'Not checked' : sourceLabel(preflight.current.system_state));
 
 	onMount(() => {
 		void loadAudioDevices();
@@ -48,12 +56,12 @@
 			devices = await commands.listAudioDevices();
 			const savedMicrophone = localStorage.getItem('transcripter.microphone');
 			const savedSystemOutput = localStorage.getItem('transcripter.system-output');
-			selectedMicrophone = savedMicrophone && devices.microphones.includes(savedMicrophone)
+			selectedMicrophone = savedMicrophone && devices.microphones.some((device) => device.id === savedMicrophone)
 				? savedMicrophone
-				: (devices.default_microphone ?? devices.microphones[0] ?? '');
-			selectedSystemOutput = savedSystemOutput && (savedSystemOutput === SYSTEM_AUDIO_OFF || devices.system_outputs.includes(savedSystemOutput))
+				: (devices.default_microphone ?? devices.microphones[0]?.id ?? '');
+			selectedSystemOutput = savedSystemOutput && (savedSystemOutput === SYSTEM_AUDIO_OFF || devices.system_outputs.some((device) => device.id === savedSystemOutput))
 				? savedSystemOutput
-				: (devices.default_system_output ?? devices.system_outputs[0] ?? SYSTEM_AUDIO_OFF);
+				: (devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF);
 		} catch (error) {
 			deviceError = String(error);
 		} finally {
@@ -132,7 +140,7 @@
 		<div class="timer" aria-live="polite">{fmt(elapsed)}</div>
 		<div class="capture-meta">
 			<span>{recorder.recording ? 'Recording in FLAC' : 'Ready to record'}</span>
-			<span>{recorder.recording ? `${recorder.frames} frames buffered` : 'Processed after you stop'}</span>
+			<span>{recorder.recording ? `${recorder.frames} frames captured` : 'Processed after you stop'}</span>
 		</div>
 
 		<label class="title-field">
@@ -158,12 +166,12 @@
 			<div class="device-heading">
 				<span class="device-icon" aria-hidden="true"><Icon name="microphone" size={18} /></span>
 				<label for="microphone-device">Microphone</label>
-				<span class:ready={micState === 'Ready'} class:issue={micState === 'No signal' || micState === 'Unavailable'} class="device-status">{micState}</span>
+				<span class:ready={micState === 'Ready'} class:issue={micState === 'No signal' || micState === 'Unavailable' || micState === 'Permission denied'} class="device-status">{micState}</span>
 			</div>
 			<select id="microphone-device" bind:value={selectedMicrophone} onchange={deviceSelectionChanged} disabled={loadingDevices || recorder.recording}>
 				{#if devices.microphones.length === 0}<option value="" disabled>{loadingDevices ? 'Loading microphones…' : 'No microphones found'}</option>{/if}
-				{#each devices.microphones as device (device)}
-					<option value={device}>{device}{device === devices.default_microphone ? ' — default' : ''}</option>
+				{#each devices.microphones as device (device.id)}
+					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
 				{/each}
 			</select>
 		</div>
@@ -172,12 +180,12 @@
 			<div class="device-heading">
 				<span class="device-icon" aria-hidden="true"><Icon name="monitor" size={18} /></span>
 				<label for="system-output-device">System audio</label>
-				<span class:ready={systemState === 'Ready'} class:issue={systemState === 'Unavailable'} class="device-status">{systemState}</span>
+				<span class:ready={systemState === 'Ready'} class:issue={systemState === 'No signal' || systemState === 'Unavailable' || systemState === 'Permission denied'} class="device-status">{systemState}</span>
 			</div>
 			<select id="system-output-device" bind:value={selectedSystemOutput} onchange={deviceSelectionChanged} disabled={loadingDevices || recorder.recording}>
 				<option value={SYSTEM_AUDIO_OFF}>Off</option>
-				{#each devices.system_outputs as device (device)}
-					<option value={device}>{device}{device === devices.default_system_output ? ' — default' : ''}</option>
+				{#each devices.system_outputs as device (device.id)}
+					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
 				{/each}
 			</select>
 		</div>

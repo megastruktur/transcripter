@@ -1,6 +1,3 @@
-//! Pre-flight permission + signal checks before every recording start
-//! (user requirement: reference app produced an empty first recording).
-
 use serde::Serialize;
 
 use crate::capture;
@@ -14,23 +11,29 @@ pub enum PermissionState {
     Unavailable,
 }
 
-/// 1-second probe capture to verify the mic actually delivers samples.
-pub(crate) fn probe_mic(threshold_rms: f32, device_name: Option<&str>) -> Result<bool, String> {
-    let device = capture::mic_device(device_name)?;
-    let buffer = std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default()));
-    let _stream = capture::open_stream(&device, buffer.clone())?;
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let buf = buffer.lock().map_err(|e| e.to_string())?;
-    if !buf.errors.is_empty() {
-        return Err(buf.errors.join("; "));
-    }
-    Ok(capture::rms(&buf.samples) > threshold_rms)
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceState {
+    Disabled,
+    Ready,
+    Silent,
+    PermissionDenied,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PreFlightReport {
+    pub mic_permission: PermissionState,
+    pub mic_state: SourceState,
+    pub mic_signal: Option<bool>,
+    pub system_state: SourceState,
+    pub system_signal: Option<bool>,
+    pub error: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
 pub fn mic_permission() -> PermissionState {
-    // macOS 14+: AVAudioApplication shared record permission.
-    // (unsafe: ObjC method call; sharedInstance never nil for this class.)
     unsafe {
         objc2_avf_audio::AVAudioApplication::sharedInstance()
             .recordPermission()
@@ -40,72 +43,108 @@ pub fn mic_permission() -> PermissionState {
 
 #[cfg(target_os = "macos")]
 impl From<objc2_avf_audio::AVAudioApplicationRecordPermission> for PermissionState {
-    fn from(v: objc2_avf_audio::AVAudioApplicationRecordPermission) -> Self {
+    fn from(value: objc2_avf_audio::AVAudioApplicationRecordPermission) -> Self {
         use objc2_avf_audio::AVAudioApplicationRecordPermission as P;
-        if v == P::Undetermined {
-            PermissionState::NotDetermined
-        } else if v == P::Denied {
-            PermissionState::Denied
-        } else if v == P::Granted {
-            PermissionState::Granted
+        if value == P::Undetermined {
+            Self::NotDetermined
+        } else if value == P::Denied {
+            Self::Denied
+        } else if value == P::Granted {
+            Self::Granted
         } else {
-            PermissionState::Unavailable
+            Self::Unavailable
         }
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn mic_permission() -> PermissionState {
-    // Windows: WASAPI opens without explicit OS permission gate; actual
-    // device-open failure surfaces in probe_mic.
     PermissionState::NotDetermined
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PreFlightReport {
-    pub mic_permission: PermissionState,
-    pub mic_device_present: bool,
-    pub mic_signal: Option<bool>,
-    pub system_device_present: bool,
-    pub error: Option<String>,
-}
-
-/// Run all pre-flight checks. `probe` enables the 1s RMS probe.
 pub fn pre_flight(
     probe: bool,
     microphone: Option<&str>,
     system_output: Option<&str>,
     check_system: bool,
 ) -> PreFlightReport {
+    let permission = mic_permission();
     let mut report = PreFlightReport {
-        mic_permission: mic_permission(),
-        mic_device_present: true,
+        mic_permission: permission.clone(),
+        mic_state: SourceState::Unavailable,
         mic_signal: None,
-        system_device_present: true,
+        system_state: if check_system {
+            SourceState::Unavailable
+        } else {
+            SourceState::Disabled
+        },
+        system_signal: None,
         error: None,
     };
+    if permission == PermissionState::Denied {
+        report.mic_state = SourceState::PermissionDenied;
+        report.error = Some("microphone permission denied".into());
+        return report;
+    }
 
-    match capture::mic_device(microphone) {
-        Ok(_) => {}
-        Err(e) => {
-            report.mic_device_present = false;
-            report.error = Some(e);
+    match if probe {
+        capture::open_mic_stream(microphone).map(Some)
+    } else {
+        capture::mic_device(microphone).map(|_| None)
+    } {
+        Ok(stream) => {
+            if let Some(stream) = stream {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let mut samples = Vec::new();
+                stream.drain_into(&mut samples, capture::CAPTURE_RATE as usize);
+                let signal = capture::rms(&samples) > 0.0015;
+                report.mic_signal = Some(signal);
+                report.mic_state = if signal {
+                    SourceState::Ready
+                } else {
+                    SourceState::Silent
+                };
+            } else {
+                report.mic_state = SourceState::Ready;
+            }
+        }
+        Err(error) => {
+            report.mic_state = SourceState::Unavailable;
+            report.error = Some(error);
             return report;
         }
     }
-    if check_system {
-        match capture::system_device(system_output) {
-            Ok(_) => {}
-            Err(_) => report.system_device_present = false,
-        }
-    } else {
-        report.system_device_present = false;
-    }
 
-    if probe {
-        match probe_mic(0.0015, microphone) {
-            Ok(signal) => report.mic_signal = Some(signal),
-            Err(e) => report.error = Some(e),
+    if check_system {
+        match if probe {
+            capture::open_system_stream(system_output).map(Some)
+        } else {
+            capture::system_device(system_output).map(|_| None)
+        } {
+            Ok(stream) => {
+                if let Some(stream) = stream {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let mut samples = Vec::new();
+                    stream.drain_into(&mut samples, capture::CAPTURE_RATE as usize);
+                    let signal = capture::rms(&samples) > 0.0005;
+                    report.system_signal = Some(signal);
+                    report.system_state = if signal {
+                        SourceState::Ready
+                    } else {
+                        SourceState::Silent
+                    };
+                } else {
+                    report.system_state = SourceState::Ready;
+                }
+            }
+            Err(error) => {
+                report.system_state = if error.to_ascii_lowercase().contains("permission") {
+                    SourceState::PermissionDenied
+                } else {
+                    SourceState::Unavailable
+                };
+                report.error = Some(format!("system audio: {error}"));
+            }
         }
     }
     report

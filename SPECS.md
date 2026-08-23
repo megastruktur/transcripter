@@ -15,14 +15,16 @@
   no React.
 - Server: FastAPI + Temporal (auto-setup + postgres + UI) + LinTO
   `linto-diarization-pyannote` (CPU).
-- Audio: FLAC everywhere (transport and storage); client encoder is flacenc
-  (pure Rust).
+- Audio: one 48 kHz mono FLAC containing the microphone plus selected system
+  output. macOS 14.2+ uses a Core Audio process tap; Windows 10 1703+/11 uses
+  WASAPI shared-mode loopback. Client encoder is flacenc (pure Rust).
 - Delivery: client-side spool → resumable offset-PUT upload → SHA-256
   finalize → spool cleaned after ack.
 - Regenerate: `POST /recordings/{id}/regenerate {stage}` — downstream stages
   always re-run.
 - Summarize: disabled until a model is configured (OpenAI-compatible,
   base_url + key_env).
-- Pre-flight check on every recording start (permissions + RMS probe) —
-  lesson from the reference project (silent empty first recording).
+- Pre-flight opens and probes every selected source before recording. A selected
+  system source that cannot start blocks recording; microphone-only capture is
+  available only when System audio is explicitly Off.
 - Ports: api 8090, temporal-ui 8082, diarization 8070 (host port conflicts).

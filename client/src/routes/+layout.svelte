@@ -25,7 +25,7 @@
 			? 'Recording'
 			: !preflight.current
 				? 'Audio not checked'
-				: preflight.current.error || !preflight.current.mic_device_present || preflight.current.mic_signal === false
+				: preflight.current.error || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(preflight.current.mic_state) || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(preflight.current.system_state)
 					? 'Audio needs attention'
 					: 'Audio ready'
 	);
