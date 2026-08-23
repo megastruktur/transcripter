@@ -1,74 +1,98 @@
 ---
 name: transcripter-stack-up
-description: Bring the transcripter Docker server stack (api, worker, postgres, temporal, temporal-ui, diarization) UP and DOWN from server/. Use when asked to start, stop, restart, rebuild, or reset the server, when a service is unhealthy or crash-looping, or when preparing the stack for the e2e smoke test. Covers the 4-step bring-up, per-service readiness checks (the worker has no healthcheck), rebuild-after-edit, and volume teardown.
+description: Bring the transcripter dev stack UP from server/ in any deployment mode — base (no ML containers), bundled diarization/Speaches via compose profiles, or routed at an EXTERNAL voice stack via config.yaml/env. Use when asked to start, restart, or reconfigure the dev stack, switch transcription/diarization backends, or connect a separate voice stack.
 metadata:
-  version: "1.0"
+  version: "2.0.0"
 ---
 
-# Transcripter server stack up/down
+# Transcripter dev stack — bring-up & backend routing
 
-All commands run from `server/`. Compose project name: `transcripter`.
+All commands run from `server/`. Compose project: `transcripter`. Stack repo:
+`/home/megastruktur/projects/dev/transcripter`.
 
-Six services:
+## Core services (always on)
 
-| service | image/build | host port | healthcheck |
+`api` (:8090), `worker`, `postgres`, `temporal`, `temporal-ui` (:8082).
+ML containers are **profile-gated** and never required for the base stack.
+
+## Deployment modes
+
+| Mode | Transcribe | Diarization | Bring-up |
 |---|---|---|---|
-| `api` | `Dockerfile.api` (FastAPI) | 8090 → 8080 | yes (`/health`) |
-| `worker` | `Dockerfile.worker` (Temporal worker) | — | **none** — ready only when its log line appears (see below) |
-| `postgres` | `postgres:16-alpine` | — | yes (`pg_isready`) |
-| `temporal` | `temporalio/auto-setup:1.28.2` | — | none |
-| `temporal-ui` | `temporalio/ui:2.35.0` | 8082 → 8080 | none |
-| `diarization` | `lintoai/linto-diarization-pyannote:2.3.0` | 8070 → 80 | yes, **120s start_period** |
+| A. Base + bundled LinTO (default dev) | faster-whisper in worker | bundled, profile | `docker compose up -d --profile diarization` |
+| B. No ML containers | faster-whisper in worker | disabled → `skipped` | set `diarization.enabled: false` in config.yaml, then `docker compose up -d` |
+| C. Bundled voice (Speaches STT) | Speaches, profile `stt` | bundled, profile | `docker compose --profile stt --profile diarization up -d` + config below |
+| D. External voice stack | any OpenAI-compatible STT | any LinTO endpoint | base `up -d` + routing options below |
 
-Named volumes: `pgdata` (postgres data) and `models` (faster-whisper cache, `download_root=/models` in the worker). Bind mounts: `./storage` → `/storage` (api + worker) and `./config.yaml` → `/etc/transcripter/config.yaml` (ro). Recordings land on the host at `server/storage/recordings/<uuid>/`.
+## Mode C config (bundled Speaches)
 
-## Bring up (4 steps, from `server/`)
+`server/config.yaml`:
+
+```yaml
+transcribe:
+  backend: api
+  model: Systran/faster-whisper-small   # full HF id — plain "small" 404s
+  base_url: http://speaches:8000/v1     # /v1 suffix is REQUIRED
+  api_key_env: ""                       # bundled speaches is keyless
+```
+
+Speaches preloads the model at container start; first start downloads weights
+from huggingface.co into the `speaches-hf-cache` volume (minutes; later starts
+work offline). Its healthcheck `start_period` is 5m to cover this.
+
+## Mode D routing options (external voice stack)
+
+Two independent knobs; set only what is external:
+
+| What | Where | Notes |
+|---|---|---|
+| Transcription endpoint | `config.yaml`: `transcribe.backend: api` + `base_url` (incl. `/v1`) + `model` (HF id) | no env override exists; `api_key_env` names an ENV VAR holding the key for keyed endpoints |
+| Diarization endpoint | `config.yaml`: `diarization.endpoint` OR `.env`: `DIARIZATION_ENDPOINT=http://host:8070` | env beats yaml; the compose default interpolates to EMPTY so yaml stays effective |
+| Same-host cross-stack DNS | uncomment top-level `networks: voice` block in docker-compose.yml (create first: `docker network create voice`), add `networks: [default, voice]` to worker + ML services | lets worker reach a separate voice stack by service name |
+| Multi-host | publish speaches port (uncomment `# - "8000:8000"`) and point `base_url` at `http://<host>:8000/v1` | LAN IP |
+
+## The config-change ritual (ALWAYS)
+
+`config.yaml` is read once per process start:
 
 ```bash
-cd server
-cp -n config.example.yaml config.yaml          # -n: never overwrite an existing config.yaml
-printf 'TRANSCRIPTER_TOKEN=dev-local-token\n' > .env
-docker compose build                            # ~37s
-docker compose up -d                            # ~144s on first run
+docker compose restart worker   # applies transcribe/diarization changes
+docker compose restart api      # only needed for the /settings view to match
 ```
+
+Fail-fast: worker refuses to start with `backend: api` and an empty `base_url`.
+Startup probe: with `diarization.enabled: true` the worker pings
+`{endpoint}/healthcheck` once; a failure logs a warning that names the
+remediation (profile, env override, or `enabled: false`). During LinTO's ~2min
+cold start this warning is expected — Temporal's diarize retries (4×30s)
+absorb it.
 
 ## Readiness checks
 
 ```bash
-docker compose ps
-# api, postgres, diarization: (healthy); worker, temporal, temporal-ui: Up
-
-curl -s http://localhost:8090/health
-# -> {"status":"ok"}   (/health, /docs, /openapi.json are public; everything else needs the token)
-
-curl -s -H "authorization: Bearer dev-local-token" http://localhost:8090/recordings
-# -> []
+docker compose ps                                   # api/postgres healthy
+curl -s localhost:8090/health                       # {"status":"ok"}
+docker compose logs worker | grep 'worker started'  # THE readiness line (no healthcheck)
+curl -s -H "authorization: Bearer $TRANSCRIPTER_TOKEN" localhost:8090/settings \
+  | jq .transcribe.backend, .diarization           # verify effective config
 ```
 
-Temporal UI: open http://localhost:8082 (namespace `default`, worker visible once the worker line appears).
+Speaches (mode C): wait for `docker compose ps speaches` → healthy, or poll
+`docker compose exec speaches python -c "import urllib.request as u; u.urlopen('http://localhost:8000/v1/models')"`.
 
-**The worker has no healthcheck — `docker compose ps` showing it `Up` is NOT enough.** It is ready only when this line appears in its log:
-
-```bash
-docker compose logs -f worker
-# wait for: worker started on queue transcripter-pipeline
-```
-
-On first start the worker downloads faster-whisper `small` from HuggingFace into the `models` volume before that line appears — the download dominates first-start time.
-
-## Lifecycle
-
-- **Edited a service's code?** Rebuild and restart just that service: `docker compose up -d --build api` (swap `api` for `worker`).
-- **Stop everything:** `docker compose down` — removes containers, keeps the `pgdata` and `models` named volumes.
-- **`docker compose down -v`** — also destroys the named volumes: wipes the database AND the model cache. The next bring-up re-downloads the whisper model and starts an empty DB. Do not run it casually.
-
-Config keys in `config.yaml` (from `config.example.yaml`): `transcribe.backend`/`transcribe.model` (defaults `local`/`small`), `summarize.enabled` (**`false` by default** — the summarize stage reports `skipped`, which is success, not failure), `diarization.endpoint` (`http://diarization:8080`, the compose service name), `database.url`. Auth token comes from the `TRANSCRIPTER_TOKEN` env var only, never from `config.yaml`.
-
-To prove the whole pipeline works end to end, see `transcripter-e2e-smoke`. For known failure modes and diagnostics, see `transcripter-troubleshooting`.
+Prove a mode end-to-end: `STT=speaches bash scripts/e2e_smoke.sh` (asserts
+non-empty word timestamps) or plain `bash scripts/e2e_smoke.sh` for A/B.
 
 ## Gotchas
 
-- **Missing `.env` → compose fails fast.** `docker compose up` aborts before creating anything because the compose file interpolates `${TRANSCRIPTER_TOKEN:?set TRANSCRIPTER_TOKEN in .env}`. The error names the variable; fix is writing `.env` (step 2), not editing the compose file.
-- **Skipping the `config.yaml` copy → api crash-loops with an explicit exit.** The ro bind-mount `./config.yaml:/etc/transcripter/config.yaml` creates a **directory** at the target when the host file is absent; `_check_startup()` in `server/api/app/main.py` detects `os.path.isdir(config_path)` and exits: `config path ... is a directory — this usually means the compose bind-mount found no config.yaml on the host. Copy server/config.example.yaml to server/config.yaml first.` Fix: `docker compose down` (removes the stray dir), run step 1, `docker compose up -d`.
-- **Diarization is linux/amd64-only.** On Apple Silicon compose logs `The requested image's platform (linux/amd64) does not match the detected host platform (linux/arm64/v8)`; the service runs emulated — it works, but slow — which is why its healthcheck has a 120s `start_period` and why the first `docker compose up -d` takes ~2.5 min (worker waits on `diarization: service_healthy`). Expect the warning; it is not an error.
-- **Host ports 8090 / 8082 / 8070** were deliberately picked to dodge host conflicts (see SPECS.md). If `up` reports a port in use, something else owns that port — free it or change the compose mapping; don't assume the transcripter stack is stale.
+- `base_url` without `/v1` → 404 on every transcription (valid URL, wrong path).
+- Speaches resolves models strictly: uncached model → 404. The compose service
+  sets `PRELOAD_MODELS=["Systran/faster-whisper-small"]`; a different model
+  needs that env changed AND the config `model` to match.
+- Speaches runs Silero VAD on every request — sine-tone test audio yields zero
+  words; the committed `scripts/fixtures/speech-2voices.flac` is the VAD-safe
+  fixture.
+- Empty `api_key_env` is correct for keyless local endpoints (the worker omits
+  the Authorization header rather than sending an illegal empty `Bearer `).
+- Image tags are pinned; updates go through `SECURITY.md` (pre-update checklist).
+- `docker compose down` keeps volumes; `down -v` wipes postgres AND model caches.

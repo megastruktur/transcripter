@@ -26,7 +26,8 @@ class SummarizeConfig(BaseModel):
 
 
 class DiarizationConfig(BaseModel):
-    endpoint: str = "http://diarization:8080"
+    enabled: bool = True
+    endpoint: str = "http://diarization:80"
 
 
 class DatabaseConfig(BaseModel):

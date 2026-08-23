@@ -1,5 +1,7 @@
 # Transcripter server configuration (copy to config.yaml, mount into containers)
 # Auth token is NOT set here: use env TRANSCRIPTER_TOKEN only.
+# NOTE: the worker reads this file once at startup — apply changes with
+# `docker compose restart worker`.
 
 storage:
   # Root dir for recording folders. Mount point inside containers is /storage;
@@ -9,11 +11,15 @@ storage:
 transcribe:
   # local = faster-whisper in worker container; api = OpenAI-compatible endpoint
   backend: local
-  # faster-whisper model name (local) or model id (api)
+  # faster-whisper model name (local) or model id (api).
+  # For Speaches use the full HF id — plain names like "small" are NOT
+  # resolvable there and uncached models 404 (compose preloads the one below).
   model: small
-  # Used only when backend=api
+  # Used only when backend=api. MUST include the /v1 suffix.
+  # base_url: http://speaches:8000/v1
   base_url: ""
-  # Env var name holding the API key (never the key itself)
+  # Env var name holding the API key (never the key itself). Empty is fine
+  # for a local unauthenticated Speaches.
   api_key_env: ""
 
 summarize:
@@ -25,8 +31,12 @@ summarize:
   api_key_env: ""
 
 diarization:
-  # LinTO diarization service endpoint (compose service name)
-  endpoint: http://diarization:8080
+  # false → diarize/merge stages report `skipped`; no diarization container
+  # or external service is contacted (bundled container: profile `diarization`).
+  enabled: true
+  # LinTO diarization service; override via env DIARIZATION_ENDPOINT when
+  # it lives in a separate voice stack.
+  endpoint: http://diarization:80
 
 database:
   # Inside containers; postgres compose service

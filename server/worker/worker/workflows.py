@@ -25,6 +25,17 @@ def _retry() -> RetryPolicy:
     return RetryPolicy(maximum_attempts=2)
 
 
+def _diarize_retry() -> RetryPolicy:
+    # No compose depends_on anymore (profile-gated service): the first
+    # recording after `--profile diarization up` may hit LinTO still loading
+    # its weights (~2 min). Bridge that with slower, longer retries.
+    return RetryPolicy(
+        maximum_attempts=4,
+        initial_interval=timedelta(seconds=30),
+        maximum_interval=timedelta(seconds=60),
+    )
+
+
 @workflow.defn
 class ProcessRecording:
     """Runs the full pipeline from `start_stage` (default: transcribe)."""
@@ -80,7 +91,7 @@ class ProcessRecording:
                     "diarize",
                     rec_id,
                     start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 30)),
-                    retry_policy=_retry(),
+                    retry_policy=_diarize_retry(),
                 )
             except ActivityError:
                 workflow.logger.warning("diarize failed for %s; transcript-only", rec_id)

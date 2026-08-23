@@ -18,9 +18,11 @@ SYSTEM_PROMPT = (
 def summarize_transcript(meta: Path, cfg) -> str:
     transcript = (meta / "transcript.md").read_text(encoding="utf-8")
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
+    # Keyless local endpoints reject (and httpx forbids) an empty "Bearer ".
+    headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
     r = httpx.post(
         cfg.summarize.base_url.rstrip("/") + "/chat/completions",
-        headers={"authorization": f"Bearer {api_key}"},
+        headers=headers,
         json={
             "model": cfg.summarize.model,
             "messages": [
