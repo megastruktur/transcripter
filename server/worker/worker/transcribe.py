@@ -111,11 +111,19 @@ class ApiTranscriber:
         import httpx
 
         with open(audio_path, "rb") as f:
+            headers = {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
             r = httpx.post(
                 f"{self.base_url}/audio/transcriptions",
                 files={"file": (audio_path.name, f)},
-                data={"model": self.model, "response_format": "verbose_json"},
-                headers={"authorization": f"Bearer {self.api_key}"},
+                data={
+                    "model": self.model,
+                    "response_format": "verbose_json",
+                    # Word timestamps are what diarization merging keys off;
+                    # without them merge has nothing to attribute. OpenAI's
+                    # form field is repeated with a `[]` suffix.
+                    "timestamp_granularities[]": ["word", "segment"],
+                },
+                headers=headers,
                 timeout=600,
             )
         r.raise_for_status()
@@ -123,9 +131,10 @@ class ApiTranscriber:
         segments = [
             Segment(s["start"], s["end"], s["text"]) for s in data.get("segments", [])
         ]
-        words = [
-            Word(w["start"], w["end"], w["word"])
-            for s in data.get("segments", [])
-            for w in s.get("words", [])
+        # OpenAI/Speaches put words top-level; Groq nests them in segments.
+        # Accept both: prefer the top-level array when present.
+        raw_words = data.get("words") or [
+            w for s in data.get("segments", []) for w in s.get("words", [])
         ]
+        words = [Word(w["start"], w["end"], w["word"]) for w in raw_words]
         return TranscriptionResult(data.get("language", "unknown"), segments, words)

@@ -25,7 +25,10 @@ def get_settings(request: Request) -> dict:
             "model": cfg.summarize.model,
             "base_url": mask(cfg.summarize.base_url),
         },
-        "diarization": {"endpoint": cfg.diarization.endpoint},
+        "diarization": {
+            "endpoint": cfg.diarization.endpoint,
+            "enabled": cfg.diarization.enabled,
+        },
     }
 
 

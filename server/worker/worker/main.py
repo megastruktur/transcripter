@@ -36,6 +36,32 @@ async def amain() -> None:
         log.info("preloading whisper model %r", cfg.transcribe.model)
         LocalTranscriber(cfg.transcribe.model)._ensure_loaded()
 
+    # The diarization container is profile-gated; a plain `up -d` no longer
+    # starts it. One cheap probe at startup (no retry loop — Temporal's
+    # diarize retry policy already absorbs LinTO's ~2min weight load, and a
+    # polling loop here would only delay worker readiness) to warn loudly
+    # instead of leaving misconfiguration to per-recording failures.
+    if cfg.diarization.enabled:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.head(
+                    f"{cfg.diarization.endpoint.rstrip('/')}/healthcheck", timeout=5
+                )
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            log.warning(
+                "diarization.enabled=true but %s failed the startup probe (%s). "
+                "If the stack just started, LinTO may still be loading and the "
+                "Temporal retries will absorb it. Otherwise: start the bundled "
+                "container (docker compose --profile diarization up -d), or point "
+                "diarization.endpoint/DIARIZATION_ENDPOINT at an external service, "
+                "or set diarization.enabled=false",
+                cfg.diarization.endpoint,
+                e,
+            )
+
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"))
 
     worker = Worker(

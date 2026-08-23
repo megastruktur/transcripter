@@ -22,7 +22,8 @@ class SummarizeConfig(BaseModel):
 
 
 class DiarizationConfig(BaseModel):
-    endpoint: str = "http://diarization:8080"
+    enabled: bool = True
+    endpoint: str = "http://diarization:80"
 
 
 class DatabaseConfig(BaseModel):
@@ -50,6 +51,8 @@ def load_config() -> WorkerConfig:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
     cfg = WorkerConfig.model_validate(raw)
+    if cfg.transcribe.backend == "api" and not cfg.transcribe.base_url:
+        raise ValueError("transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)")
     if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
         cfg.storage.path = Path(env_storage)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):

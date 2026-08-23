@@ -50,7 +50,7 @@ review checklist.
 | Stage        | Engine                                   | Notes                                              |
 | ------------ | ---------------------------------------- | -------------------------------------------------- |
 | `transcribe` | faster-whisper (local) or OpenAI API     | model configurable, `small` by default             |
-| `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | bundled weights, no HF token needed                |
+| `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`)      |
 | `merge`      | IoU word↔segment matching                | fuses transcript words with speaker turns          |
 | `summarize`  | OpenAI-compatible endpoint               | optional; stage reports `skipped` when no model    |
 | `finalize`   | —                                        | always runs (even on stage failure) — unblocks UI |
@@ -58,6 +58,63 @@ review checklist.
 Artifacts per recording: raw transcript, diarization turns, merged
 speaker-attributed transcript, summary — all fetchable over the API and shown
 in the client.
+
+## ML deployment matrix
+
+ML services are compose **profiles**: the base stack needs none of them.
+
+> **Upgrading from before profiles?** A plain `docker compose up -d` no
+> longer starts the diarization container — it now lives behind the
+> `diarization` profile. Add `--profile diarization` to your usual commands
+> (recommended, config default `enabled: true` keeps working), or set
+> `diarization.enabled: false` in config.yaml to run transcript-only.
+> The worker logs a startup warning if diarization is enabled but its
+> endpoint is unreachable.
+
+| Mode                          | Transcribe                     | Diarization                          | How                                                        |
+| ----------------------------- | ------------------------------ | ------------------------------------ | ---------------------------------------------------------- |
+| Bundled, zero-config (default)| faster-whisper in worker       | LinTO behind profile                 | `docker compose up -d --profile diarization`               |
+| No ML containers              | faster-whisper in worker       | disabled — stages `skipped`          | `docker compose up -d` + `diarization.enabled: false`      |
+| Bundled Speaches              | Speaches behind profile `stt`  | LinTO behind profile                 | `docker compose --profile stt --profile diarization up -d` + config below |
+| External / voice stack        | any OpenAI-compatible STT      | any LinTO endpoint                   | point config/env at `http://<host>:<port>` — see below     |
+
+### Routing transcription to Speaches (bundled)
+
+```bash
+docker compose --profile stt --profile diarization up -d
+```
+
+```yaml
+# server/config.yaml
+transcribe:
+  backend: api
+  model: Systran/faster-whisper-small   # full HF id; plain "small" 404s
+  base_url: http://speaches:8000/v1     # the /v1 suffix is REQUIRED
+  api_key_env: ""                       # local speaches needs no key
+```
+
+Then `docker compose restart worker` (config is read once at startup).
+Speaches preloads `Systran/faster-whisper-small` at startup — the first
+start downloads weights from huggingface.co into the `speaches-hf-cache`
+volume (later starts work offline).
+
+### External voice stack (separate compose / host)
+
+The worker reaches any reachable endpoint; env beats config:
+
+```bash
+# .env next to docker-compose.yml
+DIARIZATION_ENDPOINT=http://192.168.3.50:8070
+```
+
+For transcription set `transcribe.base_url` to `http://<host>:8000/v1`.
+Same-host separate stacks can instead share a docker network
+(`docker network create voice`, uncomment the `voice` block in
+`docker-compose.yml`) and use service DNS names directly.
+
+Verify with `STT=speaches bash server/scripts/e2e_smoke.sh` — it asserts
+non-empty word timestamps end-to-end. Image updates go through
+[SECURITY.md](./SECURITY.md) (pinned tags, pre-update checklist).
 
 ## Server setup
 
@@ -67,13 +124,14 @@ Requirements: Docker + Docker Compose plugin, ~4 GB free RAM for models.
 cd server
 cp config.example.yaml config.yaml        # optional: tune models/storage
 echo 'TRANSCRIPTER_TOKEN=<your-secret>' > .env
-docker compose up -d
+docker compose up -d --profile diarization
 ```
 
 | Service      | URL                        | Purpose                     |
 | ------------ | -------------------------- | --------------------------- |
 | API          | `http://localhost:8090`    | REST + health at `/health`  |
 | Temporal UI  | `http://localhost:8082`    | pipeline observability      |
+| Speaches     | internal (opt-in profile)  | OpenAI-compatible STT       |
 | Diarization  | internal (`:8070` on host) | LinTO HTTP service          |
 
 Recordings land in `server/storage/recordings/<uuid>/` — point the compose
@@ -84,8 +142,8 @@ bind-mount at your NAS/export path to store elsewhere.
 ```yaml
 transcribe:
   backend: local          # local (faster-whisper) or api (OpenAI-compatible)
-  model: small            # whisper model / API model id
-  base_url: ""            # when backend=api
+  model: small            # whisper model / API model id (HF id for speaches)
+  base_url: ""            # when backend=api — MUST include /v1
   api_key_env: ""         # ENV VAR NAME holding the key (never the key itself)
 
 summarize:
@@ -95,10 +153,12 @@ summarize:
   api_key_env: ""
 
 diarization:
-  endpoint: http://diarization:8080
+  enabled: true           # false → diarize/merge skipped, no container needed
+  endpoint: http://diarization:80
 ```
 
 Storage path, DB URL, and ports live in the same file / `docker-compose.yml`.
+The worker reads config once — `docker compose restart worker` to apply.
 
 ## Client setup
 

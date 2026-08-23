@@ -74,6 +74,15 @@ async def transcribe(rec_id: str) -> dict:
 
 @activity.defn
 async def diarize(rec_id: str) -> dict:
+    if not cfg().diarization.enabled:
+        # Diarization disabled by config: no HTTP, no attempt counted, and no
+        # stale speaker attribution may survive into a regenerated merge —
+        # merge_speakers keys off diarization.json's presence. skipped also
+        # clears last_error/details from any previous enabled run.
+        (meta_dir(rec_id) / "diarization.json").unlink(missing_ok=True)
+        (meta_dir(rec_id) / "diarized-transcript.md").unlink(missing_ok=True)
+        set_stage(rec_id, "diarize", StageStatus.skipped, details={})
+        return {"skipped": "diarization disabled"}
     set_stage(rec_id, "diarize", StageStatus.running, inc_attempts=True)
     # Drop a previous run's output up front: merge_speakers keys off this
     # file's presence, so a stale one would mask a failure here.
