@@ -18,6 +18,16 @@ pub struct SpoolSession {
     pub channels: u16,
     pub mic_active: bool,
     pub system_active: bool,
+    #[serde(default)]
+    pub mic_dropped_frames: u64,
+    #[serde(default)]
+    pub system_dropped_frames: u64,
+    #[serde(default)]
+    pub mic_xruns: u64,
+    #[serde(default)]
+    pub system_xruns: u64,
+    #[serde(default)]
+    pub capture_error: Option<String>,
     /// Upload progress: next byte offset acked by server.
     pub uploaded_offset: u64,
     /// Server-assigned recording id (set on first create; reused on retries).
@@ -42,7 +52,9 @@ impl Spool {
     /// the uploader retry loop, which receives `Spool::root()` paths.
     pub fn open_root(root: &Path) -> anyhow::Result<Self> {
         fs::create_dir_all(root)?;
-        Ok(Self { root: root.to_path_buf() })
+        Ok(Self {
+            root: root.to_path_buf(),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -125,7 +137,12 @@ mod tests {
             channels: 2,
             mic_active: true,
             system_active: false,
+            mic_dropped_frames: 0,
+            system_dropped_frames: 0,
+            capture_error: None,
             uploaded_offset: 0,
+            mic_xruns: 0,
+            system_xruns: 0,
             server_rec_id: None,
             finalized: false,
         }
@@ -186,5 +203,20 @@ mod tests {
         spool.remove("gone").unwrap();
         assert!(!spool.session_dir("gone").exists());
         std::fs::remove_dir_all(tmp).ok();
+    }
+
+    #[test]
+    fn legacy_session_defaults_capture_diagnostics() {
+        let raw = r#"{
+            "id":"legacy","title":"t","started_at":"0","duration_sec":1.0,
+            "sample_rate":48000,"channels":1,"mic_active":true,"system_active":true,
+            "uploaded_offset":0,"server_rec_id":null,"finalized":false
+        }"#;
+        let loaded: SpoolSession = serde_json::from_str(raw).unwrap();
+        assert_eq!(loaded.mic_dropped_frames, 0);
+        assert_eq!(loaded.system_dropped_frames, 0);
+        assert_eq!(loaded.mic_xruns, 0);
+        assert_eq!(loaded.system_xruns, 0);
+        assert_eq!(loaded.capture_error, None);
     }
 }

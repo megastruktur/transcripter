@@ -34,8 +34,12 @@ jobs:
           uv run pytest -q
 
   client-rust:
-    name: Client Rust (clippy + test)
-    runs-on: ubuntu-latest
+    name: Client Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -44,15 +48,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: client/src-tauri
-      - name: Install webkit deps (headless build)
+      - name: Install Linux client dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
-      - name: clippy + tests
+      - name: Check, lint, and test
         working-directory: client/src-tauri
         run: |
-          cargo clippy --lib -- -D warnings
-          cargo test --lib
+          cargo check --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
 
   client-web:
     name: Client Web (svelte-check + build)

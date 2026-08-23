@@ -1,32 +1,33 @@
-//! Recording session orchestration: capture → FLAC spool → session.json.
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
-use std::sync::Mutex;
-use std::time::Instant;
-
-use crate::capture::{self, CapturedStream};
+use crate::capture::{self, CapturedStream, CAPTURE_RATE};
 use crate::encode::FlacWriter;
 use crate::permissions::{pre_flight, PreFlightReport};
 use crate::spool::{Spool, SpoolSession};
 
 pub struct ActiveSession {
     pub session: SpoolSession,
-    pub mic: Option<CapturedStream>,
-    pub system: Option<CapturedStream>,
-    pub writer: Mutex<Option<FlacWriter>>,
+    mic: Arc<CapturedStream>,
+    system: Option<Arc<CapturedStream>>,
+    writer: Arc<Mutex<Option<FlacWriter>>>,
+    running: Arc<AtomicBool>,
+    worker: Option<JoinHandle<Result<(), String>>>,
+    frames_written: Arc<AtomicU64>,
+    capture_error: Arc<Mutex<Option<String>>>,
     pub started: Instant,
 }
 
-// cpal Stream is !Send-safe only via the callback thread it spawns on;
-// we never move streams across threads after creation.
-unsafe impl Send for ActiveSession {}
-unsafe impl Sync for ActiveSession {}
-
 pub static SESSION: Mutex<Option<ActiveSession>> = Mutex::new(None);
 
-/// Id of the in-flight recording session, if any (lock-guarded read).
 pub fn active_session_id() -> Option<String> {
-    let guard = SESSION.lock().ok()?;
-    guard.as_ref().map(|a| a.session.id.clone())
+    SESSION
+        .lock()
+        .ok()?
+        .as_ref()
+        .map(|active| active.session.id.clone())
 }
 
 pub fn pre_flight_check(
@@ -50,195 +51,357 @@ pub fn start(
         return Err("recording already active".into());
     }
 
-    let mic_dev = capture::mic_device(microphone)?;
-    let mic = capture::open_stream(
-        &mic_dev,
-        std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default())),
-    )?;
-
-    let (system, system_active) = if with_system {
-        match capture::system_device(system_output).ok().and_then(|d| {
-            capture::open_stream(
-                &d,
-                std::sync::Arc::new(std::sync::Mutex::new(capture::SampleBuffer::default())),
-            )
-            .ok()
-        }) {
-            // Stream opened but its audio is NOT persisted in MVP (drain+discard);
-            // system_active stays false so session.json tells the truth.
-            Some(s) => (Some(s), false),
-            None => (None, false),
-        }
+    let mic = Arc::new(capture::open_mic_stream(microphone)?);
+    let system = if with_system {
+        Some(Arc::new(capture::open_system_stream(system_output)?))
     } else {
-        (None, false)
+        None
     };
 
     let id = uuid::Uuid::new_v4().to_string();
-    let sample_rate = mic.config.sample_rate.0;
-    let channels = mic.config.channels.max(1);
-
-    let writer = FlacWriter::create(&spool.audio_path(&id), sample_rate, channels)
-        .map_err(|e| e.to_string())?;
-
+    let writer = Arc::new(Mutex::new(Some(
+        FlacWriter::create(&spool.audio_path(&id), CAPTURE_RATE, 1).map_err(|e| e.to_string())?,
+    )));
     let session = SpoolSession {
         id: id.clone(),
         title: title.to_string(),
         started_at: unix_now_iso(),
         duration_sec: 0.0,
-        sample_rate,
-        channels,
+        sample_rate: CAPTURE_RATE,
+        channels: 1,
         mic_active: true,
-        system_active,
+        system_active: system.is_some(),
+        mic_dropped_frames: 0,
+        system_dropped_frames: 0,
+        mic_xruns: 0,
+        system_xruns: 0,
+        capture_error: None,
         uploaded_offset: 0,
         server_rec_id: None,
         finalized: false,
     };
-    spool.create(&session).map_err(|e| e.to_string())?;
+    if let Err(error) = spool.create(&session) {
+        let _ = spool.remove(&id);
+        return Err(error.to_string());
+    }
 
+    let running = Arc::new(AtomicBool::new(true));
+    let frames_written = Arc::new(AtomicU64::new(0));
+    let capture_error = Arc::new(Mutex::new(None));
+    let worker = spawn_mixer(
+        mic.clone(),
+        system.clone(),
+        writer.clone(),
+        running.clone(),
+        frames_written.clone(),
+        capture_error.clone(),
+    );
     *guard = Some(ActiveSession {
         session,
-        mic: Some(mic),
+        mic,
         system,
-        writer: Mutex::new(Some(writer)),
+        writer,
+        running,
+        worker: Some(worker),
+        frames_written,
+        capture_error,
         started: Instant::now(),
     });
     Ok(id)
 }
 
-/// Drain captured buffers into the FLAC writer. Called on a timer.
-///
-/// Mic samples feed the encoder. The system stream, where a host exposes a
-/// duplex default device, is drained-and-discarded: cpal 0.15 has no loopback
-/// capture on Win/mac (plan Scenario 1; real system-audio path is the
-/// win/mac targets' work). Draining prevents unbounded buffer growth.
-pub fn pump(_spool: &Spool) -> Result<u64, String> {
+fn spawn_mixer(
+    mic: Arc<CapturedStream>,
+    system: Option<Arc<CapturedStream>>,
+    writer: Arc<Mutex<Option<FlacWriter>>>,
+    running: Arc<AtomicBool>,
+    frames_written: Arc<AtomicU64>,
+    capture_error: Arc<Mutex<Option<String>>>,
+) -> JoinHandle<Result<(), String>> {
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut written = 0u64;
+        let mut mic_samples = Vec::with_capacity(2048);
+        let mut system_samples = Vec::with_capacity(2048);
+        let mut mixed = Vec::with_capacity(2048);
+        let mut last_mic_progress = None;
+        let mut last_system_progress = None;
+        loop {
+            let target = (started.elapsed().as_secs_f64() * CAPTURE_RATE as f64) as u64;
+            let needed = target.saturating_sub(written).min(2400) as usize;
+            if needed > 0 {
+                mic_samples.clear();
+                system_samples.clear();
+                let mic_read = mic.drain_into(&mut mic_samples, needed);
+                if mic_read > 0 {
+                    last_mic_progress = Some(Instant::now());
+                }
+                if let Some(source) = &system {
+                    let read = source.drain_into(&mut system_samples, needed);
+                    if read > 0 {
+                        last_system_progress = Some(Instant::now());
+                    }
+                }
+                if running.load(Ordering::Acquire) {
+                    let source_error = mic
+                        .take_error()
+                        .map(|error| format!("microphone stream failed: {error}"))
+                        .or_else(|| {
+                            system.as_ref().and_then(|source| {
+                                source
+                                    .take_error()
+                                    .map(|error| format!("system audio stream failed: {error}"))
+                            })
+                        })
+                        .or_else(|| {
+                            stall_reason(
+                                Instant::now(),
+                                started,
+                                last_mic_progress,
+                                last_system_progress,
+                                system.is_some(),
+                            )
+                        });
+                    if let Some(error) = source_error {
+                        if let Ok(mut slot) = capture_error.lock() {
+                            *slot = Some(error);
+                        }
+                        running.store(false, Ordering::Release);
+                        break;
+                    }
+                }
+
+                mix_samples(
+                    &mic_samples,
+                    if system.is_some() {
+                        Some(&system_samples)
+                    } else {
+                        None
+                    },
+                    needed,
+                    &mut mixed,
+                );
+                let mut slot = writer.lock().map_err(|e| e.to_string())?;
+                let sink = slot
+                    .as_mut()
+                    .ok_or_else(|| "audio writer unavailable".to_string())?;
+                sink.write_interleaved(&mixed).map_err(|e| e.to_string())?;
+                written += needed as u64;
+                frames_written.store(written, Ordering::Relaxed);
+            }
+            if !running.load(Ordering::Acquire) {
+                let final_target = (started.elapsed().as_secs_f64() * CAPTURE_RATE as f64) as u64;
+                if written >= final_target {
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    })
+}
+
+const SOURCE_START_TIMEOUT: Duration = Duration::from_secs(1);
+const SOURCE_STALL_TIMEOUT: Duration = Duration::from_millis(250);
+
+fn stall_reason(
+    now: Instant,
+    started: Instant,
+    last_mic_progress: Option<Instant>,
+    last_system_progress: Option<Instant>,
+    system_enabled: bool,
+) -> Option<String> {
+    source_stall_reason("microphone", now, started, last_mic_progress).or_else(|| {
+        system_enabled
+            .then(|| source_stall_reason("system audio", now, started, last_system_progress))
+            .flatten()
+    })
+}
+
+fn source_stall_reason(
+    label: &str,
+    now: Instant,
+    started: Instant,
+    last_progress: Option<Instant>,
+) -> Option<String> {
+    match last_progress {
+        Some(last) if now.duration_since(last) >= SOURCE_STALL_TIMEOUT => {
+            Some(format!("{label} stopped delivering samples"))
+        }
+        None if now.duration_since(started) >= SOURCE_START_TIMEOUT => {
+            Some(format!("{label} did not start delivering samples"))
+        }
+        _ => None,
+    }
+}
+
+fn mix_samples(mic: &[f32], system: Option<&[f32]>, frames: usize, output: &mut Vec<f32>) {
+    output.clear();
+    output.reserve(frames.saturating_sub(output.capacity()));
+    let gain = if system.is_some() {
+        std::f32::consts::FRAC_1_SQRT_2
+    } else {
+        1.0
+    };
+    for index in 0..frames {
+        let mic_sample = mic.get(index).copied().unwrap_or(0.0);
+        let system_sample = system
+            .and_then(|samples| samples.get(index))
+            .copied()
+            .unwrap_or(0.0);
+        output.push(((mic_sample + system_sample) * gain).clamp(-1.0, 1.0));
+    }
+}
+
+pub fn frames_written() -> Result<u64, String> {
     let guard = SESSION.lock().map_err(|e| e.to_string())?;
     let active = guard.as_ref().ok_or("no active session")?;
-
-    if let Some(system) = &active.system {
-        system.drain(); // discard: not muxed into FLAC in MVP
+    if let Some(error) = active
+        .capture_error
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+    {
+        return Err(format!("capture stopped: {error}"));
     }
-
-    let samples = active.mic.as_ref().map(|m| m.drain()).unwrap_or_default();
-    let frames = (samples.len() / active.session.channels as usize) as u64;
-    if samples.is_empty() {
-        return Ok(0);
-    }
-    if let Some(w) = active.writer.lock().map_err(|e| e.to_string())?.as_mut() {
-        w.write_interleaved(&samples).map_err(|e| e.to_string())?;
-    }
-    Ok(frames)
+    Ok(active.frames_written.load(Ordering::Relaxed))
 }
 
 pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
-    let mut guard = SESSION.lock().map_err(|e| e.to_string())?;
-    let mut active = guard.take().ok_or("no active session")?;
-    drop(active.mic.take());
-    drop(active.system.take());
-
-    // Failure semantics:
-    // - writer-lock / write_session failures: retryable — session
-    //   re-inserted, stop can run again.
-    // - encode-finish failure: FATAL — writer is consumed (finish(mut
-    //   self)); a re-inserted session would be a recording zombie with
-    //   no writer and a flac that never completes. Prefix such errors
-    //   with FATAL_STOP; the UI resets to idle instead of retrying.
-    let outcome = (|| -> Result<SpoolSession, (String, bool)> {
-        let mut session = active.session.clone();
-        // A poisoned writer mutex never recovers. Try to salvage: the
-        // guard still owns the writer — attempt finish() on it; only if
-        // that also fails is the recording truly lost (FATAL).
-        let writer = match active.writer.lock() {
-            Ok(mut g) => g.take(),
-            Err(poisoned) => {
-                let maybe_writer = poisoned.into_inner().take();
-                match maybe_writer {
-                    Some(w) => {
-                        let mut session = active.session.clone();
-                        session.duration_sec = active.started.elapsed().as_secs_f64();
-                        match w.finish(&spool.audio_path(&session.id)) {
-                            Ok(_) => {
-                                for attempt in 0..3 {
-                                    if attempt > 0 {
-                                        std::thread::sleep(std::time::Duration::from_millis(
-                                            250 * (1 << (attempt - 1)),
-                                        ));
-                                    }
-                                    match spool.write_session(&session) {
-                                        Ok(()) => break,
-                                        Err(e) if attempt < 2 => {
-                                            eprintln!(
-                                                "[recording] salvage write_session retry: {e}"
-                                            );
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[recording] salvage write_session failed: {e} \
-                                                (duration {}s not persisted)",
-                                                session.duration_sec
-                                            );
-                                        }
-                                    }
-                                }
-                                return Ok(session);
-                            }
-                            Err(e) => {
-                                return Err((
-                                    format!("FATAL_STOP: salvage finish failed: {e}"),
-                                    true,
-                                ));
-                            }
-                        }
-                    }
-                    None => {
-                        return Err((
-                            "FATAL_STOP: writer lock poisoned and consumed".to_string(),
-                            true,
-                        ));
-                    }
-                }
-            }
-        };
-        session.duration_sec = active.started.elapsed().as_secs_f64();
-        if let Some(w) = writer {
-            let flac = spool.audio_path(&session.id);
-            w.finish(&flac)
-                .map_err(|e| (format!("FATAL_STOP: encode failed: {e}"), true))?;
-        }
-        spool
-            .write_session(&session)
-            .map_err(|e: anyhow::Error| (e.to_string(), false))?;
-        Ok(session)
-    })();
-    match outcome {
-        Ok(session) => Ok(session),
-        Err((e, fatal)) if !fatal => {
-            *guard = Some(active);
-            Err(e)
-        }
-        Err((e, _)) => {
-            // Fatal: leave spool consistent — mark the session terminal so
-            // pending() stops re-enqueueing a doomed upload; keep the .pcm
-            // sidecar (recoverable audio) next to the marker.
-            let mut dead = active.session.clone();
-            dead.duration_sec = active.started.elapsed().as_secs_f64();
-            dead.finalized = true; // terminal: excluded from pending()
-            dead.title = format!("{} [ENCODE FAILED — pcm kept]", dead.title);
-            if let Err(mark_err) = spool.write_session(&dead) {
-                eprintln!(
-                    "[recording] fatal-marker write failed for {}: {mark_err} \
-                    (session may re-enqueue as doomed upload; pcm sidecar kept)",
-                    dead.id
-                );
-            }
-            Err(e)
+    let mut active = SESSION
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or("no active session")?;
+    active.running.store(false, Ordering::Release);
+    if let Some(worker) = active.worker.take() {
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return fatal(spool, &active, format!("mixer failed: {error}")),
+            Err(_) => return fatal(spool, &active, "mixer thread panicked".into()),
         }
     }
+
+    let writer = match active.writer.lock() {
+        Ok(mut slot) => slot.take(),
+        Err(error) => return fatal(spool, &active, format!("writer lock poisoned: {error}")),
+    };
+    let Some(writer) = writer else {
+        return fatal(spool, &active, "audio writer was already consumed".into());
+    };
+    if let Err(error) = writer.finish(&spool.audio_path(&active.session.id)) {
+        return fatal(spool, &active, format!("encode failed: {error}"));
+    }
+
+    let mic_dropped_frames = active.mic.dropped();
+    let system_dropped_frames = active.system.as_ref().map_or(0, |source| source.dropped());
+    let mic_xruns = active.mic.xruns();
+    let system_xruns = active.system.as_ref().map_or(0, |source| source.xruns());
+    let capture_error = active
+        .capture_error
+        .lock()
+        .ok()
+        .and_then(|error| error.clone());
+
+    let mut session = active.session;
+    session.duration_sec = active.started.elapsed().as_secs_f64();
+    session.mic_dropped_frames = mic_dropped_frames;
+    session.system_dropped_frames = system_dropped_frames;
+    session.mic_xruns = mic_xruns;
+    session.system_xruns = system_xruns;
+    session.capture_error = capture_error;
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match spool.write_session(&session) {
+            Ok(()) => return Ok(session),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt < 2 {
+                    std::thread::sleep(Duration::from_millis(250 * (1 << attempt)));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "could not persist session".into()))
+}
+
+fn fatal(spool: &Spool, active: &ActiveSession, message: String) -> Result<SpoolSession, String> {
+    let mut dead = active.session.clone();
+    dead.duration_sec = active.started.elapsed().as_secs_f64();
+    dead.mic_dropped_frames = active.mic.dropped();
+    dead.system_dropped_frames = active.system.as_ref().map_or(0, |source| source.dropped());
+    dead.mic_xruns = active.mic.xruns();
+    dead.system_xruns = active.system.as_ref().map_or(0, |source| source.xruns());
+    dead.capture_error = active
+        .capture_error
+        .lock()
+        .ok()
+        .and_then(|error| error.clone())
+        .or_else(|| Some(message.clone()));
+    dead.finalized = true;
+    dead.title = format!("{} [CAPTURE FAILED — pcm kept]", dead.title);
+    let _ = spool.write_session(&dead);
+    Err(format!("FATAL_STOP: {message}"))
 }
 
 fn unix_now_iso() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
+        .map(|duration| duration.as_secs().to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mix_samples, stall_reason, SOURCE_STALL_TIMEOUT, SOURCE_START_TIMEOUT};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn mic_only_preserves_level_and_fills_gaps() {
+        let mut output = Vec::new();
+        mix_samples(&[0.25, -0.5], None, 3, &mut output);
+        assert_eq!(output, vec![0.25, -0.5, 0.0]);
+    }
+
+    #[test]
+    fn dual_source_mixes_with_headroom_and_clamps() {
+        let mut output = Vec::new();
+        mix_samples(&[0.5, 1.0], Some(&[0.5, 1.0]), 2, &mut output);
+        assert!((output[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(output[1], 1.0);
+    }
+
+    #[test]
+    fn missing_system_frames_become_silence_without_shortening_output() {
+        let mut output = Vec::new();
+        mix_samples(&[0.2, 0.2], Some(&[]), 2, &mut output);
+        assert_eq!(output.len(), 2);
+        assert!(output.iter().all(|sample| *sample > 0.0));
+    }
+
+    #[test]
+    fn stall_guard_distinguishes_startup_from_midstream_failure() {
+        let now = Instant::now();
+        let started = now - SOURCE_START_TIMEOUT - Duration::from_millis(1);
+        let stalled = now - SOURCE_STALL_TIMEOUT - Duration::from_millis(1);
+        assert_eq!(
+            stall_reason(now, started, None, Some(now), true).as_deref(),
+            Some("microphone did not start delivering samples")
+        );
+        assert_eq!(
+            stall_reason(now, started, Some(stalled), Some(now), true).as_deref(),
+            Some("microphone stopped delivering samples")
+        );
+        assert_eq!(
+            stall_reason(now, started, Some(now), None, true).as_deref(),
+            Some("system audio did not start delivering samples")
+        );
+        assert_eq!(
+            stall_reason(now, started, Some(now), Some(stalled), true).as_deref(),
+            Some("system audio stopped delivering samples")
+        );
+        let within_grace = now - SOURCE_START_TIMEOUT + Duration::from_millis(1);
+        assert_eq!(stall_reason(now, within_grace, None, None, true), None);
+        assert_eq!(stall_reason(now, now, None, None, false), None);
+    }
 }

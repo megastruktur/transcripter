@@ -13,5 +13,7 @@ server/config.yaml
 *.pcm
 .roborev/
 .ship-it/
+.tmp/
+.slim/deepwork/
 backups/
 MEMORY.md
