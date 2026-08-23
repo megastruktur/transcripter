@@ -8,6 +8,15 @@ storage:
   # point the compose bind-mount at your NAS path on the host.
   path: /storage
 
+transcripts:
+  # Exported consolidated notes (one .md per call). The in-container path is
+  # FIXED at /transcripts — the host dir is chosen by TRANSCRIPTS_DIR in .env
+  # (compose bind), never overridden in yaml.
+  # Optional boot-race guard: when set (e.g. ".obsidian"), export refuses to
+  # run unless this entry exists under the dir — a bind over an empty NAS
+  # mountpoint is writable but wrong, better to skip than misplace notes.
+  sentinel: ""
+
 transcribe:
   # local = faster-whisper in worker container; api = OpenAI-compatible endpoint
   backend: local

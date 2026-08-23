@@ -160,6 +160,51 @@ diarization:
 Storage path, DB URL, and ports live in the same file / `docker-compose.yml`.
 The worker reads config once — `docker compose restart worker` to apply.
 
+### Transcript note export (Obsidian-friendly)
+
+Every finished recording is exported as ONE consolidated note — YAML
+frontmatter (`recording_id`, `title`, `created`, `date`, `tags`, optional
+`duration_sec`) + `## Summary` (when generated) + `## Transcript`
+(diarized preferred). The host directory is chosen in `.env`, not yaml:
+
+```bash
+# .env next to docker-compose.yml — the dir MUST exist before `up`
+TRANSCRIPTS_DIR=/mnt/synology/obsidian/meganotes/Transcripts
+```
+
+Unset → `./storage/transcripts`. Notes are named
+`{YYYY-MM-DD_HH-MM} {title|call} {id8}.md` (UTC; `TRANSCRIPTER_TZ` env
+overrides) and are **overwritten on every regenerate** — the machine owns the
+note, personal annotations belong in linked notes. A hidden `.name.md.lock`
+sits next to each note (fencing); Obsidian hides dotfiles.
+
+Optional boot-race guard in `config.yaml`:
+
+```yaml
+transcripts:
+  sentinel: ".obsidian"   # export refuses to run unless this exists under
+                          # the dir — catches a bind over an empty NAS
+                          # mountpoint (docker started before the mount)
+```
+
+- **Export is best-effort.** A dead NAS mount can't hang the pipeline: the
+  export runs in a subprocess (20 s kill-and-abandon, max 4 live children);
+  failures land in the workflow result (`transcript_note`) in Temporal UI.
+- **Recovery:** `docker compose exec worker sh -c 'cd /app/worker &&
+  .venv/bin/python -m worker.backfill'` re-exports every `done` recording
+  (idempotent, same subprocess isolation, refuses on a missing sentinel).
+- **NAS mounts should be soft** (`soft,timeo=50,retrans=2`): backfill's
+  refuse-on-bad-sentinel precondition assumes ETIMEDOUT-not-hang semantics.
+  Consider a systemd drop-in `RequiresMountsFor=/mnt/synology` on the docker
+  unit so binds never capture an empty mountpoint.
+- Deleting a recording does NOT delete its note (the `recording_id` in
+  frontmatter is the hook for a future cleanup). A future title-edit API
+  must either re-export or drop the title from the filename.
+- Workflow deploy note: the export activity was added to the workflow
+  `finally` — deploy when no `ProcessRecording` executions are open and the
+  worker isn't restart-looping (in-flight workflows replay against the new
+  command sequence).
+
 ## Client setup
 
 Requirements: Node 22+, pnpm, Rust toolchain, platform webkit deps
@@ -212,6 +257,28 @@ the pipeline, and checks all stage artifacts. Green output = the whole stack
 works.
 
 ## Development
+
+### Skills for coding agents
+
+Beyond the transcripter-specific skills (`.claude/skills/transcripter-*`,
+symlinked from `skills/`), two vendored Temporal skills give agents accurate,
+up-to-date Temporal knowledge instead of relying on stale training data:
+
+- `skills/temporal-developer` — Python-SDK subset of
+  [skill-temporal-developer](https://github.com/temporalio/skill-temporal-developer)
+  @ `b01c632`: determinism, patterns, gotchas, versioning, testing, CLI
+  workflow commands. Curated for this repo (core + python references only).
+- `skills/temporal-ops` — self-hosted subset of
+  [skill-temporal-ops](https://github.com/temporalio/skill-temporal-ops) @
+  `c2f7602`: `temporal operator`/data-plane CLI, stuck-workflow and
+  worker-health triage, non-determinism remediation. Cloud/`tcld` references
+  removed; SKILL.md pins the repo access pattern (`docker compose exec
+  temporal temporal --address temporal:7233 …` from `server/`).
+
+Each skill's SKILL.md records the vendored commit; check upstream for updates
+before syncing. Fresh official docs are fetchable as Markdown by appending
+`.md` to any docs.temporal.io URL (index: `docs.temporal.io/llms.txt`).
+
 
 - Server API tests: `cd server/api && uv run pytest`
 - Worker tests: `cd server/worker && uv run pytest`

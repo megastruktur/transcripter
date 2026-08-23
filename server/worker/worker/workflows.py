@@ -6,7 +6,8 @@ from typing import TypedDict
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError
+from temporalio.exceptions import ActivityError, CancelledError
+from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
     from .activities import timeout_for
@@ -19,6 +20,7 @@ class PipelineResult(TypedDict, total=False):
     diarize: dict
     merge_speakers: dict
     summarize: dict
+    export: dict
 
 
 def _retry() -> RetryPolicy:
@@ -62,6 +64,23 @@ class ProcessRecording:
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=_retry(),
             )
+            # Best-effort note export. WAIT_CANCELLATION_COMPLETED keeps the
+            # activity running to completion even if the workflow is
+            # cancelled mid-finally (this SDK version has no workflow.shield;
+            # this is its documented replacement). The activity returns
+            # errors as values, so only infra failures raise — swallowed
+            # here; worker.backfill is the designated re-export path.
+            try:
+                result["export"] = await workflow.execute_activity(
+                    "export_transcript",
+                    rec_id,
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=3),
+                    cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+                )
+            except (ActivityError, CancelledError):
+                workflow.logger.warning("export_transcript failed for %s", rec_id)
+
         return result
 
     async def _run_stages(

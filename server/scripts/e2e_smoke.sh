@@ -195,6 +195,15 @@ if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="do
     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
 fi
 
+echo "== 9b. exported transcript note"
+TRANSCRIPTS_DIR_HOST="$(cd "$(dirname "$0")/.." && pwd)/storage/transcripts"
+# Notes carry the recording id8 suffix; exactly one must exist per recording.
+NOTES=$(find "$TRANSCRIPTS_DIR_HOST" -maxdepth 1 -name "* ${RID:0:8}.md" 2>/dev/null)
+N=$(printf '%s\n' "$NOTES" | grep -c .)
+NOTE=$(printf '%s\n' "$NOTES" | head -1)
+test "$N" -eq 1 && test -s "$NOTE" && echo "  ok: $(basename "$NOTE")" || { echo "  MISSING/dup exported note (N=$N)"; exit 1; }
+grep -q "recording_id: $RID" "$NOTE" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
+
 echo "== 10. regenerate diarize"
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
