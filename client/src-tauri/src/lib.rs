@@ -15,7 +15,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 use tokio::runtime::Runtime;
 
@@ -99,6 +99,7 @@ pub fn run() {
             cmd_recording_degraded,
             cmd_upload_now,
             cmd_retry_pending,
+            cmd_pending_uploads,
             cmd_apply_window_mode,
         ])
         .run(tauri::generate_context!())
@@ -158,6 +159,7 @@ fn cmd_stop_recording(
         let for_upload = session.clone();
         let spool_dir = spool.root().to_path_buf();
         enqueue_upload(
+            app,
             spool_dir,
             for_upload,
             UploadCfg {
@@ -179,6 +181,7 @@ fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<
     let spool_dir = spool.root().to_path_buf();
     for session in pending {
         enqueue_upload(
+            app.clone(),
             spool_dir.clone(),
             session,
             UploadCfg {
@@ -212,6 +215,41 @@ struct UploadCfg {
     token: String,
 }
 
+/// UI event: one spool session's upload lifecycle.
+/// `state`: "queued" | "uploading" | "done" | "failed".
+#[derive(Clone, serde::Serialize)]
+pub struct UploadStatusEvent {
+    pub session_id: String,
+    pub title: String,
+    pub state: String,
+    pub committed: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+const UPLOAD_STATUS_EVENT: &str = "upload://status";
+
+fn emit_upload_status(
+    app: &AppHandle,
+    session: &SpoolSession,
+    state: &str,
+    committed: u64,
+    total: u64,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        UPLOAD_STATUS_EVENT,
+        UploadStatusEvent {
+            session_id: session.id.clone(),
+            title: session.title.clone(),
+            state: state.into(),
+            committed,
+            total,
+            error,
+        },
+    );
+}
+
 #[tauri::command]
 fn cmd_upload_now(
     app: AppHandle,
@@ -222,8 +260,21 @@ fn cmd_upload_now(
     let spool = spool_from_app(&app)?;
     let session = spool.read_session(&session_id).map_err(|e| e.to_string())?;
     let spool_dir = spool.root().to_path_buf();
-    enqueue_upload(spool_dir, session.clone(), UploadCfg { base_url, token });
+    enqueue_upload(
+        app,
+        spool_dir,
+        session.clone(),
+        UploadCfg { base_url, token },
+    );
     Ok(())
+}
+
+/// Spool sessions not yet uploaded — lets the UI seed its upload state
+/// on startup (before any event arrives) instead of showing a stale zero.
+#[tauri::command]
+fn cmd_pending_uploads(app: AppHandle) -> Result<Vec<SpoolSession>, String> {
+    let spool = spool_from_app(&app)?;
+    spool.pending().map_err(|e| e.to_string())
 }
 
 /// catch_unwind for futures (tokio has no built-in; use futures crate).
@@ -236,6 +287,7 @@ async fn futures_catch<F: std::future::Future>(
 
 #[derive(Clone)]
 struct UploadJob {
+    app: AppHandle,
     spool_dir: std::path::PathBuf,
     session: SpoolSession,
     cfg: UploadCfg,
@@ -250,11 +302,25 @@ static UPLOAD_QUEUE: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<Queu
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
         RUNTIME.spawn(async move {
             while let Some(QueueMsg::Job(job)) = rx.recv().await {
+                emit_upload_status(
+                    &job.app,
+                    &job.session,
+                    "uploading",
+                    job.session.uploaded_offset,
+                    0,
+                    None,
+                );
                 let result = {
+                    let app = job.app.clone();
+                    let session = job.session.clone();
+                    let progress = move |p: uploader::UploadProgress| {
+                        emit_upload_status(&app, &session, "uploading", p.committed, p.total, None);
+                    };
                     let fut = std::panic::AssertUnwindSafe(try_upload(
                         &job.spool_dir,
                         &job.session,
                         &job.cfg,
+                        Some(&progress),
                     ));
                     match futures_catch(fut).await {
                         Ok(res) => res,
@@ -263,17 +329,34 @@ static UPLOAD_QUEUE: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<Queu
                                 "[uploader] session {} PANICKED: {:?}",
                                 job.session.id, panic
                             );
+                            emit_upload_status(
+                                &job.app,
+                                &job.session,
+                                "failed",
+                                0,
+                                0,
+                                Some("uploader panicked".into()),
+                            );
                             QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
                             continue;
                         }
                     }
                 };
-                if let Err(e) = result {
-                    eprintln!("[uploader] session {} failed: {e}", job.session.id);
-                }
-                // Remove after processing (incl. panic): in-flight jobs still
-                // dedupe re-enqueues; a panicked worker does not leak the id.
                 QUEUED.lock().map(|mut q| q.remove(&job.session.id)).ok();
+                match result {
+                    Ok(()) => emit_upload_status(&job.app, &job.session, "done", 0, 0, None),
+                    Err(e) => {
+                        eprintln!("[uploader] session {} failed: {e}", job.session.id);
+                        emit_upload_status(
+                            &job.app,
+                            &job.session,
+                            "failed",
+                            0,
+                            0,
+                            Some(e.to_string()),
+                        );
+                    }
+                }
             }
         });
         tx
@@ -285,13 +368,22 @@ static QUEUED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<St
 
 /// Enqueue an upload; the single queue worker processes jobs sequentially.
 /// Returns immediately; failures are logged and the spool entry stays pending.
-fn enqueue_upload(spool_dir: std::path::PathBuf, session: SpoolSession, cfg: UploadCfg) {
+fn enqueue_upload(
+    app: AppHandle,
+    spool_dir: std::path::PathBuf,
+    session: SpoolSession,
+    cfg: UploadCfg,
+) {
+    // Emit before the dedupe check: a re-enqueue of an in-flight id is a
+    // user retry signal; the UI treats "uploading" (re-)events as progress.
+    emit_upload_status(&app, &session, "queued", 0, 0, None);
     if QUEUED
         .lock()
         .map(|mut q| q.insert(session.id.clone()))
         .unwrap_or(false)
         && UPLOAD_QUEUE
             .send(QueueMsg::Job(UploadJob {
+                app,
                 spool_dir,
                 session: session.clone(),
                 cfg,
@@ -308,6 +400,7 @@ async fn try_upload(
     spool_dir: &std::path::Path,
     session: &SpoolSession,
     cfg: &UploadCfg,
+    progress: Option<&(dyn Fn(uploader::UploadProgress) + Send + Sync)>,
 ) -> anyhow::Result<()> {
     if cfg.base_url.is_empty() {
         anyhow::bail!("no server URL configured");
@@ -333,7 +426,10 @@ async fn try_upload(
                 return Ok(());
             }
         };
-        let res = uploader.upload(spool_dir, &current, &mut |_p| {}).await;
+        let res = match progress {
+            Some(cb) => uploader.upload(spool_dir, &current, &mut |p| cb(p)).await,
+            None => uploader.upload(spool_dir, &current, &mut |_| {}).await,
+        };
         match res {
             Ok(()) => {
                 if let Ok(s) = Spool::open_root(spool_dir) {

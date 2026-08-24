@@ -5,7 +5,7 @@
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { checkServerConnection, connection, preflight, recorder, uploads } from '$lib/stores.svelte';
+	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let { children } = $props();
@@ -20,7 +20,25 @@
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
 
-	const pendingUploads = $derived(Object.keys(uploads).length);
+	const uploadStates = $derived(Object.values(uploads));
+	const uploadingCount = $derived(uploadStates.filter((u) => u.state === 'uploading' || u.state === 'queued').length);
+	const failedCount = $derived(uploadStates.filter((u) => u.state === 'failed').length);
+	const uploadPct = $derived.by(() => {
+		const active = uploadStates.filter((u) => u.state === 'uploading' && u.total > 0);
+		if (!active.length) return null;
+		const committed = active.reduce((sum, u) => sum + u.committed, 0);
+		const total = active.reduce((sum, u) => sum + u.total, 0);
+		return Math.round((committed / total) * 100);
+	});
+	const uploadStatus = $derived.by(() => {
+		if (failedCount > 0) return { tone: 'issue', text: `${failedCount} upload${failedCount === 1 ? '' : 's'} failed` };
+		if (uploadingCount > 0) {
+			const pct = uploadPct;
+			return { tone: 'issue', text: pct !== null ? `Uploading… ${pct}%` : `Uploading… (${uploadingCount})` };
+		}
+		const pending = uploadStates.filter((u) => u.state !== 'done').length;
+		return { tone: 'idle', text: pending > 0 ? `${pending} pending upload${pending === 1 ? '' : 's'}` : 'No pending uploads' };
+	});
 	const audioStatus = $derived(
 		recorder.recording
 			? 'Recording'
@@ -43,13 +61,14 @@
 		connection.phase === 'connected' ? 'ready' : connection.phase === 'checking' ? 'issue' : connection.phase === 'unavailable' ? 'unavailable' : 'idle'
 	);
 	const collapsedStatus = $derived(
-		`${audioStatus} · ${serverStatus}${pendingUploads ? ` · ${pendingUploads} pending ${pendingUploads === 1 ? 'upload' : 'uploads'}` : ''}`
+		`${audioStatus} · ${serverStatus}${uploadingCount ? ` · ${uploadStatus.text}` : ''}`
 	);
 	const routeName = $derived(
 		page.url.pathname === '/' ? 'Recorder' : page.url.pathname === '/recordings' ? 'Recordings' : 'Settings'
 	);
 	onMount(async () => {
 		void checkServerConnection();
+		void initUploadTracking();
 		if (!isTauri()) return;
 		try {
 			const appWindow = getCurrentWindow();
@@ -201,10 +220,10 @@
 			</main>
 		</div>
 
-		<footer class="status-strip">
-			<span><i class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'}></i>{serverStatus}</span>
-			<span>{pendingUploads ? `${pendingUploads} pending uploads` : 'No pending uploads'}</span>
-		</footer>
+	<footer class="status-strip">
+		<span><i class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'}></i>{serverStatus}</span>
+		<span>{uploadStatus.text}</span>
+	</footer>
 	</div>
 {/if}
 
