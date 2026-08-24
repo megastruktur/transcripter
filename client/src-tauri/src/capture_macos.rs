@@ -13,8 +13,8 @@ use objc2_core_audio::{
 };
 use objc2_core_foundation::{
     kCFAllocatorDefault, kCFBooleanTrue, kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks,
-    kCFTypeDictionaryValueCallBacks, CFArray, CFDictionary, CFMutableDictionary, CFRetained,
-    CFString,
+    kCFTypeDictionaryValueCallBacks, CFArray, CFBoolean, CFDictionary, CFMutableDictionary,
+    CFRetained, CFString,
 };
 use objc2_foundation::{NSArray, NSNumber, NSString};
 
@@ -150,14 +150,15 @@ fn aggregate_properties(
         );
         // `kCFBooleanTrue` is toll-free bridged to NSNumber and avoids the
         // Swift-backed NSNumber class cluster on macOS 26 (Tahoe).
-        let drift = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
+        let drift: &CFBoolean = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioSubTapDriftCompensationKey) as *const _ as *const c_void,
-            &*drift as *const _ as *const c_void,
+            drift as *const CFBoolean as *const c_void,
         );
         dict
     };
+
     let taps = unsafe {
         CFArray::new(
             kCFAllocatorDefault,
@@ -178,7 +179,9 @@ fn aggregate_properties(
         .expect("Core Foundation dictionary allocation failed");
         let name = CFString::from_str("Transcripter loopback");
         let uid = CFString::from_str(aggregate_uid);
-        let yes = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
+        // `kCFBooleanTrue` is toll-free bridged to NSNumber and avoids the
+        // Swift-backed NSNumber class cluster on macOS 26 (Tahoe).
+        let yes: &CFBoolean = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioAggregateDeviceNameKey) as *const _ as *const c_void,
@@ -197,12 +200,12 @@ fn aggregate_properties(
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioAggregateDeviceTapAutoStartKey) as *const _ as *const c_void,
-            &*yes as *const _ as *const c_void,
+            yes as *const CFBoolean as *const c_void,
         );
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioEndPointDeviceIsPrivateKey) as *const _ as *const c_void,
-            &*yes as *const _ as *const c_void,
+            yes as *const CFBoolean as *const c_void,
         );
         CFRetained::cast_unchecked::<CFDictionary>(dict)
     }
