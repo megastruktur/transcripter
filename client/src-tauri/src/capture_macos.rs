@@ -18,6 +18,98 @@ use objc2_core_foundation::{
 };
 use objc2_foundation::{NSArray, NSNumber, NSString};
 
+
+mod tcc {
+    //! System Audio Recording permission (`kTCCServiceAudioCapture`) via the
+    //! private TCC SPI.
+    //!
+    //! A Core Audio process tap is created successfully with or without this
+    //! permission — but without it the HAL delivers all-zero buffers and no
+    //! API call ever reports an error. The system prompt is normally triggered
+    //! by starting IO on a tap-backed aggregate, but that requires a stable
+    //! signing identity; our unsigned/ad-hoc builds never see it. The SPI
+    //! used here (TCCAccessPreflight / TCCAccessRequest) is the same one
+    //! AudioCap, screenpipe and cpal#1257 use to make this failure mode
+    //! explicit.
+
+    use std::ffi::c_void;
+    use std::sync::mpsc;
+    use std::sync::LazyLock;
+
+    use block2::StackBlock;
+    use objc2_core_foundation::{CFRetained, CFString};
+
+    const SERVICE: &str = "kTCCServiceAudioCapture";
+
+    type Preflight = unsafe extern "C" fn(*const c_void, *const c_void) -> i32;
+    type Request = unsafe extern "C" fn(*const c_void, *const c_void, *const c_void);
+
+    struct Tcc {
+        preflight: Preflight,
+        request: Request,
+    }
+
+    /// Loaded once; `None` when the private framework or symbols are absent
+    /// (non-macOS-minus-SPI futures, hardened test hosts).
+    static TCC: LazyLock<Option<Tcc>> = LazyLock::new(|| unsafe {
+        let handle = libc::dlopen(
+            b"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC\0"
+                .as_ptr()
+                .cast(),
+            libc::RTLD_LAZY | libc::RTLD_LOCAL,
+        );
+        if handle.is_null() {
+            return None;
+        }
+        let preflight = libc::dlsym(handle, b"TCCAccessPreflight\0".as_ptr().cast());
+        let request = libc::dlsym(handle, b"TCCAccessRequest\0".as_ptr().cast());
+        if preflight.is_null() || request.is_null() {
+            return None;
+        }
+        Some(Tcc {
+            preflight: std::mem::transmute::<*mut c_void, Preflight>(preflight),
+            request: std::mem::transmute::<*mut c_void, Request>(request),
+        })
+    });
+
+    /// Non-blocking status check; never shows UI.
+    /// `true` only when the permission is already granted.
+    pub fn granted() -> bool {
+        let Some(tcc) = TCC.as_ref() else {
+            return false;
+        };
+        let service = service_string();
+        unsafe { (tcc.preflight)(std::ptr::from_ref(&*service).cast(), std::ptr::null()) == 0 }
+    }
+
+    /// Shows the system prompt if undetermined; blocks until the user answers.
+    /// `false` on denial, on an already-denied state, or if TCC is unavailable.
+    pub fn request() -> bool {
+        if granted() {
+            return true;
+        }
+        let Some(tcc) = TCC.as_ref() else {
+            return false;
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        let mut completion = StackBlock::new(move |granted: u8| {
+            tx.send(granted != 0).ok();
+        });
+        let service = service_string();
+        unsafe {
+            (tcc.request)(
+                std::ptr::from_ref(&*service).cast(),
+                std::ptr::null(),
+                std::ptr::from_ref(&completion).cast(),
+            );
+        }
+        rx.recv().unwrap_or(false)
+    }
+
+    fn service_string() -> CFRetained<CFString> {
+        CFString::from_str(SERVICE)
+    }
+}
 static INSTANCE: AtomicU32 = AtomicU32::new(0);
 
 pub struct MacLoopbackDevice {
@@ -42,6 +134,17 @@ impl Drop for MacLoopbackDevice {
 }
 
 pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, String> {
+    // The tap itself never reports a missing System Audio Recording
+    // permission — the HAL would happily deliver all-zero buffers forever.
+    // Make the permission explicit instead: prompt once, fail loudly on
+    // denial so the recording degrades to mic-only with a real reason.
+    if !tcc::request() {
+        return Err(
+            "system audio permission denied — allow it in System Settings \
+             → Privacy & Security → System Audio Recording"
+                .into(),
+        );
+    }
     let output_id = output.id().map_err(|e| e.to_string())?;
     let device_uid = NSString::from_str(output_id.id());
     // macOS 26 (Tahoe) rewrote Foundation in Swift: `+[NSArray new]`
