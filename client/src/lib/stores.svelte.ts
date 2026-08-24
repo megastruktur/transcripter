@@ -116,9 +116,10 @@ export function clearWarnings(): void {
 export async function checkAudio(
 	microphone: string | null,
 	systemOutput: string | null,
-	checkSystem: boolean
+	checkSystem: boolean,
+	probe = false
 ): Promise<PreFlightReport> {
-	const report = await commands.preFlight(true, microphone, systemOutput, checkSystem);
+	const report = await commands.preFlight(probe, microphone, systemOutput, checkSystem);
 	preflight.current = report;
 	return report;
 }
@@ -141,17 +142,9 @@ export async function startRecording(
 		recorder.warnings.push(report.error ?? 'microphone unavailable');
 		return;
 	}
-	if (report.mic_state === 'silent') {
-		// Non-fatal: an open-but-quiet mic still delivers frames; the stall
-		// detector in the recorder watches delivery, not signal level.
-		recorder.warnings.push('mic is quiet — recording will start anyway; speak or check the input level (Windows: Settings → System → Sound → Input)');
-	}
 	if (captureSystem && ['permission_denied', 'unavailable', 'failed'].includes(report.system_state)) {
 		recorder.warnings.push(report.error ?? 'system audio unavailable');
 		return;
-	}
-	if (captureSystem && report.system_state === 'silent') {
-		recorder.warnings.push('system audio is connected but no sound is playing yet');
 	}
 	recorder.sessionId = await commands.startRecording(title || null, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
