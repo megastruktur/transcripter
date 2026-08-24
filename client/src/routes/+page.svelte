@@ -5,8 +5,10 @@
 	import Icon from '$lib/Icon.svelte';
 
 	const SYSTEM_AUDIO_OFF = '__off__';
+	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
+	// session's written-frame count, so elapsed time survives window collapse.
+	const CAPTURE_RATE = 48_000;
 	let title = $state('');
-	let elapsed = $state(0);
 	let starting = $state(false);
 	let checkingAudio = $state(false);
 	let loadingDevices = $state(true);
@@ -28,19 +30,17 @@
 
 	onMount(() => {
 		void loadAudioDevices();
+		// A remount (window re-expanded mid-recording) must not restart the
+		// clock: seed frames immediately instead of waiting for the poller.
+		if (recorder.recording) {
+			commands.recordingFrames().then(
+				(frames) => (recorder.frames = frames),
+				() => {}
+			);
+		}
 	});
 
-	$effect(() => {
-		if (!recorder.recording) {
-			elapsed = 0;
-			return;
-		}
-		const startedAt = Date.now();
-		const timer = globalThis.setInterval(() => {
-			elapsed = Math.floor((Date.now() - startedAt) / 1000);
-		}, 1000);
-		return () => globalThis.clearInterval(timer);
-	});
+	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
 
 	function fmt(sec: number): string {
 		const h = Math.floor(sec / 3600);
@@ -62,6 +62,14 @@
 			selectedSystemOutput = savedSystemOutput && (savedSystemOutput === SYSTEM_AUDIO_OFF || devices.system_outputs.some((device) => device.id === savedSystemOutput))
 				? savedSystemOutput
 				: (devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF);
+			// Availability check (no RMS probe): startup is one of the two
+			// sanctioned moments; silence at record time is not an error.
+			if (selectedMicrophone) await checkAudioDevices(false);
+			// macOS first run: the mic permission prompt only appears when an
+			// input stream is opened, so probe once while undetermined.
+			if (preflight.current?.mic_permission === 'not_determined' && selectedMicrophone) {
+				await checkAudioDevices(true);
+			}
 		} catch (error) {
 			deviceError = String(error);
 		} finally {
@@ -73,20 +81,22 @@
 		preflight.current = null;
 		localStorage.setItem('transcripter.microphone', selectedMicrophone);
 		localStorage.setItem('transcripter.system-output', selectedSystemOutput);
+		// Device switch is the second sanctioned check moment.
+		void checkAudioDevices(false);
 	}
-
-	async function checkAudioDevices(): Promise<void> {
+	async function checkAudioDevices(probe = true): Promise<void> {
 		if (!selectedMicrophone) {
 			recorder.warnings.push('no microphone available');
 			return;
 		}
 		checkingAudio = true;
-		clearWarnings();
+		if (probe) clearWarnings();
 		try {
 			await checkAudio(
 				selectedMicrophone,
 				selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : selectedSystemOutput,
-				selectedSystemOutput !== SYSTEM_AUDIO_OFF
+				selectedSystemOutput !== SYSTEM_AUDIO_OFF,
+				probe
 			);
 		} catch (error) {
 			recorder.warnings.push(String(error));
@@ -190,7 +200,7 @@
 			</select>
 		</div>
 
-		<button class="check-devices" type="button" disabled={checkingAudio || loadingDevices || recorder.recording || !selectedMicrophone} onclick={checkAudioDevices}>
+		<button class="check-devices" type="button" disabled={checkingAudio || loadingDevices || recorder.recording || !selectedMicrophone} onclick={() => checkAudioDevices()}>
 			<Icon name="refresh" size={15} />
 			{checkingAudio ? 'Checking selected devices…' : 'Check selected devices'}
 		</button>
@@ -204,7 +214,6 @@
 	.notice.error { border-color: var(--red); background: rgba(213, 45, 36, 0.08); }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
 	.notice.error strong { color: var(--red); }
-	.notice span { color: #c6baaa; }
 	.recorder-core { padding: 12px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
 	.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
 	.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }

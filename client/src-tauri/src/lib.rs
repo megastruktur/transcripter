@@ -33,6 +33,24 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[tauri::command]
+fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    // Collapsed: pinned 76x76 mark that floats above other apps (on every
+    // macOS space). Expanded: a regular window in the normal z-order.
+    let size = if collapsed {
+        tauri::LogicalSize::new(76u32, 76u32)
+    } else {
+        tauri::LogicalSize::new(440u32, 720u32)
+    };
+    let _ = window.set_size(size);
+    let _ = window.set_always_on_top(collapsed);
+    #[cfg(target_os = "macos")]
+    let _ = window.set_visible_on_all_workspaces(collapsed);
+}
+
 pub fn run() {
     // Spool entries from previous runs are retried when the frontend calls
     // cmd_retry_pending (Recordings mount, with configured credentials).
@@ -80,6 +98,7 @@ pub fn run() {
             cmd_recording_frames,
             cmd_upload_now,
             cmd_retry_pending,
+            cmd_apply_window_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

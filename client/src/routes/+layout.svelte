@@ -4,6 +4,7 @@
 	import { onMount } from 'svelte';
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
+	import { commands } from '$lib/tauri';
 	import { checkServerConnection, connection, preflight, recorder, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
@@ -59,6 +60,10 @@
 		} catch {
 			// The persisted value remains the fallback if native size inspection fails.
 		}
+		if (collapsed) {
+			// Restore the pinned floating mode for a window that starts collapsed.
+			void applyWindowMode(true);
+		}
 	});
 
 
@@ -70,6 +75,17 @@
 		if (!isTauri()) return;
 		await getCurrentWindow().setSize(new LogicalSize(width, height));
 	}
+	async function applyWindowMode(collapsed: boolean): Promise<void> {
+		if (!isTauri()) {
+			resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
+			return;
+		}
+		try {
+			await commands.applyWindowMode(collapsed);
+		} catch {
+			resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
+		}
+	}
 
 	async function toggleCollapsed(): Promise<void> {
 		if (resizing) return;
@@ -77,7 +93,7 @@
 		collapsed = !collapsed;
 		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
 		try {
-			await resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
+			await applyWindowMode(collapsed);
 		} finally {
 			resizing = false;
 		}
@@ -141,7 +157,7 @@
 		aria-label={`Expand Transcripter. ${collapsedStatus}`}
 		title={collapsedStatus}
 	>
-		<span class="collapsed-icon" aria-hidden="true"><Icon name="mark" size={62} /></span>
+		<span class="collapsed-icon" aria-hidden="true"><Icon name="mark" size={56} /></span>
 		<span class="collapsed-state"></span>
 	</button>
 {:else}
@@ -151,7 +167,7 @@
 				<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
 				<div data-tauri-drag-region>
 					<strong data-tauri-drag-region>TRANSCRIPTER</strong>
-					<small data-tauri-drag-region>Always on top</small>
+					<small data-tauri-drag-region>Audio capture console</small>
 				</div>
 			</div>
 			<div class="window-actions">
@@ -162,7 +178,6 @@
 		</header>
 
 		<div class="hazard-rule" aria-hidden="true"></div>
-
 		<div class="shell-body">
 			<nav class="rail" aria-label="Primary navigation">
 				{#each navItems as item (item.href)}
@@ -258,9 +273,9 @@
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
 
-	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; overflow: hidden; transition: transform 180ms ease; touch-action: none; }
-	.collapsed-icon { width: 62px; height: 62px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }
-	.collapsed-state { position: absolute; right: 7px; bottom: 8px; width: 9px; height: 9px; border: 2px solid #100d0b; border-radius: 50%; background: #7c756d; }
+	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; transition: transform 180ms ease; touch-action: none; }
+	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }
+	.collapsed-state { position: absolute; right: 12px; bottom: 12px; width: 9px; height: 9px; border: 2px solid #100d0b; border-radius: 50%; background: #7c756d; }
 	.collapsed-mark.recording .collapsed-state { background: var(--red); box-shadow: none; }
 	.collapsed-mark:hover .collapsed-icon { transform: rotate(9deg); }
 	.collapsed-mark.dragging { cursor: grabbing; }
