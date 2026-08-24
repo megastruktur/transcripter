@@ -13,8 +13,8 @@ use objc2_core_audio::{
 };
 use objc2_core_foundation::{
     kCFAllocatorDefault, kCFBooleanTrue, kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks,
-    kCFTypeDictionaryValueCallBacks, CFArray, CFBoolean, CFDictionary, CFMutableDictionary,
-    CFRetained, CFString,
+    kCFTypeDictionaryValueCallBacks, CFArray, CFBoolean, CFDictionary, CFMutableArray,
+    CFMutableDictionary, CFRetained, CFString,
 };
 use objc2_foundation::{NSArray, NSNumber, NSString};
 
@@ -159,14 +159,15 @@ fn aggregate_properties(
         dict
     };
 
+    // A 1-element immutable CFArray still routes through the Swift-backed
+    // `__NSSingleObjectArrayI` class cluster on macOS 26 (Tahoe) and aborts
+    // a pure-Rust binary; a mutable CFArray is a plain CoreFoundation class
+    // with no ObjC dispatch on creation.
     let taps = unsafe {
-        CFArray::new(
-            kCFAllocatorDefault,
-            [&tap_entry].as_ptr() as *mut *const c_void,
-            1,
-            &kCFTypeArrayCallBacks,
-        )
-        .expect("Core Foundation array allocation failed")
+        let arr = CFMutableArray::new(kCFAllocatorDefault, 1, &kCFTypeArrayCallBacks)
+            .expect("Core Foundation array allocation failed");
+        CFMutableArray::append_value(Some(&arr), &*tap_entry as *const _ as *const c_void);
+        CFRetained::cast_unchecked::<CFArray>(arr)
     };
 
     unsafe {
