@@ -68,6 +68,9 @@ export const commands = {
 	retryPending(baseUrl: string, token: string): Promise<number> {
 		return invoke('cmd_retry_pending', { baseUrl, token });
 	},
+	pendingUploads(): Promise<SpoolSession[]> {
+		return invoke('cmd_pending_uploads');
+	},
 	applyWindowMode(collapsed: boolean): Promise<void> {
 		return invoke('cmd_apply_window_mode', { collapsed });
 	}

@@ -1,11 +1,17 @@
-import { commands, type PreFlightReport } from '$lib/tauri';
-import { loadApiConfig, saveApiConfig, testConnection, type ApiConfig } from '$lib/api.svelte';
+import { commands } from '$lib/tauri';
+import type { PreFlightReport } from '$lib/tauri';
+import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
+import type { ApiConfig } from '$lib/api.svelte';
+import { listen } from '@tauri-apps/api/event';
 
 export type UploadState = {
 	sessionId: string;
+	title: string;
+	state: 'queued' | 'uploading' | 'done' | 'failed';
 	committed: number;
 	total: number;
-};
+	error: string | null;
+}
 
 // UI state shared across pages (Svelte 5 runes).
 export const recorder = $state({
@@ -18,10 +24,66 @@ export const recorder = $state({
 
 export const preflight = $state<{ current: PreFlightReport | null }>({ current: null });
 
+/** Live upload ledger: session id → current upload state. */
 export const uploads = $state<{ [id: string]: UploadState }>({});
 
-export type ConnectionPhase = 'unconfigured' | 'checking' | 'connected' | 'unavailable';
+type UploadStatusEvent = {
+	session_id: string;
+	title: string;
+	state: 'queued' | 'uploading' | 'done' | 'failed';
+	committed: number;
+	total: number;
+	error: string | null;
+};
+/** Seed the ledger from the spool (startup) and subscribe to Rust events. */
+export async function initUploadTracking(): Promise<void> {
+	if (uploadEventsBound) return;
+	const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+	if (!isTauri) return;
+	uploadEventsBound = true;
+	await listen<UploadStatusEvent>('upload://status', (event) => {
+		const p = event.payload;
+		uploads[p.session_id] = {
+			sessionId: p.session_id,
+			title: p.title,
+			state: p.state,
+			committed: p.committed,
+			total: p.total,
+			error: p.error
+		};
+	});
+	try {
+		for (const s of await commands.pendingUploads()) {
+			if (!uploads[s.id]) {
+				uploads[s.id] = {
+					sessionId: s.id,
+					title: s.title,
+					state: 'queued',
+					committed: s.uploaded_offset,
+					total: 0,
+					error: null
+				};
+			}
+		}
+	} catch {
+		// Spool read failed; events will still drive the UI once uploads run.
+	}
+	// "done" entries only need a short-lived confirmation; drop them so the
+	// footer returns to a quiet state.
+	if (Object.keys(uploads).length) {
+		setTimeout(pruneDoneUploads, 8000);
+	}
+}
 
+let uploadEventsBound = false;
+
+function pruneDoneUploads(): void {
+	for (const id of Object.keys(uploads)) {
+		if (uploads[id].state === 'done') delete uploads[id];
+	}
+}
+
+export type ConnectionPhase = 'unconfigured' | 'checking' | 'connected' | 'unavailable';
 export const connection = $state<{
 	phase: ConnectionPhase;
 	detail: string;
