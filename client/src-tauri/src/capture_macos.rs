@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use objc2::rc::Retained;
+use objc2::{rc::Retained, AnyThread};
 use objc2_core_audio::{
     kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapAutoStartKey,
     kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioEndPointDeviceIsPrivateKey,
@@ -50,7 +50,7 @@ pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, Strin
     // process list with the CoreFoundation C constructor instead — the
     // same toll-free-bridged object, no ObjC message dispatch.
     let processes = unsafe {
-        CFArray::<NSNumber>::new(
+        CFArray::new(
             kCFAllocatorDefault,
             std::ptr::null_mut(),
             0,
@@ -61,7 +61,7 @@ pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, Strin
     // SAFETY: CFArray and NSArray are toll-free bridged; mirrors the
     // AsRef conversion objc2-foundation generates for the same cast.
     let processes: &NSArray<NSNumber> = unsafe {
-        &*((&*processes as *const CFArray<NSNumber>).cast::<NSArray<NSNumber>>())
+        &*((&*processes as *const CFArray).cast::<NSArray<NSNumber>>())
     };
     let tap = unsafe {
         CATapDescription::initWithProcesses_andDeviceUID_withStream(
@@ -177,6 +177,7 @@ fn aggregate_properties(
         )
         .expect("Core Foundation dictionary allocation failed");
         let name = CFString::from_str("Transcripter loopback");
+        let uid = CFString::from_str(aggregate_uid);
         let yes = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
         CFMutableDictionary::set_value(
             Some(&dict),
