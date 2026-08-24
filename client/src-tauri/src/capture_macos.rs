@@ -53,16 +53,14 @@ mod tcc {
     /// (non-macOS-minus-SPI futures, hardened test hosts).
     static TCC: LazyLock<Option<Tcc>> = LazyLock::new(|| unsafe {
         let handle = libc::dlopen(
-            b"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC\0"
-                .as_ptr()
-                .cast(),
+            c"/System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC".as_ptr().cast(),
             libc::RTLD_LAZY | libc::RTLD_LOCAL,
         );
         if handle.is_null() {
             return None;
         }
-        let preflight = libc::dlsym(handle, b"TCCAccessPreflight\0".as_ptr().cast());
-        let request = libc::dlsym(handle, b"TCCAccessRequest\0".as_ptr().cast());
+        let preflight = libc::dlsym(handle, c"TCCAccessPreflight".as_ptr().cast());
+        let request = libc::dlsym(handle, c"TCCAccessRequest".as_ptr().cast());
         if preflight.is_null() || request.is_null() {
             return None;
         }
@@ -92,7 +90,7 @@ mod tcc {
             return false;
         };
         let (tx, rx) = mpsc::sync_channel(1);
-        let mut completion = StackBlock::new(move |granted: u8| {
+        let completion = StackBlock::new(move |granted: u8| {
             tx.send(granted != 0).ok();
         });
         let service = service_string();
