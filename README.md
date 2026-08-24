@@ -100,6 +100,9 @@ volume (later starts work offline).
 
 ### External voice stack (separate compose / host)
 
+Architecture deep-dive for this mode (components, data flow, failure
+semantics): [docs/backend-architecture.md](./docs/backend-architecture.md).
+
 The worker reaches any reachable endpoint; env beats config:
 
 ```bash
