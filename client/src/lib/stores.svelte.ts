@@ -152,6 +152,10 @@ export async function startRecording(
 	recordingStatusTimer = globalThis.setInterval(async () => {
 		try {
 			recorder.frames = await commands.recordingFrames();
+			const degraded = await commands.recordingDegraded();
+			if (degraded && !recorder.warnings.includes(degraded)) {
+				recorder.warnings.push(`${degraded} — recording continues on microphone`);
+			}
 		} catch (error) {
 			if (recorder.stopping || !recorder.recording) return;
 			if (recordingStatusTimer) {

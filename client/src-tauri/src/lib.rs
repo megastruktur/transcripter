@@ -96,6 +96,7 @@ pub fn run() {
             cmd_start_recording,
             cmd_stop_recording,
             cmd_recording_frames,
+            cmd_recording_degraded,
             cmd_upload_now,
             cmd_retry_pending,
             cmd_apply_window_mode,
@@ -192,6 +193,11 @@ fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<
 #[tauri::command]
 fn cmd_recording_frames() -> Result<u64, String> {
     recording::frames_written()
+}
+
+#[tauri::command]
+fn cmd_recording_degraded() -> Option<String> {
+    recording::degraded_reason()
 }
 
 fn spool_from_app(app: &AppHandle) -> Result<Spool, String> {
