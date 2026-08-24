@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use objc2::{rc::Retained, AnyThread};
+use objc2::rc::Retained;
 use objc2_core_audio::{
     kAudioAggregateDeviceNameKey, kAudioAggregateDeviceTapAutoStartKey,
     kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioEndPointDeviceIsPrivateKey,
@@ -12,7 +12,7 @@ use objc2_core_audio::{
     AudioHardwareDestroyProcessTap, AudioObjectID, CATapDescription, CATapMuteBehavior,
 };
 use objc2_core_foundation::{
-    kCFAllocatorDefault, kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks,
+    kCFAllocatorDefault, kCFBooleanTrue, kCFTypeArrayCallBacks, kCFTypeDictionaryKeyCallBacks,
     kCFTypeDictionaryValueCallBacks, CFArray, CFDictionary, CFMutableDictionary, CFRetained,
     CFString,
 };
@@ -44,11 +44,29 @@ impl Drop for MacLoopbackDevice {
 pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, String> {
     let output_id = output.id().map_err(|e| e.to_string())?;
     let device_uid = NSString::from_str(output_id.id());
-    let processes = NSArray::new();
+    // macOS 26 (Tahoe) rewrote Foundation in Swift: `+[NSArray new]`
+    // dispatches into the Swift-backed class cluster and aborts a pure
+    // Rust binary (_objc_fatal in lookUpImpOrForward). Build the empty
+    // process list with the CoreFoundation C constructor instead — the
+    // same toll-free-bridged object, no ObjC message dispatch.
+    let processes = unsafe {
+        CFArray::<NSNumber>::new(
+            kCFAllocatorDefault,
+            std::ptr::null_mut(),
+            0,
+            &kCFTypeArrayCallBacks,
+        )
+        .expect("Core Foundation array allocation failed")
+    };
+    // SAFETY: CFArray and NSArray are toll-free bridged; mirrors the
+    // AsRef conversion objc2-foundation generates for the same cast.
+    let processes: &NSArray<NSNumber> = unsafe {
+        &*((&*processes as *const CFArray<NSNumber>).cast::<NSArray<NSNumber>>())
+    };
     let tap = unsafe {
         CATapDescription::initWithProcesses_andDeviceUID_withStream(
             CATapDescription::alloc(),
-            &processes,
+            processes,
             &device_uid,
             0,
         )
@@ -130,10 +148,13 @@ fn aggregate_properties(
             &*to_cfstring(kAudioSubTapUIDKey) as *const _ as *const c_void,
             &*tap_uid as *const _ as *const c_void,
         );
+        // `kCFBooleanTrue` is toll-free bridged to NSNumber and avoids the
+        // Swift-backed NSNumber class cluster on macOS 26 (Tahoe).
+        let drift = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioSubTapDriftCompensationKey) as *const _ as *const c_void,
-            &*NSNumber::initWithBool(NSNumber::alloc(), true) as *const _ as *const c_void,
+            &*drift as *const _ as *const c_void,
         );
         dict
     };
@@ -156,8 +177,7 @@ fn aggregate_properties(
         )
         .expect("Core Foundation dictionary allocation failed");
         let name = CFString::from_str("Transcripter loopback");
-        let uid = CFString::from_str(aggregate_uid);
-        let yes = NSNumber::initWithBool(NSNumber::alloc(), true);
+        let yes = kCFBooleanTrue.expect("kCFBooleanTrue is always available");
         CFMutableDictionary::set_value(
             Some(&dict),
             &*to_cfstring(kAudioAggregateDeviceNameKey) as *const _ as *const c_void,
