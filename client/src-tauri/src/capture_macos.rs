@@ -97,11 +97,21 @@ pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, Strin
         }
         return Err(error);
     }
-
     let host = cpal::default_host();
     let aggregate_device_id =
         cpal::DeviceId::new(cpal::platform::HostId::CoreAudio, &aggregate_uid);
-    let Some(device) = host.device_by_id(&aggregate_device_id) else {
+    // Private aggregate devices appear in the host's device list
+    // asynchronously; a cold HAL (first app launch) can take well over a
+    // second. Poll briefly before declaring the aggregate undiscoverable.
+    let mut device = None;
+    for _ in 0..40 {
+        if let Some(found) = host.device_by_id(&aggregate_device_id) {
+            device = Some(found);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let Some(device) = device else {
         unsafe {
             let _ = AudioHardwareDestroyAggregateDevice(aggregate_id);
             let _ = AudioHardwareDestroyProcessTap(tap_id);

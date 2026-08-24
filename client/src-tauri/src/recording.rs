@@ -17,6 +17,8 @@ pub struct ActiveSession {
     worker: Option<JoinHandle<Result<(), String>>>,
     frames_written: Arc<AtomicU64>,
     capture_error: Arc<Mutex<Option<String>>>,
+    /// Non-fatal system-audio loss; surfaced to the UI as a warning.
+    degraded: Arc<Mutex<Option<String>>>,
     pub started: Instant,
 }
 
@@ -88,6 +90,7 @@ pub fn start(
     let running = Arc::new(AtomicBool::new(true));
     let frames_written = Arc::new(AtomicU64::new(0));
     let capture_error = Arc::new(Mutex::new(None));
+    let degraded = Arc::new(Mutex::new(None));
     let worker = spawn_mixer(
         mic.clone(),
         system.clone(),
@@ -95,6 +98,7 @@ pub fn start(
         running.clone(),
         frames_written.clone(),
         capture_error.clone(),
+        degraded.clone(),
     );
     *guard = Some(ActiveSession {
         session,
@@ -105,6 +109,7 @@ pub fn start(
         worker: Some(worker),
         frames_written,
         capture_error,
+        degraded,
         started: Instant::now(),
     });
     Ok(id)
@@ -117,6 +122,7 @@ fn spawn_mixer(
     running: Arc<AtomicBool>,
     frames_written: Arc<AtomicU64>,
     capture_error: Arc<Mutex<Option<String>>>,
+    degraded_slot: Arc<Mutex<Option<String>>>,
 ) -> JoinHandle<Result<(), String>> {
     std::thread::spawn(move || {
         let started = Instant::now();
@@ -126,6 +132,7 @@ fn spawn_mixer(
         let mut mixed = Vec::with_capacity(2048);
         let mut last_mic_progress = None;
         let mut last_system_progress = None;
+        let mut degraded: Option<String> = None;
         loop {
             let target = (started.elapsed().as_secs_f64() * CAPTURE_RATE as f64) as u64;
             let needed = target.saturating_sub(written).min(2400) as usize;
@@ -143,40 +150,55 @@ fn spawn_mixer(
                     }
                 }
                 if running.load(Ordering::Acquire) {
-                    let source_error = mic
+                    // Microphone is the authoritative source: its failure
+                    // (stream error or stall) is fatal for the recording.
+                    let mic_error = mic
                         .take_error()
                         .map(|error| format!("microphone stream failed: {error}"))
                         .or_else(|| {
-                            system.as_ref().and_then(|source| {
-                                source
-                                    .take_error()
-                                    .map(|error| format!("system audio stream failed: {error}"))
-                            })
-                        })
-                        .or_else(|| {
-                            stall_reason(
-                                Instant::now(),
-                                started,
-                                last_mic_progress,
-                                last_system_progress,
-                                system.is_some(),
-                            )
+                            stall_reason(Instant::now(), started, last_mic_progress)
                         });
-                    if let Some(error) = source_error {
+                    if let Some(error) = mic_error {
                         if let Ok(mut slot) = capture_error.lock() {
                             *slot = Some(error);
                         }
                         running.store(false, Ordering::Release);
                         break;
                     }
+                    // System audio is a bonus source: a tap that never
+                    // delivers (cold aggregate IO, no audio flowing) must
+                    // not kill the recording — drop it and keep the mic.
+                    if degraded.is_none() {
+                        let system_failure = system.as_ref().and_then(|source| {
+                            source
+                                .take_error()
+                                .map(|error| format!("system audio stream failed: {error}"))
+                        });
+                        if let Some(error) = system_failure {
+                            degraded = Some(error);
+                        } else if let Some(reason) = source_stall_reason(
+                            "system audio",
+                            Instant::now(),
+                            started,
+                            last_system_progress,
+                            SYSTEM_START_TIMEOUT,
+                        ) {
+                            degraded = Some(reason);
+                        }
+                        if degraded.is_some() {
+                            // Keep the stream object alive until stop()
+                            // collects dropped/xrun counters; it stopped
+                            // contributing to the mix either way.
+                            system_samples.clear();
+                        }
+                    }
                 }
 
                 mix_samples(
                     &mic_samples,
-                    if system.is_some() {
-                        Some(&system_samples)
-                    } else {
-                        None
+                    match (&system, &degraded) {
+                        (Some(_), None) => Some(&system_samples),
+                        _ => None,
                     },
                     needed,
                     &mut mixed,
@@ -197,25 +219,30 @@ fn spawn_mixer(
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+        if degraded.is_some() {
+            if let Ok(mut slot) = degraded_slot.lock() {
+                *slot = degraded;
+            }
+        }
         Ok(())
     })
 }
 
-const SOURCE_START_TIMEOUT: Duration = Duration::from_secs(1);
 const SOURCE_STALL_TIMEOUT: Duration = Duration::from_millis(250);
+/// The microphone is authoritative: if it delivers nothing this fast, the
+/// recording cannot proceed.
+const MIC_START_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long the system-audio tap may take to deliver its first samples.
+/// Taps only produce audio while output flows; a slow first spin-up of the
+/// aggregate IO must not kill the recording (mic stays authoritative).
+const SYSTEM_START_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn stall_reason(
     now: Instant,
     started: Instant,
     last_mic_progress: Option<Instant>,
-    last_system_progress: Option<Instant>,
-    system_enabled: bool,
 ) -> Option<String> {
-    source_stall_reason("microphone", now, started, last_mic_progress).or_else(|| {
-        system_enabled
-            .then(|| source_stall_reason("system audio", now, started, last_system_progress))
-            .flatten()
-    })
+    source_stall_reason("microphone", now, started, last_mic_progress, MIC_START_TIMEOUT)
 }
 
 fn source_stall_reason(
@@ -223,12 +250,13 @@ fn source_stall_reason(
     now: Instant,
     started: Instant,
     last_progress: Option<Instant>,
+    start_timeout: Duration,
 ) -> Option<String> {
     match last_progress {
         Some(last) if now.duration_since(last) >= SOURCE_STALL_TIMEOUT => {
             Some(format!("{label} stopped delivering samples"))
         }
-        None if now.duration_since(started) >= SOURCE_START_TIMEOUT => {
+        None if now.duration_since(started) >= start_timeout => {
             Some(format!("{label} did not start delivering samples"))
         }
         _ => None,
@@ -237,7 +265,6 @@ fn source_stall_reason(
 
 fn mix_samples(mic: &[f32], system: Option<&[f32]>, frames: usize, output: &mut Vec<f32>) {
     output.clear();
-    output.reserve(frames.saturating_sub(output.capacity()));
     let gain = if system.is_some() {
         std::f32::consts::FRAC_1_SQRT_2
     } else {
@@ -265,6 +292,15 @@ pub fn frames_written() -> Result<u64, String> {
         return Err(format!("capture stopped: {error}"));
     }
     Ok(active.frames_written.load(Ordering::Relaxed))
+}
+
+/// Non-fatal system-audio loss, if one occurred this session.
+pub fn degraded_reason() -> Option<String> {
+    SESSION.lock().ok().and_then(|guard| {
+        guard
+            .as_ref()
+            .and_then(|active| active.degraded.lock().ok().and_then(|slot| slot.clone()))
+    })
 }
 
 pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
@@ -301,7 +337,15 @@ pub fn stop(spool: &Spool) -> Result<SpoolSession, String> {
         .capture_error
         .lock()
         .ok()
-        .and_then(|error| error.clone());
+        .and_then(|error| error.clone())
+        .or_else(|| {
+            let degraded = active
+                .degraded
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone());
+            degraded.map(|reason| format!("system audio dropped: {reason}"))
+        });
 
     let mut session = active.session;
     session.duration_sec = active.started.elapsed().as_secs_f64();
@@ -350,10 +394,12 @@ fn unix_now_iso() -> String {
         .map(|duration| duration.as_secs().to_string())
         .unwrap_or_default()
 }
-
 #[cfg(test)]
 mod tests {
-    use super::{mix_samples, stall_reason, SOURCE_STALL_TIMEOUT, SOURCE_START_TIMEOUT};
+    use super::{
+        mix_samples, source_stall_reason, stall_reason, MIC_START_TIMEOUT, SOURCE_STALL_TIMEOUT,
+        SYSTEM_START_TIMEOUT,
+    };
     use std::time::{Duration, Instant};
 
     #[test]
@@ -380,28 +426,49 @@ mod tests {
     }
 
     #[test]
-    fn stall_guard_distinguishes_startup_from_midstream_failure() {
+    fn mic_stall_guard_distinguishes_startup_from_midstream_failure() {
         let now = Instant::now();
-        let started = now - SOURCE_START_TIMEOUT - Duration::from_millis(1);
+        let started = now - MIC_START_TIMEOUT - Duration::from_millis(1);
         let stalled = now - SOURCE_STALL_TIMEOUT - Duration::from_millis(1);
         assert_eq!(
-            stall_reason(now, started, None, Some(now), true).as_deref(),
+            stall_reason(now, started, None).as_deref(),
             Some("microphone did not start delivering samples")
         );
         assert_eq!(
-            stall_reason(now, started, Some(stalled), Some(now), true).as_deref(),
+            stall_reason(now, started, Some(stalled)).as_deref(),
             Some("microphone stopped delivering samples")
         );
+        let within_grace = now - MIC_START_TIMEOUT + Duration::from_millis(1);
+        assert_eq!(stall_reason(now, within_grace, None), None);
+        assert_eq!(stall_reason(now, now, None), None);
+    }
+
+    #[test]
+    fn system_start_window_is_far_wider_than_the_mic_one() {
+        let now = Instant::now();
+        let started = now - MIC_START_TIMEOUT - Duration::from_millis(1);
+        // The tap gets a much wider startup window than the mic: past the
+        // mic deadline but inside the system grace there is no failure yet.
         assert_eq!(
-            stall_reason(now, started, Some(now), None, true).as_deref(),
+            source_stall_reason(
+                "system audio",
+                now,
+                started,
+                None,
+                SYSTEM_START_TIMEOUT
+            ),
+            None
+        );
+        let cold = now - SYSTEM_START_TIMEOUT - Duration::from_millis(1);
+        assert_eq!(
+            source_stall_reason("system audio", now, cold, None, SYSTEM_START_TIMEOUT).as_deref(),
             Some("system audio did not start delivering samples")
         );
+        let stalled = now - SOURCE_STALL_TIMEOUT - Duration::from_millis(1);
         assert_eq!(
-            stall_reason(now, started, Some(now), Some(stalled), true).as_deref(),
+            source_stall_reason("system audio", now, now, Some(stalled), SYSTEM_START_TIMEOUT)
+                .as_deref(),
             Some("system audio stopped delivering samples")
         );
-        let within_grace = now - SOURCE_START_TIMEOUT + Duration::from_millis(1);
-        assert_eq!(stall_reason(now, within_grace, None, None, true), None);
-        assert_eq!(stall_reason(now, now, None, None, false), None);
     }
 }

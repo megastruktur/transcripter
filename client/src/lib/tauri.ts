@@ -62,6 +62,9 @@ export const commands = {
 	recordingFrames(): Promise<number> {
 		return invoke('cmd_recording_frames');
 	},
+	recordingDegraded(): Promise<string | null> {
+		return invoke('cmd_recording_degraded');
+	},
 	retryPending(baseUrl: string, token: string): Promise<number> {
 		return invoke('cmd_retry_pending', { baseUrl, token });
 	},
