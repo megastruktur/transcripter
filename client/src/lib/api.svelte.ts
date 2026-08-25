@@ -82,6 +82,22 @@ export async function getRecording(cfg: ApiConfig, id: string): Promise<Recordin
 	return resp.json();
 }
 
+export async function renameRecording(cfg: ApiConfig, id: string, title: string): Promise<Recording> {
+	const resp = await req(cfg, `/recordings/${id}`, {
+		method: 'PATCH',
+		body: JSON.stringify({ title })
+	});
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw new Error(detail.detail ?? `rename ${resp.status}`);
+	}
+	return resp.json();
+}
+
+export function audioUrl(cfg: ApiConfig, id: string): string {
+	return `${cfg.baseUrl.replace(/\/$/, '')}/recordings/${id}/audio?token=${encodeURIComponent(cfg.token)}`;
+}
+
 export async function regenerate(
 	cfg: ApiConfig,
 	id: string,

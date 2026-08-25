@@ -15,7 +15,8 @@
 		| 'stop'
 		| 'dot'
 		| 'shield'
-		| 'empty';
+		| 'empty'
+	| 'pencil';
 
 	let { name, size = 20, strokeWidth = 1.8 }: { name: IconName; size?: number; strokeWidth?: number } = $props();
 </script>
@@ -76,6 +77,8 @@
 	{:else if name === 'empty'}
 		<circle cx="12" cy="12" r="8" />
 		<path d="m6.3 17.7 11.4-11.4" />
+	{:else if name === 'pencil'}
+		<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
 	{/if}
 </svg>
 
