@@ -171,3 +171,25 @@ class ProcessRecording:
                 start_to_close_timeout=timedelta(seconds=180),
                 retry_policy=_retry(),
             )
+
+@workflow.defn
+class ExportRecording:
+    """Re-export the Obsidian note for one recording (e.g. after a rename).
+
+    Started by the API via temporal_client.start_export — workflow type,
+    input keys and task queue are duplicated there by convention. Runs ONLY
+    the export activity; there is no pipeline state to finalize."""
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        rec_id: str = args["recording_id"]
+        return await workflow.execute_activity(
+            "export_transcript",
+            rec_id,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=RetryPolicy(maximum_attempts=3),
+            # Same semantics as the ProcessRecording finally-block export:
+            # let the activity run to completion even if the workflow is
+            # cancelled mid-flight.
+            cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+        )

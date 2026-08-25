@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,6 +16,7 @@ from worker.export import (
     export_recording,
     note_name,
     note_path,
+    run,
     write_note_atomic,
 )
 
@@ -223,3 +225,47 @@ class TestFlockConcurrency:
         files = sorted(p.name for p in root.iterdir() if not p.name.startswith("."))
         assert files == [path.name]
         assert path.read_text().startswith("content-")
+
+class TestSweepStaleNotes:
+    """run() removes stale app-scheme notes (old titles) but never user notes."""
+
+    def stub_run(self, tmp_path, monkeypatch, r: Rec) -> Path:
+        """Point run()'s config/DB at tmp_path; returns the transcripts root."""
+        root = tmp_path / "notes"
+        root.mkdir()
+        meta = tmp_path / "recordings" / r.id / "meta"
+        meta.mkdir(parents=True)
+        (meta / "transcript.md").write_text("body", encoding="utf-8")
+        cfg = SimpleNamespace(
+            database=SimpleNamespace(url="sqlite://"),
+            recordings_root=tmp_path / "recordings",
+            transcripts=SimpleNamespace(path=root, sentinel=""),
+        )
+        monkeypatch.setattr("worker.config.load_config", lambda: cfg)
+        monkeypatch.setattr("worker.db.init_engine", lambda url: None)
+        monkeypatch.setattr("worker.export.load_recording", lambda rec_id: r)
+        monkeypatch.delenv("TRANSCRIPTER_TZ", raising=False)  # deterministic UTC
+        return root
+
+    def test_stale_app_scheme_note_and_lock_removed(self, tmp_path, monkeypatch):
+        root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        stale = root / "2026-01-01_10-00 Old title a1b2c3d4.md"
+        stale.write_text("old", encoding="utf-8")
+        lock = root / f".{stale.name}.lock"
+        lock.write_text("", encoding="utf-8")
+
+        path = run(REC_ID)
+
+        assert not stale.exists()
+        assert not lock.exists()
+        assert path == root / "2026-08-23_18-45 New title a1b2c3d4.md"
+        assert path.is_file()
+
+    def test_user_note_without_timestamp_prefix_survives(self, tmp_path, monkeypatch):
+        root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        user = root / "My standup a1b2c3d4.md"
+        user.write_text("mine", encoding="utf-8")
+
+        run(REC_ID)
+
+        assert user.read_text(encoding="utf-8") == "mine"
