@@ -1,7 +1,8 @@
-"""Transcripter API entrypoint."""
+"""Transcriptor API entrypoint."""
 
 import hmac
 import os
+import re
 import sys
 
 from fastapi import FastAPI, Request
@@ -13,6 +14,9 @@ from app.db import STAGE_KINDS, Base, engine, init_engine
 from app.routes import recordings, regenerate, settings
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
+# <audio> elements cannot send Authorization, so the bearer middleware below
+# additionally accepts ?token= — on this exact path shape only.
+AUDIO_PATH_RE = re.compile(r"^/recordings/[0-9a-f-]{36}/audio$")
 
 
 def _check_startup() -> None:
@@ -34,7 +38,7 @@ _check_startup()
 
 cfg: ServerConfig = load_config()
 
-app = FastAPI(title="Transcripter API")
+app = FastAPI(title="Transcriptor API")
 # LAN clients: Tauri webview (tauri://localhost, http://localhost:5173 dev)
 app.add_middleware(
     CORSMiddleware,
@@ -77,7 +81,13 @@ async def bearer_auth(request: Request, call_next):
     # credentials by spec, so let OPTIONS through — the real request is authed.
     if token and request.method != "OPTIONS" and request.url.path not in PUBLIC_PATHS:
         auth = request.headers.get("authorization", "")
-        if not hmac.compare_digest(auth, f"Bearer {token}"):
+        ok = hmac.compare_digest(auth, f"Bearer {token}")
+        # Query-token fallback for <audio src>: exact audio path only, still
+        # constant-time compared. Every other route stays header-only — a
+        # ?token= there (no valid header) is a 401 like before.
+        if not ok and AUDIO_PATH_RE.match(request.url.path):
+            ok = hmac.compare_digest(request.query_params.get("token", ""), token)
+        if not ok:
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
 

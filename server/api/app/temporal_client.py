@@ -5,12 +5,15 @@ keep in sync with worker/workflows.py and worker/main.py.
 """
 
 import os
+import time
 
 from temporalio.client import Client
 
 TASK_QUEUE = "transcripter-pipeline"
 WORKFLOW_NAME = "ProcessRecording"
 WORKFLOW_ID_PREFIX = "process-recording-"
+EXPORT_WORKFLOW_NAME = "ExportRecording"
+EXPORT_WORKFLOW_ID_PREFIX = "export-recording-"
 
 _client: Client | None = None
 
@@ -40,6 +43,18 @@ async def regenerate_stage(rec_id: str, stage: str, duration_sec: float | None =
         WORKFLOW_NAME,
         {"recording_id": rec_id, "start_stage": stage, "duration_sec": duration_sec},
         id=f"{WORKFLOW_ID_PREFIX}{rec_id}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id
+
+async def start_export(rec_id: str) -> str:
+    """Re-export the Obsidian note (e.g. after a rename). Unique workflow id
+    so renames never collide with an in-flight pipeline run."""
+    client = await get_client()
+    handle = await client.start_workflow(
+        EXPORT_WORKFLOW_NAME,
+        {"recording_id": rec_id},
+        id=f"{EXPORT_WORKFLOW_ID_PREFIX}{rec_id}-{int(time.time())}",
         task_queue=TASK_QUEUE,
     )
     return handle.id
