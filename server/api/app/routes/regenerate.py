@@ -9,12 +9,13 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import ServerConfig
-from app.db import STAGE_KINDS, get_session
+from app.db import STAGE_KINDS, Stage, get_session
 from app.routes.recordings import _get
 
 router = APIRouter(prefix="/recordings")
 
 ARTIFACTS: dict[str, list[str]] = {
+    "chunk": ["meta/chunks/chunks.json"],
     "transcribe": ["meta/transcript.md", "meta/segments.json"],
     "diarize": ["meta/diarization.json"],
     "merge_speakers": ["meta/diarized-transcript.md"],
@@ -47,6 +48,14 @@ async def regenerate(
         raise HTTPException(status_code=409, detail="recording not uploaded yet")
     if rec.state == RecordingState.processing:
         raise HTTPException(status_code=409, detail="recording is already processing")
+    # Recordings created before a stage kind existed (e.g. `chunk`) have no
+    # stage row for it; the worker's set_stage() does .one() and would fail.
+    # Backfill missing rows so any stage stays a valid regenerate target.
+    existing = {st.kind for st in rec.stages}
+    for kind in STAGE_KINDS:
+        if kind not in existing:
+            session.add(Stage(recording_id=rec.id, kind=kind))
+    session.commit()
 
     import logging
 

@@ -8,6 +8,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from .activities import (
+    chunk,
     diarize,
     export_transcript,
     finalize_recording,
@@ -69,7 +70,7 @@ async def amain() -> None:
         client,
         task_queue=TASK_QUEUE,
         workflows=[ProcessRecording],
-        activities=[transcribe, diarize, merge_speakers, summarize, finalize_recording, export_transcript],
+        activities=[chunk, transcribe, diarize, merge_speakers, summarize, finalize_recording, export_transcript],
     )
     log.info("worker started on queue %s", TASK_QUEUE)
     await worker.run()

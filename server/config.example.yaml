@@ -47,6 +47,15 @@ diarization:
   # LinTO diarization service; override via env DIARIZATION_ENDPOINT when
   # it lives in a separate voice stack.
   endpoint: http://diarization:80
+# chunk:
+#   # Server-side slicing BEFORE transcribe/diarize: resets the STT decoder
+#   # context per chunk, so a whisper repetition loop (long single requests
+#   # on CPU stacks) poisons one ~10-min chunk instead of the whole
+#   # recording. Chunks are transcribed SEQUENTIALLY — never in parallel.
+#   # Off by default: short recordings gain nothing.
+#   enabled: false
+#   target_min: 10   # target chunk length
+#   overlap_sec: 2   # shared band between neighbours (seam safety)
 
 database:
   # Inside containers; postgres compose service

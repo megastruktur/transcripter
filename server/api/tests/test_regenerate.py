@@ -52,6 +52,38 @@ def _force_state(rid: str, state: str) -> None:
         gen.close()
 
 
+def test_regenerate_backfills_missing_stage_rows(client: TestClient) -> None:
+    """Recordings created before a stage kind existed (e.g. `chunk`) have no
+    # stage row for it; regenerate must backfill so the worker's
+    # set_stage(.one()) cannot fail."""
+    rid = _make_recording(client)
+    _force_state(rid, "done")
+    # Simulate a pre-chunk recording: drop its chunk stage row.
+    from app.db import Stage, get_session
+
+    gen = get_session()
+    s = next(gen)
+    try:
+        s.query(Stage).filter_by(recording_id=rid, kind="chunk").delete()
+        s.commit()
+        assert s.query(Stage).filter_by(recording_id=rid).count() == 4
+    finally:
+        gen.close()
+
+    with patch("app.temporal_client.regenerate_stage", new_callable=AsyncMock) as m:
+        m.return_value = "wf-chunk"
+        r = client.post(f"/recordings/{rid}/regenerate", json={"stage": "chunk"})
+    assert r.status_code == 200
+
+    gen = get_session()
+    s = next(gen)
+    try:
+        kinds = {st.kind for st in s.query(Stage).filter_by(recording_id=rid)}
+        assert kinds == {"chunk", "transcribe", "diarize", "merge_speakers", "summarize"}
+    finally:
+        gen.close()
+
+
 def test_regenerate_starts_workflow(client: TestClient) -> None:
     rid = _make_recording(client)
     _force_state(rid, "done")

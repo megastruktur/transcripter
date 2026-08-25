@@ -6,6 +6,22 @@ Docker dev stack for the transcripter project (repo `server/` dir). Compose proj
 
 `api` (FastAPI, :8090), `worker` (Temporal worker), `postgres` (:16-alpine), `temporal` (auto-setup 1.28.2), `temporal-ui` (:8082). Worker readiness = log line `worker started on queue transcripter-pipeline` (it has NO healthcheck).
 
+## Pipeline stages (since 2026-08-25: FIVE)
+
+`chunk → transcribe → diarize → merge_speakers → summarize` (+ always `finalize_recording`, best-effort `export_transcript`). `chunk` is a Postgres enum value of `stage_kind` — the API startup runs idempotent `ALTER TYPE ... ADD VALUE IF NOT EXISTS` (`_migrate_stage_kind_enum` in `api/app/main.py`; create_all never alters existing enums). Regenerate backfills missing stage rows for pre-chunk recordings (`api/app/routes/regenerate.py`).
+
+## Server-side chunking (`chunk.*` config, OFF by default; ON in dev config.yaml)
+
+Why: whisper repetition loop lives in one request's decoder context — slicing resets it, so a poisoned chunk costs ~10 min instead of hours, independent of Speaches version (0.8.3 has no `condition_on_previous_text` knob).
+
+- `worker/chunk.py`: `plan_chunks` (even ~10-min chunks, 2 s overlap, short tail), ffmpeg `-ss/-t` input options + `-c:a flac` re-encode (`-c copy` can't cut FLAC exactly), per-chunk subprocess with kill-group+abandon on timeout (same pattern as export_transcript). Manifest `meta/chunks/chunks.json` = per-chunk start/end + transcribe/diarize status + suspect flag → resume boundary.
+- transcribe/diarize loop chunks SEQUENTIALLY (never parallel — one CPU voice stack; two contending large-v3 jobs run at ~half speed). Per-chunk HTTP budget = 300 s + 40 s/min OF THE CHUNK − 30 s; Temporal budget = Σ per-chunk + 300 s slack (`_ml_budget` in workflows.py).
+- Retry: ×2 inside the transcribe activity (backoff 5 s); stage fails with `chunk N of M` in last_error; regenerate re-POSTs only non-done chunks. Diarize resumes via persisted per-chunk status across its Temporal ×4 retry.
+- Seams: overlap split at midpoint (`keep_window`/`shift_into`) — no duplicated/lost speech.
+- Suspect: >50% identical normalized segment texts (≥4 segments) → manifest `transcribe_suspect`; regenerate re-runs suspect chunks with `prompt=""` + `condition_on_previous_text=false` form fields (0.8.3 ignores unknown fields; hook for newer Speaches).
+- Retention `until_merged`: chunk FLACs deleted by merge_speakers (done OR skipped); manifest + per-chunk JSONs stay. Re-running transcribe/diarize after cleanup errors with "regenerate from stage 'chunk'".
+- Diarize speaker labels stay per-chunk (accepted — merge attributes words by time overlap).
+
 ## ML services are compose profiles (since 2026-08-23)
 
 - `diarization` (lintoai/linto-diarization-pyannote:2.3.0, host :8070) — profile `diarization`. Worker no longer `depends_on` it; its cold start (~2 min weight load) is bridged by the diarize activity's Temporal retry policy (4 attempts × 30 s initial backoff) plus a one-shot startup probe in `worker/main.py` that warns with remediation if `{endpoint}/healthcheck` fails.
@@ -18,6 +34,7 @@ Docker dev stack for the transcripter project (repo `server/` dir). Compose proj
 - Fail-fast at worker start: `backend: api` + empty `base_url` → ValueError.
 - ApiTranscriber sends `timestamp_granularities[]=[word,segment]` and parses words from both top-level `words` (OpenAI/Speaches) and `segments[].words` (Groq) — word timestamps are the diarization-merge input.
 - Same-host external voice stack: shared docker network `voice` (top-level commented block in docker-compose.yml; `docker network create voice`). Multi-host: publish speaches port, point base_url at `http://<host>:8000/v1`.
+- GOTCHA: single-file bind mount `./config.yaml:...:ro` pins the inode — an editor that replaces the file leaves containers reading the OLD content. After editing config.yaml use `docker compose up -d --force-recreate worker api`, NOT `restart`.
 
 ## Smoke tests
 

@@ -40,7 +40,7 @@ flowchart TB
 
     subgraph PIPE["ProcessRecording: transcribe → diarize → merge_speakers → summarize → finalize → export"]
         direction LR
-        p1[transcribe] --> p2[diarize] --> p3[merge_speakers] --> p4[summarize]
+        p0[chunk] --> p1[transcribe] --> p2[diarize] --> p3[merge_speakers] --> p4[summarize]
     end
     W ~~~ PIPE
 
@@ -59,7 +59,7 @@ flowchart TB
    `ProcessRecording` в Temporal и дальше только отдаёт статусы стадий из
    Postgres.
 3. **Стадии.** Worker выполняет активности по порядку:
-   `transcribe → diarize → merge_speakers → summarize`, затем всегда
+   `chunk → transcribe → diarize → merge_speakers → summarize`, затем всегда
    `finalize_recording` (ставит терминальный статус записи) и best-effort
    `export_transcript` (консолидированная заметка .md в `/transcripts`).
 4. **Внешние вызовы.** `transcribe` при `backend=api` делает
@@ -86,6 +86,14 @@ diarization:
   enabled: true
   endpoint: http://<diar-host>:80       # или env DIARIZATION_ENDPOINT
 ```
+Серверный чанкинг (OFF по умолчанию; ON для CPU voice-стека):
+
+```yaml
+chunk:
+  enabled: true    # первая стадия: нарезка на ~10-мин FLAC-чанки (ffmpeg)
+  target_min: 10   # целевая длина чанка
+  overlap_sec: 2   # перехлёст соседей; швы делятся пополам — без дублей/дыр
+```
 
 - Env перекрывает yaml: `DIARIZATION_ENDPOINT` (endpoint), `SPEACHES_API_KEY`
   (значение ключа), `TRANSCRIPTER_TOKEN`, `TRANSCRIPTS_DIR`.
@@ -108,6 +116,26 @@ diarization:
 
 ## Отказоустойчивость (workflows.py)
 
+- **chunk** — retry ×2 (дёшево); `start_to_close = duration×2 + 300 с`
+  (ffmpeg режет со скоростью, кратной realtime — бюджет страхует только от
+  зависшего процесса/маунта; kill-group + abandon как у export). При
+  `chunk.enabled: false` стадия `skipped`, манифеста нет → transcribe/diarize
+  работают целым файлом. Зачем стадия: whisper repetition loop живёт в
+  контексте одного запроса — нарезка обнуляет контекст, отравленный чанк
+  портит ~10 минут вместо часов, независимо от версии Speaches.
+- **transcribe/diarize по чанкам** — СТРОГО последовательно (один CPU
+  voice-стек; параллелизм = повторение контеншн-инцидента). Прогресс — в
+  `meta/chunks/chunks.json` (статус per chunk): падение чанка → retry ×2
+  внутри активности (backoff 5 с), исчерпание → stage failed с
+  `chunk N of M` в `last_error`; regenerate дозаполняет ТОЛЬКО не-done чанки.
+  HTTP-бюджет чанка = 300 с + 40 с/мин ОТ ДЛИНЫ ЧАНКА; Temporal-бюджет
+  активности = Σ per-chunk + 300 с slack. Чанк с >50 % идентичных сегментов
+  помечается `suspect` → regenerate пересжимает его с пустым prompt +
+  `condition_on_previous_text=false` (hook под новые версии Speaches;
+  0.8.3 игнорирует неизвестные поля формы). Чанк-FLAC'и чистятся после
+  merge_speakers (retention `until_merged`; манифест и per-chunk JSON
+  остаются). Спикер-лейблы per-chunk осознанно не склеиваются глобально —
+  merge атрибутирует слова по overlap, ему безразлично.
 - **transcribe** — без ретраев (`maximum_attempts=1`): повтор = повторный
   запуск десятков минут CPU-расчёта на общем voice-стеке (две конкурирующие
   задачи считаются вдвое дольше — замерено 2026-08-25). Бюджеты клиента и

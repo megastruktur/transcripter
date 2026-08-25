@@ -1,6 +1,7 @@
-"""ProcessRecording workflow: transcribe → diarize → merge → summarize."""
+"""ProcessRecording workflow: chunk → transcribe → diarize → merge → summarize."""
 
 import logging
+import math
 from datetime import timedelta
 from typing import TypedDict
 
@@ -16,6 +17,7 @@ log = logging.getLogger("transcripter.workflow")
 
 
 class PipelineResult(TypedDict, total=False):
+    chunk: dict
     transcribe: dict
     diarize: dict
     merge_speakers: dict
@@ -45,19 +47,36 @@ def _diarize_retry() -> RetryPolicy:
         maximum_interval=timedelta(seconds=60),
     )
 
+def _ml_budget(duration: float | None, chunk_result: dict | None) -> int:
+    """StartToClose for transcribe/diarize under chunking: N × the per-chunk
+    budget + slack, so each chunk's HTTP timeout (its own share − 30 s) still
+    fires before Temporal would cancel the activity.
+
+    Without manifest data (regenerate starting downstream of `chunk`) N is
+    estimated from the default 10-min target; overestimation is harmless —
+    heartbeat_timeout (120 s) is the real hang guard."""
+    n = (chunk_result or {}).get("chunks") or 0
+    if n > 0:
+        per = timeout_for((chunk_result or {}).get("target_min", 10.0) * 60, 300, 40)
+        return n * per + 300
+    if duration:
+        n_est = max(1, math.ceil(duration / 600))
+        return n_est * timeout_for(600, 300, 40) + 300
+    return timeout_for(duration, 300, 40)
+
 
 @workflow.defn
 class ProcessRecording:
-    """Runs the full pipeline from `start_stage` (default: transcribe)."""
+    """Runs the full pipeline from `start_stage` (default: chunk)."""
 
     @workflow.run
     async def run(self, args: dict) -> PipelineResult:
         rec_id: str = args["recording_id"]
-        start: str = args.get("start_stage", "transcribe")
+        start: str = args.get("start_stage", "chunk")
         duration: float | None = args.get("duration_sec")
         result: PipelineResult = {}
 
-        order = ["transcribe", "diarize", "merge_speakers", "summarize"]
+        order = ["chunk", "transcribe", "diarize", "merge_speakers", "summarize"]
         assert start in order, f"unknown stage {start}"
         idx = order.index(start)
 
@@ -99,12 +118,23 @@ class ProcessRecording:
         result: PipelineResult,
     ) -> None:
         if idx <= 0:
+            result["chunk"] = await workflow.execute_activity(
+                "chunk",
+                rec_id,
+                # ffmpeg decode+re-encode runs at many times realtime; this
+                # only guards a wedged process/mount. duration=None prices
+                # the 2.5-h maximum, same convention as timeout_for.
+                start_to_close_timeout=timedelta(seconds=int((duration or 9000) * 2 + 300)),
+                retry_policy=_retry(),  # cheap stage: retry ×2 is fine
+            )
+        if idx <= 1:
             result["transcribe"] = await workflow.execute_activity(
                 "transcribe",
                 rec_id,
                 # Budgets sized for the CPU voice stack (see activities.py):
                 # 90-min recordings are the norm, 2.5 h the observed max.
-                start_to_close_timeout=timedelta(seconds=timeout_for(duration, 300, 40)),
+                # Under chunking: per-chunk budgets summed (see _ml_budget).
+                start_to_close_timeout=timedelta(seconds=_ml_budget(duration, result.get("chunk"))),
                 # A retry re-runs minutes of compute on the shared voice
                 # stack: never automatic (user regenerates from the UI).
                 retry_policy=_no_retry(),
@@ -112,7 +142,7 @@ class ProcessRecording:
             )
         # `merge_speakers` still runs and marks itself skipped when there is
         # no usable diarization, so the stage never sits pending forever.
-        if idx <= 1:
+        if idx <= 2:
             # Diarization is best-effort: it is flaky on short, quiet, or
             # single-speaker audio. A failure must not throw away a good
             # transcript, so degrade to transcript-only instead of aborting.
@@ -121,20 +151,20 @@ class ProcessRecording:
                 result["diarize"] = await workflow.execute_activity(
                     "diarize",
                     rec_id,
-                    start_to_close_timeout=timedelta(seconds=timeout_for(duration, 300, 40)),
+                    start_to_close_timeout=timedelta(seconds=_ml_budget(duration, result.get("chunk"))),
                     retry_policy=_diarize_retry(),
                     heartbeat_timeout=timedelta(seconds=120),
                 )
             except ActivityError:
                 workflow.logger.warning("diarize failed for %s; transcript-only", rec_id)
-        if idx <= 2:
+        if idx <= 3:
             result["merge_speakers"] = await workflow.execute_activity(
                 "merge_speakers",
                 rec_id,
                 start_to_close_timeout=timedelta(seconds=120),
                 retry_policy=_retry(),
             )
-        if idx <= 3:
+        if idx <= 4:
             result["summarize"] = await workflow.execute_activity(
                 "summarize",
                 rec_id,

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import ServerConfig, load_config
-from app.db import Base, engine, init_engine
+from app.db import STAGE_KINDS, Base, engine, init_engine
 from app.routes import recordings, regenerate, settings
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
@@ -44,9 +44,25 @@ app.add_middleware(
 )
 app.state.config = cfg
 app.state.on_finalize = lambda rec_id, duration: regenerate.trigger_pipeline_async(rec_id, duration)
-
 init_engine(cfg.database.url)
 Base.metadata.create_all(bind=engine())
+
+
+def _migrate_stage_kind_enum() -> None:
+    """create_all never alters an EXISTING Postgres enum: databases created
+    before a new stage kind (e.g. `chunk`) need their stage_kind type
+    extended explicitly. Idempotent; SQLite test databases skip it (their
+    Enum is a CHECK constraint rebuilt with the schema)."""
+    if engine().dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    with engine().begin() as conn:
+        for kind in STAGE_KINDS:
+            conn.execute(text(f"ALTER TYPE stage_kind ADD VALUE IF NOT EXISTS '{kind}'"))
+
+
+_migrate_stage_kind_enum()
 
 app.include_router(recordings.router)
 app.include_router(regenerate.router)

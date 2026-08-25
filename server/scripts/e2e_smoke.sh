@@ -62,13 +62,24 @@ if [ "$STT" = "speaches" ]; then
       -y -loglevel error -i /f/speech-2voices.flac /w/test.flac
   fi
   echo "== 2b. wait for speaches model preload (first run downloads weights)"
+  # External voice stack (config.yaml transcribe.base_url points elsewhere):
+  # set SPEACHES_PROBE_URL (e.g. http://host:8010/v1/models, key via
+  # SPEACHES_API_KEY) to probe IT instead of the bundled profile container.
   DEADLINE=$((SECONDS + 600))
-  until docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T speaches \
-      python -c "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/v1/models',timeout=5)" 2>/dev/null \
-      && curl -sf "http://localhost:8090/health" >/dev/null; do
-    [ $SECONDS -ge $DEADLINE ] && { echo "speaches preload timeout"; exit 1; }
-    sleep 5
-  done
+  if [ -n "${SPEACHES_PROBE_URL:-}" ]; then
+    until curl -sf -H "authorization: Bearer ${SPEACHES_API_KEY:-}" "$SPEACHES_PROBE_URL" >/dev/null 2>&1 \
+        && curl -sf "http://localhost:8090/health" >/dev/null; do
+      [ $SECONDS -ge $DEADLINE ] && { echo "external speaches probe timeout"; exit 1; }
+      sleep 5
+    done
+  else
+    until docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T speaches \
+        python -c "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/v1/models',timeout=5)" 2>/dev/null \
+        && curl -sf "http://localhost:8090/health" >/dev/null; do
+      [ $SECONDS -ge $DEADLINE ] && { echo "speaches preload timeout"; exit 1; }
+      sleep 5
+    done
+  fi
   echo "speaches ready"
 else
   echo "== 2. generate test audio (2 alternating tones, 30s, 16kHz mono)"
@@ -164,8 +175,11 @@ while [ $SECONDS -lt $DEADLINE ]; do
   STATES=$(auth "$API/recordings/$RID" | jq -r '[.stages[].status] | join(",")')
   echo "  stages: $STATES"
   # all stages reached terminal state?
+  # Count stages from the response itself — the pipeline gained a stage
+  # (`chunk`) once already; a hardcoded count silently never breaks.
   DONE=$(echo "$STATES" | tr ',' '\n' | grep -cE 'done|failed|skipped' || true)
-  [ "$DONE" = "4" ] && break
+  TOTAL=$(echo "$STATES" | tr ',' '\n' | grep -c . || true)
+  [ "$TOTAL" -gt 0 ] && [ "$DONE" = "$TOTAL" ] && break
   sleep 15
 done
 echo "$STATES" | tr ',' '\n' | grep -q failed && { echo "PIPELINE FAILED"; auth "$API/recordings/$RID" | jq -r '.stages[] | select(.status=="failed") | .last_error'; exit 1; }

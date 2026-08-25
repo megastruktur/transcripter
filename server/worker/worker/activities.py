@@ -12,6 +12,18 @@ from pathlib import Path
 
 from temporalio import activity
 
+from .chunk import (
+    Manifest,
+    chunks_dir,
+    cleanup_chunks,
+    cut_chunks,
+    is_suspect,
+    keep_window,
+    load_manifest,
+    probe_duration,
+    save_manifest,
+    shift_into,
+)
 from .config import WorkerConfig, load_config
 from .db import (
     Recording,
@@ -23,6 +35,7 @@ from .db import (
 from .transcribe import (
     ApiTranscriber,
     LocalTranscriber,
+    TranscriptionResult,
     segments_to_markdown,
 )
 
@@ -86,6 +99,46 @@ def _minutes_of(rec: Recording | None) -> float:
         return rec.duration_sec / 60
     return _DEFAULT_MINUTES
 
+def _chunk_budget(len_sec: float, base: float, per_min: float) -> float:
+    """Per-chunk HTTP budget: same shape as budget_transcribe (base +
+    per-minute, 30 s under the Temporal share) but priced from the CHUNK's
+    length, not the whole recording's."""
+    return base + per_min * (len_sec / 60) - 30.0
+
+
+@activity.defn
+async def chunk(rec_id: str) -> dict:
+    """Slice the recording into FLAC chunks + manifest (worker/chunk.py).
+
+    Disabled by config: no manifest is written, which is exactly what sends
+    transcribe/diarize down the whole-file path. Re-slices from scratch on
+    regenerate, resetting every per-chunk status to pending.
+    """
+    c = cfg()
+    if not c.chunk.enabled:
+        set_stage(rec_id, "chunk", StageStatus.skipped, details={})
+        return {"skipped": "chunking disabled", "chunks": 0}
+    set_stage(rec_id, "chunk", StageStatus.running, inc_attempts=True)
+    try:
+        with session() as s:
+            rec = s.get(Recording, rec_id)
+            assert rec is not None, f"recording {rec_id} not found"
+            duration = rec.duration_sec
+        audio = audio_file(rec_id)
+        if not duration:
+            duration = await asyncio.to_thread(probe_duration, audio)
+        manifest = await asyncio.to_thread(
+            cut_chunks, audio, meta_dir(rec_id), duration,
+            c.chunk.target_min, c.chunk.overlap_sec,
+        )
+        details = {"chunks": len(manifest.chunks), "target_min": c.chunk.target_min}
+        set_stage(rec_id, "chunk", StageStatus.done, details=details)
+        return details
+    except Exception as e:
+        log.exception("chunk failed for %s", rec_id)
+        set_stage(rec_id, "chunk", StageStatus.failed, error=str(e))
+        raise
+
 
 async def _heartbeat_while[T](aw: Awaitable[T]) -> T:
     """Heartbeat every 60 s while a long ML call runs (Temporal heartbeat
@@ -101,12 +154,118 @@ async def _heartbeat_while[T](aw: Awaitable[T]) -> T:
 
 
 async def _heartbeat_loop() -> None:
+    # Beat FIRST, then every 60 s. A beat delayed by the initial sleep can
+    # arrive >120 s (heartbeat_timeout) after the previous call's last beat
+    # when a chunk POST fails fast (e.g. "Server disconnected" at +2 s) and
+    # the retry backoff + next loop's initial sleep stack up — observed live
+    # 2026-08-25: heartbeat timeout killed a chunked transcribe mid-run.
     while True:
-        await asyncio.sleep(60)
         try:
             activity.heartbeat()
         except RuntimeError:  # not in an activity (unit tests): no-op
             pass
+        await asyncio.sleep(60)
+
+
+# Per-chunk retry INSIDE the activity (the Temporal retry policy for
+# transcribe is maximum_attempts=1 — a full-activity retry would re-run
+# every chunk). Two attempts with a short backoff bridge a transient
+# Speaches hiccup; a persistent failure fails the stage with the chunk
+# coordinates, and regenerate resumes only the non-done chunks.
+_CHUNK_ATTEMPTS = 2
+_CHUNK_RETRY_BACKOFF_SEC = 5
+
+
+async def _transcribe_file(
+    c: WorkerConfig,
+    audio: Path,
+    timeout_sec: float,
+    prompt: str | None = None,
+    reset_context: bool = False,
+) -> TranscriptionResult:
+    """One audio file → one POST (or one local faster-whisper run).
+
+    `reset_context` is the suspect-chunk escape hatch: empty prompt +
+    condition_on_previous_text=false (the latter is ignored by Speaches
+    0.8.3 and honored by versions that accept the field).
+    """
+    if c.transcribe.backend == "api":
+        global _api
+        if _api is None:
+            key = os.environ.get(c.transcribe.api_key_env, "")
+            _api = ApiTranscriber(c.transcribe.base_url, c.transcribe.model, key)
+        return await _heartbeat_while(
+            asyncio.to_thread(
+                _api.transcribe,
+                audio,
+                timeout_sec=timeout_sec,
+                prompt=prompt,
+                condition_on_previous_text=False if reset_context else None,
+            )
+        )
+    global _local
+    if _local is None or _local.model_name != c.transcribe.model:
+        _local = LocalTranscriber(c.transcribe.model)
+    return await _heartbeat_while(asyncio.to_thread(_local.transcribe, audio))
+
+
+async def _transcribe_chunked(
+    rec_id: str, manifest: Manifest, c: WorkerConfig
+) -> TranscriptionResult:
+    """Sequential per-chunk transcription — NEVER parallel: the voice stack
+    is one CPU box and concurrent large-v3 jobs run at ~half speed each
+    (contention incident 2026-08-25). Progress persists per chunk, so a
+    regenerate re-POSTs only non-done (or suspect) chunks."""
+    meta = meta_dir(rec_id)
+    d = chunks_dir(meta)
+    total = len(manifest.chunks)
+    segments = []
+    words = []
+    language = "unknown"
+    for ch in manifest.chunks:
+        result_path = d / f"chunk_{ch.index:03d}.segments.json"
+        if ch.transcribe != "done" or ch.transcribe_suspect:
+            chunk_path = d / ch.file
+            if not chunk_path.exists():
+                raise RuntimeError(
+                    f"chunk file {ch.file} is gone (chunks are cleaned after "
+                    "merge_speakers); regenerate from stage 'chunk'"
+                )
+            timeout_sec = _chunk_budget(ch.end - ch.start, TRANSCRIBE_BASE, TRANSCRIBE_PER_MIN)
+            # A suspect chunk is re-squeezed with a reset decoder context.
+            reset = ch.transcribe_suspect
+            last_err: Exception | None = None
+            res: TranscriptionResult | None = None
+            for attempt in range(1, _CHUNK_ATTEMPTS + 1):
+                try:
+                    res = await _transcribe_file(
+                        c, chunk_path, timeout_sec,
+                        prompt="" if reset else None, reset_context=reset,
+                    )
+                    break
+                except Exception as e:  # noqa: BLE001 — retry must catch ANY failure
+                    last_err = e  # (httpx, parse, OS); re-raised after the last attempt
+                    log.warning(
+                        "transcribe chunk %d/%d attempt %d failed for %s: %s",
+                        ch.index + 1, total, attempt, rec_id, e,
+                    )
+                    if attempt < _CHUNK_ATTEMPTS:
+                        await asyncio.sleep(_CHUNK_RETRY_BACKOFF_SEC)
+            if res is None:
+                raise RuntimeError(f"chunk {ch.index + 1} of {total}: {last_err}")
+            res.to_json(result_path)
+            ch.transcribe = "done"
+            ch.transcribe_suspect = is_suspect([s.text for s in res.segments])
+            save_manifest(manifest, meta)  # resume boundary after every chunk
+        else:
+            res = TranscriptionResult.from_json(result_path)
+
+        if language == "unknown" and res.language != "unknown":
+            language = res.language
+        lo, hi = keep_window(ch.index, total, ch.end - ch.start, manifest.overlap_sec)
+        segments.extend(shift_into(res.segments, ch.start, lo, hi))
+        words.extend(shift_into(res.words, ch.start, lo, hi))
+    return TranscriptionResult(language, segments, words)
 
 
 @activity.defn
@@ -118,27 +277,20 @@ async def transcribe(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_transcribe(rec)
     try:
-        if c.transcribe.backend == "api":
-            global _api
-            if _api is None:
-                key = os.environ.get(c.transcribe.api_key_env, "")
-                _api = ApiTranscriber(c.transcribe.base_url, c.transcribe.model, key)
-            result = await _heartbeat_while(
-                asyncio.to_thread(
-                    _api.transcribe, audio_file(rec_id), timeout_sec=timeout_sec
-                )
-            )
+        manifest = load_manifest(meta_dir(rec_id))
+        if manifest is not None:
+            result = await _transcribe_chunked(rec_id, manifest, c)
         else:
-            global _local
-            if _local is None or _local.model_name != c.transcribe.model:
-                _local = LocalTranscriber(c.transcribe.model)
-            result = await _heartbeat_while(
-                asyncio.to_thread(_local.transcribe, audio_file(rec_id))
-            )
+            result = await _transcribe_file(c, audio_file(rec_id), timeout_sec)
 
         result.to_json(meta_dir(rec_id) / "segments.json")
         segments_to_markdown(result, meta_dir(rec_id) / "transcript.md")
-        details = {"language": result.language, "segments": len(result.segments)}
+        details: dict = {"language": result.language, "segments": len(result.segments)}
+        if manifest is not None:
+            details["chunks"] = len(manifest.chunks)
+            suspect = sum(1 for ch in manifest.chunks if ch.transcribe_suspect)
+            if suspect:
+                details["suspect_chunks"] = suspect
         set_stage(rec_id, "transcribe", StageStatus.done, details=details)
         return details
     except Exception as e:
@@ -147,9 +299,49 @@ async def transcribe(rec_id: str) -> dict:
         raise
 
 
+async def _diarize_chunked(rec_id: str, manifest: Manifest, c: WorkerConfig):
+    """Sequential per-chunk diarization (never parallel — same CPU voice
+    stack). Per-chunk progress persists, so the Temporal diarize retry
+    resumes at the failed chunk instead of re-running them all.
+
+    Speaker labels stay PER-CHUNK (spk_0 in chunk 1 is not spk_0 in chunk
+    2) — accepted: merge_speakers attributes words by time overlap, which
+    per-chunk labels satisfy."""
+    from .diarize import DiarizationResult, diarize_audio
+
+    meta = meta_dir(rec_id)
+    d = chunks_dir(meta)
+    total = len(manifest.chunks)
+    segments = []
+    speakers: set[str] = set()
+    for ch in manifest.chunks:
+        result_path = d / f"chunk_{ch.index:03d}.diarization.json"
+        if ch.diarize != "done":
+            chunk_path = d / ch.file
+            if not chunk_path.exists():
+                raise RuntimeError(
+                    f"chunk file {ch.file} is gone (chunks are cleaned after "
+                    "merge_speakers); regenerate from stage 'chunk'"
+                )
+            timeout_sec = _chunk_budget(ch.end - ch.start, DIARIZE_BASE, DIARIZE_PER_MIN)
+            res = await _heartbeat_while(diarize_audio(chunk_path, c, timeout_sec))
+            result_path.write_text(res.model_dump_json())
+            ch.diarize = "done"
+            save_manifest(manifest, meta)  # resume boundary after every chunk
+        else:
+            res = DiarizationResult.model_validate_json(
+                result_path.read_text(encoding="utf-8")
+            )
+        lo, hi = keep_window(ch.index, total, ch.end - ch.start, manifest.overlap_sec)
+        segments.extend(shift_into(res.segments, ch.start, lo, hi))
+        speakers.update(res.speakers)
+    return DiarizationResult(speakers=sorted(speakers), segments=segments)
+
+
 @activity.defn
 async def diarize(rec_id: str) -> dict:
-    if not cfg().diarization.enabled:
+    c = cfg()
+    if not c.diarization.enabled:
         # Diarization disabled by config: no HTTP, no attempt counted, and no
         # stale speaker attribution may survive into a regenerated merge —
         # merge_speakers keys off diarization.json's presence. skipped also
@@ -168,13 +360,19 @@ async def diarize(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_diarize(rec)
     try:
-        from .diarize import diarize_audio
+        manifest = load_manifest(meta_dir(rec_id))
+        if manifest is not None:
+            result = await _diarize_chunked(rec_id, manifest, c)
+        else:
+            from .diarize import diarize_audio
 
-        result = await _heartbeat_while(
-            diarize_audio(audio_file(rec_id), cfg(), timeout_sec)
-        )
+            result = await _heartbeat_while(
+                diarize_audio(audio_file(rec_id), c, timeout_sec)
+            )
         out.write_text(result.model_dump_json())
-        details = {"speakers": result.speakers}
+        details: dict = {"speakers": result.speakers}
+        if manifest is not None:
+            details["chunks"] = len(manifest.chunks)
         set_stage(rec_id, "diarize", StageStatus.done, details=details)
         return details
     except Exception as e:
@@ -197,11 +395,16 @@ async def merge_speakers(rec_id: str) -> dict:
         if not diar.exists() or not json.loads(diar.read_text()).get("segments"):
             (meta_dir(rec_id) / "diarized-transcript.md").unlink(missing_ok=True)
             set_stage(rec_id, "merge_speakers", StageStatus.skipped)
+            cleanup_chunks(meta_dir(rec_id))
             return {"skipped": "no diarization"}
 
         turns = write_diarized_transcript(meta_dir(rec_id))
         details = {"turns": turns}
         set_stage(rec_id, "merge_speakers", StageStatus.done, details=details)
+        # Chunk FLACs are retention `until_merged`: everything downstream
+        # needed them for has been consumed. The manifest and per-chunk
+        # JSONs stay (small; diagnostics + re-concat without re-running STT).
+        cleanup_chunks(meta_dir(rec_id))
         return details
     except Exception as e:
         log.exception("merge_speakers failed for %s", rec_id)
