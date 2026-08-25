@@ -177,7 +177,7 @@ pub fn create_loopback(output: &cpal::Device) -> Result<MacLoopbackDevice, Strin
     unsafe {
         tap.setMuteBehavior(CATapMuteBehavior::Unmuted);
         tap.setName(&NSString::from_str(&format!(
-            "Transcripter system audio {pid}.{serial}"
+            "Transcriptor Maximus system audio {pid}.{serial}"
         )));
         tap.setPrivate(true);
         tap.setExclusive(true);
@@ -289,7 +289,7 @@ fn aggregate_properties(
             &kCFTypeDictionaryValueCallBacks,
         )
         .expect("Core Foundation dictionary allocation failed");
-        let name = CFString::from_str("Transcripter loopback");
+        let name = CFString::from_str("Transcriptor Maximus loopback");
         let uid = CFString::from_str(aggregate_uid);
         // `kCFBooleanTrue` is toll-free bridged to NSNumber and avoids the
         // Swift-backed NSNumber class cluster on macOS 26 (Tahoe).

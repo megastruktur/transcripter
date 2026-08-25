@@ -46,7 +46,7 @@ jobs:
         with:
           projectPath: client
           tagName: v__VERSION__
-          releaseName: 'Transcripter v__VERSION__'
+          releaseName: 'Transcriptor Maximus v__VERSION__'
           releaseBody: 'See the assets to download and install. SHA-256 checksums are attached as checksums.txt.'
           releaseDraft: false
           prerelease: false

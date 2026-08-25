@@ -127,7 +127,7 @@
 	}
 </script>
 
-<svelte:head><title>Capture · Transcripter</title></svelte:head>
+<svelte:head><title>Capture · Transcriptor Maximus</title></svelte:head>
 
 <section class="page capture-page">
 	<header>

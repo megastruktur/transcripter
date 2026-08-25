@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Transcripter",
+  "productName": "Transcriptor Maximus",
   "version": "0.2.7",
   "identifier": "com.megastruktur.transcripter",
   "build": {
@@ -13,7 +13,7 @@
     "macOSPrivateApi": true,
     "windows": [
       {
-        "title": "Transcripter",
+        "title": "Transcriptor Maximus",
         "width": 440,
         "height": 720,
         "resizable": false,
