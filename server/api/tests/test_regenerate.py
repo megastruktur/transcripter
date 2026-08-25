@@ -146,6 +146,17 @@ def _sha(data: bytes) -> str:
 
     return hashlib.sha256(data).hexdigest()
 
+def _upload_and_finalize(client: TestClient, data: bytes) -> str:
+    rid = _make_recording(client)
+    client.put(
+        f"/recordings/{rid}/audio",
+        params={"offset": 0},
+        content=data,
+        headers={"content-length": str(len(data))},
+    )
+    client.post(f"/recordings/{rid}/finalize", json={"sha256": _sha(data)})
+    return rid
+
 
 def test_audio_uploading_409(client: TestClient) -> None:
     rid = _make_recording(client)
@@ -154,18 +165,77 @@ def test_audio_uploading_409(client: TestClient) -> None:
 
 
 def test_audio_served_after_upload(client: TestClient) -> None:
-    rid = _make_recording(client)
+    """Full GET without a Range header → 200 with the whole file."""
     data = b"a" * 128
-    client.put(
-        f"/recordings/{rid}/audio",
-        params={"offset": 0},
-        content=data,
-        headers={"content-length": str(len(data))},
-    )
-    client.post(f"/recordings/{rid}/finalize", json={"sha256": _sha(data)})
+    rid = _upload_and_finalize(client, data)
     r = client.get(f"/recordings/{rid}/audio")
     assert r.status_code == 200
     assert r.content == data
+
+
+def test_audio_range_partial_content(client: TestClient) -> None:
+    """Range regression: starlette FileResponse must serve exact byte ranges
+    (the in-card player's seek depends on it)."""
+    data = bytes(range(256)) * 4  # 1024 bytes, non-uniform so offsets matter
+    rid = _upload_and_finalize(client, data)
+    r = client.get(f"/recordings/{rid}/audio", headers={"range": "bytes=0-99"})
+    assert r.status_code == 206
+    assert len(r.content) == 100
+    assert r.content == data[:100]
+    assert r.headers["content-range"] == f"bytes 0-99/{len(data)}"
+
+
+def test_audio_range_unsatisfiable_416(client: TestClient) -> None:
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.get(
+        f"/recordings/{rid}/audio",
+        headers={"range": f"bytes={len(data) + 100}-"},
+    )
+    assert r.status_code == 416
+
+
+def test_audio_valid_query_token_200(client: TestClient) -> None:
+    """<audio> cannot send Authorization; ?token= works on the audio route."""
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.get(
+        f"/recordings/{rid}/audio?token=sekrit",
+        headers={"authorization": ""},
+    )
+    assert r.status_code == 200
+    assert r.content == data
+
+
+def test_audio_valid_query_token_with_range_206(client: TestClient) -> None:
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.get(
+        f"/recordings/{rid}/audio?token=sekrit",
+        headers={"authorization": "", "range": "bytes=0-9"},
+    )
+    assert r.status_code == 206
+    assert r.content == data[:10]
+
+
+def test_audio_wrong_query_token_401(client: TestClient) -> None:
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.get(
+        f"/recordings/{rid}/audio?token=nope",
+        headers={"authorization": ""},
+    )
+    assert r.status_code == 401
+
+
+def test_query_token_rejected_on_non_audio_route(client: TestClient) -> None:
+    """The query-token escape hatch is scoped to /recordings/*/audio only."""
+    rid = _make_recording(client)
+    assert client.get("/recordings?token=sekrit", headers={"authorization": ""}).status_code == 401
+    assert (
+        client.get(f"/recordings/{rid}?token=sekrit", headers={"authorization": ""}).status_code
+        == 401
+    )
 
 
 def test_summary_not_generated_404(client: TestClient) -> None:

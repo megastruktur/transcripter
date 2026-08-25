@@ -5,10 +5,12 @@ PUT    /recordings/{id}/audio     → append chunk at ?offset=N (returns committ
 POST   /recordings/{id}/finalize  → verify sha256, size → state=processing
 GET    /recordings                → list with stages
 GET    /recordings/{id}           → detail with stages
+PATCH  /recordings/{id}           → rename (trimmed title, empty allowed) + re-export note
 DELETE /recordings/{id}           → catalog row + files
 """
 
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -20,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import temporal_client
 from app.config import ServerConfig
 from app.db import (
     STAGE_KINDS,
@@ -48,6 +51,9 @@ class ChunkAck(BaseModel):
 class FinalizeRequest(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
     duration_sec: float | None = None
+
+class RenameRequest(BaseModel):
+    title: str = ""
 
 
 def audio_path(cfg: ServerConfig, rec_id: str) -> Path:
@@ -240,6 +246,24 @@ def get_recording(
     session: Session = Depends(get_session),
 ) -> dict:
     rec = _get(recording_id, session)
+    return serialize_recording(rec)
+
+@router.patch("/{recording_id}")
+async def rename_recording(
+    recording_id: str,
+    body: RenameRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    rec = _get(recording_id, session)
+    rec.title = body.title.strip()
+    session.commit()
+    # The exported Obsidian note embeds the title in its filename, so
+    # re-export it. Fire-and-forget: the rename stands even if Temporal is
+    # down (worker.backfill is the recovery path).
+    try:
+        await temporal_client.start_export(rec.id)
+    except Exception:
+        logging.getLogger("transcripter.api").exception("start_export failed for %s", rec.id)
     return serialize_recording(rec)
 
 
