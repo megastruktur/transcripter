@@ -70,20 +70,14 @@ class LocalTranscriber:
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
-        self._model: Any = None
 
     def _ensure_loaded(self) -> Any:
+        # Lazy import: tests and API-only environments never load the model.
         from faster_whisper import WhisperModel
 
-        if self._model is None:
-            log.info("loading whisper model %r", self.model_name)
-            self._model = WhisperModel(
-                self.model_name,
-                device="cpu",
-                compute_type="int8",
-                download_root="/models",
-            )
-        return self._model
+        # cpu_threads=8 was tuned for the bundled local fallback; the API
+        # backend on the voice stack is the primary path.
+        return WhisperModel(self.model_name, device="cpu", compute_type="int8", cpu_threads=8)
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         model = self._ensure_loaded()
@@ -107,7 +101,12 @@ class ApiTranscriber:
         self.model = model
         self.api_key = api_key
 
-    def transcribe(self, audio_path: Path) -> TranscriptionResult:
+    def transcribe(self, audio_path: Path, timeout_sec: float = 600.0) -> TranscriptionResult:
+        """POST the audio; `timeout_sec` is the caller's scaled budget.
+
+        The default covers unit tests and manual use; the pipeline passes
+        activities.budget_transcribe() so client and Temporal budgets agree.
+        """
         import httpx
 
         with open(audio_path, "rb") as f:
@@ -124,7 +123,7 @@ class ApiTranscriber:
                     "timestamp_granularities[]": ["word", "segment"],
                 },
                 headers=headers,
-                timeout=600,
+                timeout=timeout_sec,
             )
         r.raise_for_status()
         data = r.json()

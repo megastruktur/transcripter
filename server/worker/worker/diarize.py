@@ -20,9 +20,9 @@ class DiarizationResult(BaseModel):
     segments: list[DiarSegment]
 
 
-async def diarize_audio(audio: Path, cfg) -> DiarizationResult:
+async def diarize_audio(audio: Path, cfg, timeout_sec: float = 3600.0) -> DiarizationResult:
     endpoint = cfg.diarization.endpoint.rstrip("/")
-    async with httpx.AsyncClient(timeout=3600) as client:
+    async with httpx.AsyncClient(timeout=timeout_sec) as client:
         with open(audio, "rb") as f:
             r = await client.post(
                 f"{endpoint}/diarization",

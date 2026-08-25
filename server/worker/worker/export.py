@@ -152,7 +152,7 @@ def load_recording(rec_id: str) -> Rec:
 
 def check_sentinel(root: Path, sentinel: str) -> None:
     """Boot-race guard: a bind mount over an empty mountpoint is writable but
-    wrong. With transcripts.sentinel set (e.g. ".obsidian"), refuse to export
+    wrong. With transcripts.sentinel set (e.g. ".transcripter"), refuse to export
     unless it exists under the root."""
     if sentinel and not (root / sentinel).exists():
         raise ExportError(

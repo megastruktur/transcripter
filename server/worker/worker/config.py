@@ -41,7 +41,7 @@ class TranscriptsConfig(BaseModel):
     layer and be lost on recreate."""
 
     path: Path = Path("/transcripts")
-    # Boot-race guard, e.g. ".obsidian": when set, export refuses to run
+    # Boot-race guard, e.g. ".transcripter": when set, export refuses to run
     # unless this entry exists under path (empty-mountpoint detection).
     sentinel: str = ""
 

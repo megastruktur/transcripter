@@ -33,7 +33,7 @@ Related: `mem:transcripter_stack`.
 ## Config
 
 - `TranscriptsConfig` in worker config.py: `path` fixed `/transcripts`,
-  `sentinel: ""` optional (e.g. `.obsidian`). No env override of the container
+  `sentinel: ""` optional (e.g. `.transcripter` — marker INSIDE the dir). No env override of the container
   path by design (divergence footgun). Host dir: `TRANSCRIPTS_DIR` in server/.env
   → compose bind `${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts`
   (worker service only). Dir must exist before `up` (docker creates root-owned
@@ -48,8 +48,9 @@ Related: `mem:transcripter_stack`.
 - Future title-edit endpoint MUST hook re-export or drop title from filename.
 - Future UI-configurable path = mount-model change (stable parent + subpath),
   not config plumbing.
-- NAS bind should be soft-mounted; systemd RequiresMountsFor= drop-in
-  recommended.
+- NAS bind: keep HARD mount (subprocess 20s kill fences pipeline; atomic
+  rename can't truncate notes); systemd RequiresMountsFor= drop-in
+  recommended. Sentinel marker `.transcripter` lives INSIDE the export dir.
 
 ## Ops
 

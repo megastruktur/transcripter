@@ -27,6 +27,14 @@ def _retry() -> RetryPolicy:
     return RetryPolicy(maximum_attempts=2)
 
 
+def _no_retry() -> RetryPolicy:
+    """Slow ML stages: a retry re-runs minutes of server-side compute and
+    doubles load on the shared voice stack (two contending jobs run at ~half
+    speed — measured 2026-08-25). Timeouts there must fail the stage once;
+    the user re-runs regeneration deliberately from the UI."""
+    return RetryPolicy(maximum_attempts=1)
+
+
 def _diarize_retry() -> RetryPolicy:
     # No compose depends_on anymore (profile-gated service): the first
     # recording after `--profile diarization up` may hit LinTO still loading
@@ -94,8 +102,12 @@ class ProcessRecording:
             result["transcribe"] = await workflow.execute_activity(
                 "transcribe",
                 rec_id,
-                start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 12)),
-                retry_policy=_retry(),
+                # Budgets sized for the CPU voice stack (see activities.py):
+                # 90-min recordings are the norm, 2.5 h the observed max.
+                start_to_close_timeout=timedelta(seconds=timeout_for(duration, 300, 40)),
+                # A retry re-runs minutes of compute on the shared voice
+                # stack: never automatic (user regenerates from the UI).
+                retry_policy=_no_retry(),
                 heartbeat_timeout=timedelta(seconds=120),
             )
         # `merge_speakers` still runs and marks itself skipped when there is
@@ -109,8 +121,9 @@ class ProcessRecording:
                 result["diarize"] = await workflow.execute_activity(
                     "diarize",
                     rec_id,
-                    start_to_close_timeout=timedelta(seconds=timeout_for(duration, 60, 30)),
+                    start_to_close_timeout=timedelta(seconds=timeout_for(duration, 300, 40)),
                     retry_policy=_diarize_retry(),
+                    heartbeat_timeout=timedelta(seconds=120),
                 )
             except ActivityError:
                 workflow.logger.warning("diarize failed for %s; transcript-only", rec_id)
