@@ -13,8 +13,9 @@
 	let filter = $state<'all' | Recording['state']>('all');
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 
-	const STAGES = ['transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
+	const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
 	const stageNames: Record<(typeof STAGES)[number], string> = {
+		chunk: 'Chunks',
 		transcribe: 'Transcript',
 		diarize: 'Diarize',
 		merge_speakers: 'Speakers',

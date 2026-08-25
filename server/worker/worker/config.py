@@ -25,6 +25,14 @@ class DiarizationConfig(BaseModel):
     enabled: bool = True
     endpoint: str = "http://diarization:80"
 
+class ChunkConfig(BaseModel):
+    # OFF by default: short recordings gain nothing from slicing. Enable on
+    # CPU voice stacks where a single long request can hit the whisper
+    # repetition loop (see worker/chunk.py docstring).
+    enabled: bool = False
+    target_min: float = 10.0  # target chunk length
+    overlap_sec: float = 2.0  # shared band between neighbours (seam safety)
+
 
 class DatabaseConfig(BaseModel):
     url: str = "postgresql+psycopg://transcripter:transcripter@postgres/transcripter"
@@ -50,6 +58,7 @@ class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
+    chunk: ChunkConfig = Field(default_factory=ChunkConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)

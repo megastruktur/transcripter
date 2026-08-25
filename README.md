@@ -23,7 +23,7 @@ and a summary** — every stage re-runnable on demand.
 - **Client is thin, server does the ML.** Capture + FLAC encode + upload on the
   desktop; transcription (faster-whisper), diarization (LinTO/pyannote) and
   summarization (any OpenAI-compatible API) run in Docker on your hardware.
-- **Durable pipeline.** Temporal drives the four stages with per-stage retry
+- **Durable pipeline.** Temporal drives the five stages with per-stage retry
   and status; a crash or restart never loses a recording mid-processing.
 - **Resumable uploads.** Audio is spooled locally, uploaded as offset-addressed
   chunks, verified by SHA-256 at finalize. A dropped Wi-Fi connection resumes
@@ -49,6 +49,9 @@ review checklist.
 
 | Stage        | Engine                                   | Notes                                              |
 | ------------ | ---------------------------------------- | -------------------------------------------------- |
+| `chunk`      | ffmpeg segment cut (worker)              | optional (`chunk.enabled`); slices long audio into |
+|              |                                          | ~10-min FLAC chunks + manifest so a whisper        |
+|              |                                          | repetition loop poisons ≤1 chunk, not the recording |
 | `transcribe` | faster-whisper (local) or OpenAI API     | model configurable, `small` by default             |
 | `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`)      |
 | `merge`      | IoU word↔segment matching                | fuses transcript words with speaker turns          |
@@ -58,6 +61,31 @@ review checklist.
 Artifacts per recording: raw transcript, diarization turns, merged
 speaker-attributed transcript, summary — all fetchable over the API and shown
 in the client.
+### Chunking (long recordings, CPU voice stacks)
+
+A single multi-hour STT request can collapse into the whisper **repetition
+loop** (one phrase repeated to the end of the file — observed on a 90-min
+recording after 01:01). With `chunk.enabled: true` the worker first slices
+the audio into ~10-minute chunks (2 s overlap, midpoint seam assignment —
+no duplicated or lost speech at the cuts) and then transcribes/diarizes the
+chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
+
+- a poisoned chunk costs ~10 min of transcript instead of hours;
+- a failed chunk fails the stage with `chunk N of M` in `last_error`, and
+  **regenerate resumes only the missing chunks** (per-chunk status lives in
+  `meta/chunks/chunks.json`);
+- a chunk whose segments are >50 % one identical phrase is marked `suspect`
+  in the manifest; regenerating `transcribe` re-runs only suspect chunks
+  with a reset decoder context (empty prompt +
+  `condition_on_previous_text=false` where the STT server accepts it);
+- chunk FLACs are deleted after `merge_speakers` (retention `until_merged`);
+  re-running `transcribe`/`diarize` after that requires regenerating from
+  the `chunk` stage;
+- diarization speaker labels stay per-chunk (spk_0 in chunk 1 ≠ spk_0 in
+  chunk 2) — merge attributes words by time overlap and is unaffected.
+
+Off by default (`chunk.enabled: false` → stage reports `skipped`, pipeline
+runs whole-file as before).
 
 ## ML deployment matrix
 

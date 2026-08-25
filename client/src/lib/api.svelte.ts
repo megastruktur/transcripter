@@ -6,7 +6,7 @@ export type ApiConfig = {
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
 export type Stage = {
-	kind: 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize';
+	kind: 'chunk' | 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize';
 	status: StageStatus;
 	attempts: number;
 	last_error: string | null;

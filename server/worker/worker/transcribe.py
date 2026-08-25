@@ -48,6 +48,16 @@ class TranscriptionResult:
                 indent=1,
             )
         )
+    @staticmethod
+    def from_json(path: Path) -> "TranscriptionResult":
+        """Inverse of to_json — used to resume a chunked transcription from
+        persisted per-chunk results without re-POSTing done chunks."""
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return TranscriptionResult(
+            data.get("language", "unknown"),
+            [Segment(s["start"], s["end"], s["text"]) for s in data.get("segments", [])],
+            [Word(w["start"], w["end"], w["text"]) for w in data.get("words", [])],
+        )
 
 
 def segments_to_markdown(result: TranscriptionResult, path: Path) -> None:
@@ -101,27 +111,47 @@ class ApiTranscriber:
         self.model = model
         self.api_key = api_key
 
-    def transcribe(self, audio_path: Path, timeout_sec: float = 600.0) -> TranscriptionResult:
+    def transcribe(
+        self,
+        audio_path: Path,
+        timeout_sec: float = 600.0,
+        prompt: str | None = None,
+        condition_on_previous_text: bool | None = None,
+    ) -> TranscriptionResult:
         """POST the audio; `timeout_sec` is the caller's scaled budget.
 
         The default covers unit tests and manual use; the pipeline passes
         activities.budget_transcribe() so client and Temporal budgets agree.
+
+        `prompt`/`condition_on_previous_text` are the repetition-loop escape
+        hatch for suspect chunks (see worker/chunk.py). Speaches 0.8.3
+        ignores unknown form fields, so `condition_on_previous_text` is a
+        forward hook: it takes effect once the voice stack runs a Speaches
+        version that accepts it. Fields are sent only when not None.
         """
         import httpx
+
+        data: dict[str, Any] = {
+            "model": self.model,
+            "response_format": "verbose_json",
+            # Word timestamps are what diarization merging keys off;
+            # without them merge has nothing to attribute. OpenAI's
+            # form field is repeated with a `[]` suffix.
+            "timestamp_granularities[]": ["word", "segment"],
+        }
+        if prompt is not None:
+            data["prompt"] = prompt
+        if condition_on_previous_text is not None:
+            data["condition_on_previous_text"] = (
+                "true" if condition_on_previous_text else "false"
+            )
 
         with open(audio_path, "rb") as f:
             headers = {"authorization": f"Bearer {self.api_key}"} if self.api_key else {}
             r = httpx.post(
                 f"{self.base_url}/audio/transcriptions",
                 files={"file": (audio_path.name, f)},
-                data={
-                    "model": self.model,
-                    "response_format": "verbose_json",
-                    # Word timestamps are what diarization merging keys off;
-                    # without them merge has nothing to attribute. OpenAI's
-                    # form field is repeated with a `[]` suffix.
-                    "timestamp_granularities[]": ["word", "segment"],
-                },
+                data=data,
                 headers=headers,
                 timeout=timeout_sec,
             )
