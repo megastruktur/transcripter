@@ -1,4 +1,4 @@
-# Transcripter — product specification
+# Transcriptor Maximus — product specification
 
 ## Prerequisites
 - The app MUST target macOS + Windows clients.

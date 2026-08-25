@@ -1,10 +1,10 @@
-# Transcripter Design Guidelines
+# Transcriptor Maximus Design Guidelines
 
-This document is the visual and interaction contract for the Transcripter client. New UI must extend this system rather than introduce a second style.
+This document is the visual and interaction contract for the Transcriptor Maximus client. New UI must extend this system rather than introduce a second style.
 
 ## Design thesis
 
-Transcripter is a compact field instrument for preserving human speech. Its interface should feel like a consecrated machine console: severe, reliable, tactile, and built to keep working in a dim operations room.
+Transcriptor Maximus is a compact field instrument for preserving human speech. Its interface should feel like a consecrated machine console: severe, reliable, tactile, and built to keep working in a dim operations room.
 
 The influence is techno-religious industrial design—not costume decoration. Machinery is treated with ritual care. Important actions feel deliberate. Status is communicated like instrumentation. Ornament must reinforce structure, hierarchy, or state.
 
@@ -174,4 +174,4 @@ Before merging client UI work, verify:
 - Icons use the shared SVG system and have accessible names.
 - Focus is visible and reduced motion is respected.
 - The change uses one strong motif and removes decorative excess.
-- The result still looks like Transcripter when all franchise names are removed.
+- The result still looks like Transcriptor Maximus when all franchise names are removed.
