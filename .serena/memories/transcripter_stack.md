@@ -1,6 +1,6 @@
 # transcripter_stack
 
-Docker dev stack for the transcripter project (`/home/megastruktur/projects/dev/transcripter/server/`). Compose project name: `transcripter`.
+Docker dev stack for the transcripter project (repo `server/` dir). Compose project name: `transcripter`.
 
 ## Core services (always on)
 

@@ -7,8 +7,8 @@ metadata:
 
 # Transcripter dev stack — bring-up & backend routing
 
-All commands run from `server/`. Compose project: `transcripter`. Stack repo:
-`/home/megastruktur/projects/dev/transcripter`.
+All commands run from `server/`. Compose project: `transcripter`. Paths below
+are relative to the repo root.
 
 ## Core services (always on)
 

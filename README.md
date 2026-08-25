@@ -107,7 +107,7 @@ The worker reaches any reachable endpoint; env beats config:
 
 ```bash
 # .env next to docker-compose.yml
-DIARIZATION_ENDPOINT=http://192.168.3.50:8070
+DIARIZATION_ENDPOINT=http://<voice-host>:8070
 ```
 
 For transcription set `transcribe.base_url` to `http://<host>:8000/v1`.
@@ -115,15 +115,15 @@ Same-host separate stacks can instead share a docker network
 (`docker network create voice`, uncomment the `voice` block in
 `docker-compose.yml`) and use service DNS names directly.
 
-Working example — the megaserver platform speaches (LAN, bearer auth,
-CPU, accuracy-tuned):
+Working example — a LAN-hosted platform speaches (bearer auth, CPU,
+accuracy-tuned):
 
 ```yaml
 # config.yaml
 transcribe:
   backend: api
   model: Systran/faster-whisper-large-v3   # or deepdml/faster-whisper-large-v3-turbo-ct2
-  base_url: http://192.168.3.23:8010/v1
+  base_url: http://<stt-host>:8000/v1
   api_key_env: SPEACHES_API_KEY
 ```
 
@@ -194,7 +194,7 @@ frontmatter (`recording_id`, `title`, `created`, `date`, `tags`, optional
 
 ```bash
 # .env next to docker-compose.yml — the dir MUST exist before `up`
-TRANSCRIPTS_DIR=/mnt/synology/obsidian/meganotes/Transcripts
+TRANSCRIPTS_DIR=/mnt/your-nas/vault/Transcripts
 ```
 
 Unset → `./storage/transcripts`. Notes are named
@@ -207,9 +207,11 @@ Optional boot-race guard in `config.yaml`:
 
 ```yaml
 transcripts:
-  sentinel: ".obsidian"   # export refuses to run unless this exists under
-                          # the dir — catches a bind over an empty NAS
-                          # mountpoint (docker started before the mount)
+  sentinel: ".transcripter"  # marker file you create INSIDE the transcripts
+                             # dir (touch "$TRANSCRIPTS_DIR/.transcripter");
+                             # export refuses to run unless it exists —
+                             # catches a bind over an empty NAS mountpoint
+                             # (docker started before the mount)
 ```
 
 - **Export is best-effort.** A dead NAS mount can't hang the pipeline: the
@@ -218,9 +220,11 @@ transcripts:
 - **Recovery:** `docker compose exec worker sh -c 'cd /app/worker &&
   .venv/bin/python -m worker.backfill'` re-exports every `done` recording
   (idempotent, same subprocess isolation, refuses on a missing sentinel).
-- **NAS mounts should be soft** (`soft,timeo=50,retrans=2`): backfill's
-  refuse-on-bad-sentinel precondition assumes ETIMEDOUT-not-hang semantics.
-  Consider a systemd drop-in `RequiresMountsFor=/mnt/synology` on the docker
+- **Keep the NAS mount hard** (default): the export subprocess is killed after
+  20 s, so a hung NAS can't stall the pipeline, and atomic tmp+rename can't
+  truncate an existing note. Soft mounts trade that for faster EIO on a dead
+  server — not worth it for a personal vault.
+  Consider a systemd drop-in `RequiresMountsFor=/mnt/your-nas` on the docker
   unit so binds never capture an empty mountpoint.
 - Deleting a recording does NOT delete its note (the `recording_id` in
   frontmatter is the hook for a future cleanup). A future title-edit API

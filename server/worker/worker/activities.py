@@ -1,12 +1,13 @@
 """Temporal activities for the recording pipeline."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import signal
 import sys
-from datetime import timedelta
+from collections.abc import Awaitable
 from pathlib import Path
 
 from temporalio import activity
@@ -26,6 +27,19 @@ from .transcribe import (
 )
 
 log = logging.getLogger("transcripter.activities")
+
+
+# --- Timeout budgets ---------------------------------------------------------
+# Measured on the platform CPU voice stack (Speaches large-v3, 16 threads):
+# ~13 s of compute per minute of audio uncontended, ~21 s/min with two jobs
+# contending. Budgets price ~2x the contended rate; 90-min recordings are
+# the norm, 2.5 h the observed maximum. Unknown duration prices the 2.5 h
+# maximum rather than under-budgeting a long upload.
+_DEFAULT_MINUTES = 150  # 2.5 h fallback when duration_sec is unknown
+TRANSCRIBE_BASE = 300.0  # upload + model spin-up, independent of length
+TRANSCRIBE_PER_MIN = 40.0  # s per audio-minute (client AND Temporal budgets)
+DIARIZE_BASE = 300.0
+DIARIZE_PER_MIN = 40.0
 
 _cfg: WorkerConfig | None = None
 _local: LocalTranscriber | None = None
@@ -47,22 +61,80 @@ def audio_file(rec_id: str) -> Path:
     return cfg().recordings_root / rec_id / "audio.flac"
 
 
+def budget_transcribe(rec: Recording | None) -> float:
+    """HTTP client budget, kept 30 s under the Temporal StartToClose budget.
+
+    The gap guarantees the httpx ReadTimeout fires (a plain Exception →
+    stage marked failed) before Temporal cancels the activity (a
+    CancelledError that would bypass the except-Exception handler and leave
+    the stage stuck in `running` until finalize).
+    """
+    return _budget(TRANSCRIBE_BASE, TRANSCRIBE_PER_MIN, rec) - 30.0
+
+
+def budget_diarize(rec: Recording | None) -> float:
+    return _budget(DIARIZE_BASE, DIARIZE_PER_MIN, rec) - 30.0
+
+
+def _budget(base: float, per_min: float, rec: Recording | None) -> float:
+    minutes = _minutes_of(rec)
+    return base + per_min * minutes
+
+
+def _minutes_of(rec: Recording | None) -> float:
+    if rec is not None and rec.duration_sec:
+        return rec.duration_sec / 60
+    return _DEFAULT_MINUTES
+
+
+async def _heartbeat_while[T](aw: Awaitable[T]) -> T:
+    """Heartbeat every 60 s while a long ML call runs (Temporal heartbeat
+    timeout is 120 s — see workflows.py). Outside an activity context (unit
+    tests) heartbeats are a no-op."""
+    hb = asyncio.create_task(_heartbeat_loop())
+    try:
+        return await asyncio.shield(aw)
+    finally:
+        hb.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await hb
+
+
+async def _heartbeat_loop() -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            activity.heartbeat()
+        except RuntimeError:  # not in an activity (unit tests): no-op
+            pass
+
+
 @activity.defn
 async def transcribe(rec_id: str) -> dict:
     c = cfg()
     set_stage(rec_id, "transcribe", StageStatus.running, inc_attempts=True)
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        timeout_sec = budget_transcribe(rec)
     try:
         if c.transcribe.backend == "api":
             global _api
             if _api is None:
                 key = os.environ.get(c.transcribe.api_key_env, "")
                 _api = ApiTranscriber(c.transcribe.base_url, c.transcribe.model, key)
-            result = _api.transcribe(audio_file(rec_id))
+            result = await _heartbeat_while(
+                asyncio.to_thread(
+                    _api.transcribe, audio_file(rec_id), timeout_sec=timeout_sec
+                )
+            )
         else:
             global _local
             if _local is None or _local.model_name != c.transcribe.model:
                 _local = LocalTranscriber(c.transcribe.model)
-            result = _local.transcribe(audio_file(rec_id))
+            result = await _heartbeat_while(
+                asyncio.to_thread(_local.transcribe, audio_file(rec_id))
+            )
 
         result.to_json(meta_dir(rec_id) / "segments.json")
         segments_to_markdown(result, meta_dir(rec_id) / "transcript.md")
@@ -91,10 +163,16 @@ async def diarize(rec_id: str) -> dict:
     # file's presence, so a stale one would mask a failure here.
     out = meta_dir(rec_id) / "diarization.json"
     out.unlink(missing_ok=True)
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        timeout_sec = budget_diarize(rec)
     try:
         from .diarize import diarize_audio
 
-        result = await diarize_audio(audio_file(rec_id), cfg())
+        result = await _heartbeat_while(
+            diarize_audio(audio_file(rec_id), cfg(), timeout_sec)
+        )
         out.write_text(result.model_dump_json())
         details = {"speakers": result.speakers}
         set_stage(rec_id, "diarize", StageStatus.done, details=details)
@@ -170,19 +248,16 @@ async def finalize_recording(rec_id: str) -> dict:
     return {"state": rec.state.value}
 
 
-def default_retry() -> dict:
-    return {
-        "maximum_attempts": 2,
-        "initial_interval": timedelta(seconds=5),
-        "maximum_interval": timedelta(seconds=60),
-    }
-
-
 def timeout_for(duration_sec: float | None, base: float, per_min: float) -> int:
-    """Activity StartToCloseTimeout scaled by audio length (cold-start padded)."""
-    if duration_sec:
-        return int(base + per_min * (duration_sec / 60)) + 120
-    return int(base + 30 * per_min) + 120
+    """Activity StartToCloseTimeout scaled by audio length.
+
+    Workflow-side budget (workflows must not import DB-holding modules).
+    Activities with a Recording at hand use budget_transcribe/budget_diarize
+    for the matching HTTP timeout; the two must stay consistent — see
+    budget_transcribe().
+    """
+    minutes = duration_sec / 60 if duration_sec else _DEFAULT_MINUTES
+    return int(base + per_min * minutes)
 
 
 # --- Transcript note export -------------------------------------------------
