@@ -177,6 +177,29 @@ def export_recording(
     return path
 
 
+def sweep_stale_notes(root: Path, rec: Rec, keep: Path) -> None:
+    """Delete older app-scheme notes for this recording (e.g. pre-rename
+    titles) and their permanent lockfile siblings, keeping `keep`.
+
+    Scoped to the app's own filename scheme — a `YYYY-MM-DD_HH-MM ` prefix
+    AND the ` {id8}.md` suffix — so user-authored notes are never touched.
+    Best-effort: an entry that can't be unlinked (NFS hiccup, permissions)
+    is skipped, it never fails a successful export."""
+    pattern = re.compile(
+        rf"^\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}} .+ {re.escape(rec.id[:8].lower())}\.md$"
+    )
+    for entry in list(root.iterdir()):
+        if entry.name == keep.name or not pattern.match(entry.name):
+            continue
+        try:
+            entry.unlink()
+            # Lockfiles (.{name}.lock) are permanent per write_note_atomic
+            # and never match the sweep regex themselves.
+            entry.with_name(f".{entry.name}.lock").unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("export sweep: could not remove stale note %s: %s", entry, e)
+
+
 def run(rec_id: str) -> Path | None:
     """Load config + recording, no-op unless done, export.
 
@@ -195,5 +218,8 @@ def run(rec_id: str) -> Path | None:
     if rec.state != "done":
         return None
     meta = cfg.recordings_root / rec_id / "meta"
-    return export_recording(cfg.transcripts.path, meta, rec, zone, cfg.transcripts.sentinel)
+    path = export_recording(cfg.transcripts.path, meta, rec, zone, cfg.transcripts.sentinel)
+    if path is not None:
+        sweep_stale_notes(cfg.transcripts.path, rec, path)
+    return path
 

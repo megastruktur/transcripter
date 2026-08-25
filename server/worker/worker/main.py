@@ -18,7 +18,7 @@ from .activities import (
 )
 from .config import load_config
 from .db import init_engine
-from .workflows import ProcessRecording
+from .workflows import ExportRecording, ProcessRecording
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("transcripter.worker")
@@ -69,7 +69,7 @@ async def amain() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[ProcessRecording],
+        workflows=[ProcessRecording, ExportRecording],
         activities=[chunk, transcribe, diarize, merge_speakers, summarize, finalize_recording, export_transcript],
     )
     log.info("worker started on queue %s", TASK_QUEUE)
