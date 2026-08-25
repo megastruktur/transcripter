@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Transcripter records your microphone when you start a recording.</string>
+  <string>Transcriptor Maximus records your microphone when you start a recording.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>Transcripter uploads finished recordings to your transcription server over the local network.</string>
+  <string>Transcriptor Maximus uploads finished recordings to your transcription server over the local network.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>Transcripter records call audio played by your Mac when system audio is enabled.</string>
+  <string>Transcriptor Maximus records call audio played by your Mac when system audio is enabled.</string>
 </dict>
 </plist>

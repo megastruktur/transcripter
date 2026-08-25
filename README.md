@@ -1,4 +1,4 @@
-# 🎙️ Transcripter Maximus
+# 🎙️ Transcriptor Maximus
 
 Self-hosted call recorder with server-side ML: record meetings/calls on your
 desktop, upload in the background, and get a **transcript with speaker labels
@@ -362,7 +362,7 @@ pnpm tauri build            # bundles appear in src-tauri\target\release\bundle\
 
 Installers land in `bundle\nsis\*.exe` (recommended) and `bundle\msi\*.msi`.
 For a quick test without installing: run
-`src-tauri\target\release\transcripter.exe`.
+`src-tauri\target\release\transcriptor-maximus.exe`.
 
 **macOS** (12+, Xcode Command Line Tools: `xcode-select --install`):
 
@@ -390,6 +390,9 @@ microphone marker and confirm both markers exist in the saved FLAC/transcript.
 
 - Single user, bearer token; no TLS termination in the compose stack — put it
   behind a reverse proxy (e.g. Traefik/Caddy) if you expose it beyond LAN.
+- Audio playback in the browser passes the bearer token as a `?token=` query
+  param so `<audio>` elements can authenticate; that URL can appear in
+  proxy/server access logs — an accepted single-user LAN tradeoff.
 - System audio uses a Core Audio process tap on macOS 14.2+ and WASAPI shared-mode
   loopback on Windows 10 1703+/Windows 11. Linux remains microphone-only.
 - Windows may exclude DRM/protected playback from loopback capture. This is an OS

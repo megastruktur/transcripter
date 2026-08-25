@@ -10,7 +10,6 @@
 
 	let { children } = $props();
 	let collapsed = $state(browser && localStorage.getItem('transcripter.window-collapsed') === 'true');
-	let resizing = $state(false);
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
 
@@ -106,16 +105,10 @@
 		}
 	}
 
-	async function toggleCollapsed(): Promise<void> {
-		if (resizing) return;
-		resizing = true;
+	function toggleCollapsed(): void {
 		collapsed = !collapsed;
 		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
-		try {
-			await applyWindowMode(collapsed);
-		} finally {
-			resizing = false;
-		}
+		applyWindowMode(collapsed).catch(() => {});
 	}
 
 	async function minimizeWindow(): Promise<void> {
@@ -147,12 +140,12 @@
 		dragOrigin = null;
 	}
 
-	async function activateCollapsedMark(): Promise<void> {
+	function activateCollapsedMark(): void {
 		if (draggedCollapsedMark) {
 			draggedCollapsedMark = false;
 			return;
 		}
-		await toggleCollapsed();
+		toggleCollapsed();
 	}
 </script>
 
@@ -173,7 +166,7 @@
 		onpointerup={endCollapsedDrag}
 		onpointercancel={endCollapsedDrag}
 		onclick={activateCollapsedMark}
-		aria-label={`Expand Transcripter. ${collapsedStatus}`}
+		aria-label={`Expand Transcriptor Maximus. ${collapsedStatus}`}
 		title={collapsedStatus}
 	>
 		<span class="collapsed-icon" aria-hidden="true"><Icon name="mark" size={56} /></span>
@@ -185,7 +178,7 @@
 			<div class="identity" data-tauri-drag-region>
 				<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
 				<div data-tauri-drag-region>
-					<strong data-tauri-drag-region>TRANSCRIPTER</strong>
+					<strong data-tauri-drag-region>TRANSCRIPTOR MAXIMUS</strong>
 					<small data-tauri-drag-region>Audio capture console</small>
 				</div>
 			</div>

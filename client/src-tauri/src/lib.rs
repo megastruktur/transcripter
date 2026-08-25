@@ -56,7 +56,7 @@ pub fn run() {
     // cmd_retry_pending (Recordings mount, with configured credentials).
     tauri::Builder::default()
         .setup(|app| {
-            let show = MenuItemBuilder::with_id("show", "Show Transcripter").build(app)?;
+            let show = MenuItemBuilder::with_id("show", "Show Transcriptor Maximus").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
@@ -68,7 +68,7 @@ pub fn run() {
             TrayIconBuilder::with_id("transcripter-tray")
                 .icon(Image::from_bytes(tray_icon_bytes)?)
                 .icon_as_template(cfg!(target_os = "macos"))
-                .tooltip("Transcripter")
+                .tooltip("Transcriptor Maximus")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

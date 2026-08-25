@@ -26,7 +26,7 @@
 	}
 </script>
 
-<svelte:head><title>Link · Transcripter</title></svelte:head>
+<svelte:head><title>Link · Transcriptor Maximus</title></svelte:head>
 
 <section class="page settings-page">
 	<header>
