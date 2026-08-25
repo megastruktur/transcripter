@@ -108,7 +108,7 @@
 	function toggleCollapsed(): void {
 		collapsed = !collapsed;
 		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
-		applyWindowMode(collapsed).catch(() => {});
+		applyWindowMode(collapsed).catch((error) => console.warn('applyWindowMode failed', error));
 	}
 
 	async function minimizeWindow(): Promise<void> {
