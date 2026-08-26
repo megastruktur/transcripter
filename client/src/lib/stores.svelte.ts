@@ -282,15 +282,26 @@ export function refreshAudioDevices(): Promise<void> {
 	return audioDevicesRequest;
 }
 
-/** Persist a new selection and re-check availability (device switch moment). */
-export function selectAudioDevices(microphone: string, systemOutput: string): void {
-	audioDevices.selectedMicrophone = microphone;
-	audioDevices.selectedSystemOutput = systemOutput;
-	selectionIsFallback = false;
+/**
+ * Apply an explicit user selection and re-check availability (device switch
+ * moment). Patch-shaped: only the dimension the user actually touched is
+ * persisted — persisting the untouched one would clobber the saved preference
+ * with a hot-unplug fallback value and defeat the replug-restore. The
+ * fallback flag is deliberately NOT cleared here: refreshAudioDevices
+ * recomputes it from divergence, so an untouched fallback dimension keeps
+ * its restore path.
+ */
+export function selectAudioDevices(patch: { microphone?: string; systemOutput?: string }): void {
+	if (patch.microphone !== undefined) {
+		audioDevices.selectedMicrophone = patch.microphone;
+		localStorage.setItem('transcripter.microphone', patch.microphone);
+	}
+	if (patch.systemOutput !== undefined) {
+		audioDevices.selectedSystemOutput = patch.systemOutput;
+		localStorage.setItem('transcripter.system-output', patch.systemOutput);
+	}
 	preflight.current = null;
 	preflightSelectionKey = '';
-	localStorage.setItem('transcripter.microphone', microphone);
-	localStorage.setItem('transcripter.system-output', systemOutput);
 	void checkAudioDevices(false);
 }
 

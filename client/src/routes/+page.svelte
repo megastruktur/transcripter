@@ -55,8 +55,12 @@
 		return h ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 	}
 
-	function selectionChanged(): void {
-		selectAudioDevices(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput);
+	function microphoneChanged(): void {
+		selectAudioDevices({ microphone: audioDevices.selectedMicrophone });
+	}
+
+	function systemOutputChanged(): void {
+		selectAudioDevices({ systemOutput: audioDevices.selectedSystemOutput });
 	}
 
 	async function beginRecording(): Promise<void> {
@@ -132,7 +136,7 @@
 				<label for="microphone-device">Microphone</label>
 				<span class:ready={micState === 'Ready'} class:issue={micState === 'No signal' || micState === 'Unavailable' || micState === 'Permission denied'} class="device-status">{micState}</span>
 			</div>
-			<select id="microphone-device" bind:value={audioDevices.selectedMicrophone} onchange={selectionChanged} disabled={audioDevices.loading || recorder.recording}>
+			<select id="microphone-device" bind:value={audioDevices.selectedMicrophone} onchange={microphoneChanged} disabled={audioDevices.loading || recorder.recording}>
 				{#if audioDevices.devices.microphones.length === 0}<option value="" disabled>{audioDevices.loading ? 'Loading microphones…' : 'No microphones found'}</option>{/if}
 				{#each audioDevices.devices.microphones as device (device.id)}
 					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
@@ -146,7 +150,7 @@
 				<label for="system-output-device">System audio</label>
 				<span class:ready={systemState === 'Ready'} class:issue={systemState === 'No signal' || systemState === 'Unavailable' || systemState === 'Permission denied'} class="device-status">{systemState}</span>
 			</div>
-			<select id="system-output-device" bind:value={audioDevices.selectedSystemOutput} onchange={selectionChanged} disabled={audioDevices.loading || recorder.recording}>
+			<select id="system-output-device" bind:value={audioDevices.selectedSystemOutput} onchange={systemOutputChanged} disabled={audioDevices.loading || recorder.recording}>
 				<option value={SYSTEM_AUDIO_OFF}>Off</option>
 				{#each audioDevices.devices.system_outputs as device (device.id)}
 					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
