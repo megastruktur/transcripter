@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import Icon, { type IconName } from '$lib/Icon.svelte';
+	import Markdown from '$lib/Markdown.svelte';
 	import {
 		getRecording,
 		renameRecording,
@@ -43,10 +44,10 @@
 	let audioEl = $state<HTMLAudioElement>();
 
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
-	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string }> = {
-		transcript: { label: 'Transcript', stage: 'transcribe' },
-		speakers: { label: 'Speakers', stage: 'merge_speakers' },
-		summary: { label: 'Summary', stage: 'summarize' },
+	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
+		transcript: { label: 'Transcript', stage: 'transcribe', markdown: true },
+		speakers: { label: 'Speakers', stage: 'merge_speakers', markdown: true },
+		summary: { label: 'Summary', stage: 'summarize', markdown: true },
 		json: { label: 'JSON', stage: 'transcribe', file: 'segments.json' }
 	};
 	let tabData = $state<Partial<Record<ArtifactTabKey, TabData>>>({});
@@ -352,7 +353,11 @@
 			{#if tabLoading}
 				<p class="tab-placeholder">Retrieving archive…</p>
 			{:else if currentTab?.kind === 'ready'}
-				<pre>{currentTab.text}</pre>
+				{#if TAB_SPECS[activeTab].markdown}
+					<Markdown text={currentTab.text} />
+				{:else}
+					<pre>{currentTab.text}</pre>
+				{/if}
 			{:else if currentTab?.kind === 'missing'}
 				<p class="tab-placeholder">This artifact has not been generated yet.</p>
 			{:else if currentTab?.kind === 'error'}
