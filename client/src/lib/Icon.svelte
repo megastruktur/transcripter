@@ -18,7 +18,11 @@
 		| 'empty'
 		| 'pencil'
 		| 'trash'
-		| 'back';
+		| 'back'
+		| 'transcript'
+		| 'speakers'
+		| 'summary'
+		| 'json';
 
 	let { name, size = 20, strokeWidth = 1.8 }: { name: IconName; size?: number; strokeWidth?: number } = $props();
 </script>
@@ -81,10 +85,23 @@
 		<path d="m6.3 17.7 11.4-11.4" />
 	{:else if name === 'pencil'}
 		<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />
-		{:else if name === 'trash'}
-			<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5" />
-		{:else if name === 'back'}
-			<path d="M14.5 6 9 12l5.5 6" />
+	{:else if name === 'trash'}
+		<path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v5M14 11v5" />
+	{:else if name === 'back'}
+		<path d="M14.5 6 9 12l5.5 6" />
+	{:else if name === 'transcript'}
+		<path d="M4 10v4M8 6.5v11M12 3.5v17M16 8v8M20 10.5v3" />
+	{:else if name === 'speakers'}
+		<circle cx="9" cy="8" r="3.2" />
+		<path d="M3.4 19.2c.7-3.4 2.9-5.2 5.6-5.2s4.9 1.8 5.6 5.2" />
+		<circle cx="16.8" cy="8.8" r="2.5" />
+		<path d="M15.9 14.2c2.5.3 4.2 2 4.7 4.6" />
+	{:else if name === 'summary'}
+		<path d="M6 3.5h8l4 4v13H6z" />
+		<path d="M14 3.5v4h4M9 12h6M9 15.5h6" />
+	{:else if name === 'json'}
+		<path d="M9.5 4.5c-2.2 0-3 .9-3 2.6v2.3c0 1.5-.9 2.6-2.3 2.6 1.4 0 2.3 1.1 2.3 2.6v2.3c0 1.7.8 2.6 3 2.6" />
+		<path d="M14.5 4.5c2.2 0 3 .9 3 2.6v2.3c0 1.5.9 2.6 2.3 2.6-1.4 0-2.3 1.1-2.3 2.6v2.3c0 1.7-.8 2.6-3 2.6" />
 	{/if}
 </svg>
 

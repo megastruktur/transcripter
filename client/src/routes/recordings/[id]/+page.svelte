@@ -11,9 +11,11 @@
 		fetchArtifact,
 		regenerate,
 		loadApiConfig,
-		type Recording
+		type Recording,
+		type Stage
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
+	import { artifactTab, type ArtifactTabKey } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? ''; // undefined → 400 → not-found panel
 
@@ -32,20 +34,28 @@
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 	let audioEl = $state<HTMLAudioElement>();
 
-	type TabKey = 'transcript' | 'speakers' | 'summary' | 'json';
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
-	const TAB_SPECS: Record<TabKey, { label: string; stage: string; file?: string }> = {
+	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string }> = {
 		transcript: { label: 'Transcript', stage: 'transcribe' },
 		speakers: { label: 'Speakers', stage: 'merge_speakers' },
 		summary: { label: 'Summary', stage: 'summarize' },
 		json: { label: 'JSON', stage: 'transcribe', file: 'segments.json' }
 	};
-	const TAB_ORDER: TabKey[] = ['transcript', 'speakers', 'summary', 'json'];
-	let activeTab = $state<TabKey>('transcript');
-	let tabData = $state<Partial<Record<TabKey, TabData>>>({});
+	let tabData = $state<Partial<Record<ArtifactTabKey, TabData>>>({});
 	let tabLoading = $state(false);
 	let tabGeneration = 0;
+	const tabInflight = new Set<ArtifactTabKey>();
+	const activeTab = $derived(artifactTab.active);
 	const currentTab = $derived(tabData[activeTab]);
+
+	// Default artifact view by availability: Summary → Speakers → Transcript → JSON.
+	function defaultTab(rec: Recording): ArtifactTabKey {
+		const done = (kind: Stage['kind']) => rec.stages.some((s) => s.kind === kind && s.status === 'done');
+		if (done('summarize')) return 'summary';
+		if (done('merge_speakers')) return 'speakers';
+		if (done('transcribe')) return 'transcript';
+		return 'json';
+	}
 
 	const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
 	const stageNames: Record<(typeof STAGES)[number], string> = {
@@ -111,9 +121,17 @@
 			await load();
 			if (!recording) return;
 			if (recording.state === 'uploading' || recording.state === 'processing') startPoll();
-			void loadTab('transcript');
+			artifactTab.active = defaultTab(recording);
 		})();
 		return () => stopPoll();
+	});
+
+	// The rail tab buttons (layout) write artifactTab.active; loading happens
+	// here so the artifact panel reacts no matter which side changed the tab.
+	$effect(() => {
+		const tab = artifactTab.active;
+		if (!recording) return;
+		void loadTab(tab);
 	});
 
 	function autofocus(node: HTMLElement): void {
@@ -168,17 +186,12 @@
 		}
 	}
 
-	function selectTab(tab: TabKey): void {
-		if (tab === activeTab) return;
-		activeTab = tab;
-		void loadTab(tab);
-	}
-
-	async function loadTab(tab: TabKey, force = false): Promise<void> {
+	async function loadTab(tab: ArtifactTabKey, force = false): Promise<void> {
 		if (!recording) return;
-		if (!force && tabData[tab] !== undefined) return;
+		if (!force && (tabData[tab] !== undefined || tabInflight.has(tab))) return;
 		const spec = TAB_SPECS[tab];
 		const generation = ++tabGeneration;
+		tabInflight.add(tab);
 		tabLoading = true;
 		try {
 			const text = await fetchArtifact(loadApiConfig(), recording.id, spec.stage, spec.file);
@@ -193,6 +206,7 @@
 				tabData = { ...tabData, [tab]: { kind: 'error', message: `${spec.label} failed to load: ${caught instanceof Error ? caught.message : String(caught)}` } };
 			}
 		} finally {
+			tabInflight.delete(tab);
 			if (generation === tabGeneration) tabLoading = false;
 		}
 	}
@@ -313,18 +327,7 @@
 			<audio bind:this={audioEl} class="audio-player" controls preload="none" src={audioUrl(loadApiConfig(), recording.id)}></audio>
 		{/if}
 
-		<div class="tab-bar" role="tablist" aria-label="Artifacts">
-			{#each TAB_ORDER as tab (tab)}
-				<button
-					type="button"
-					role="tab"
-					aria-selected={activeTab === tab}
-					class:active={activeTab === tab}
-					onclick={() => selectTab(tab)}
-				>{TAB_SPECS[tab].label}</button>
-			{/each}
-		</div>
-		<div class="artifact-panel panel">
+		<div class="artifact-panel panel" role="tabpanel" aria-label={TAB_SPECS[activeTab].label}>
 			{#if tabLoading}
 				<p class="tab-placeholder">Retrieving archive…</p>
 			{:else if currentTab?.kind === 'ready'}
@@ -388,10 +391,6 @@
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
-	.tab-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
-	.tab-bar button { min-height: 32px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 9px; font-weight: 700; cursor: pointer; }
-	.tab-bar button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
-	.tab-bar button.active { background: rgba(215,167,71,.16); border-color: var(--brass); color: var(--bone); }
 	.artifact-panel { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }
 	.artifact-panel pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }

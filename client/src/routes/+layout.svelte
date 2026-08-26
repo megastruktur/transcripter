@@ -5,7 +5,7 @@
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, uploads } from '$lib/stores.svelte';
+	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let { children } = $props();
@@ -18,6 +18,15 @@
 		{ href: '/recordings', label: 'Library', icon: 'library' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
+
+	const artifactTabs = [
+		{ key: 'transcript', label: 'Transcript', icon: 'transcript' },
+		{ key: 'speakers', label: 'Speakers', icon: 'speakers' },
+		{ key: 'summary', label: 'Summary', icon: 'summary' },
+		{ key: 'json', label: 'JSON', icon: 'json' }
+	] as const;
+
+	const onRecordingDetail = $derived(page.url.pathname.startsWith('/recordings/'));
 
 	const uploadStates = $derived(Object.values(uploads));
 	const uploadingCount = $derived(uploadStates.filter((u) => u.state === 'uploading' || u.state === 'queued').length);
@@ -199,6 +208,25 @@
 						<span>{item.label}</span>
 					</a>
 				{/each}
+				{#if onRecordingDetail}
+					<div class="rail-divider" role="separator"></div>
+					<div class="rail-tabs" role="tablist" aria-label="Artifacts">
+						{#each artifactTabs as tab (tab.key)}
+							<button
+								class="rail-tab"
+								type="button"
+								role="tab"
+								aria-selected={artifactTab.active === tab.key}
+								class:active={artifactTab.active === tab.key}
+								title={tab.label}
+								onclick={() => (artifactTab.active = tab.key)}
+							>
+								<span class="nav-icon" aria-hidden="true"><Icon name={tab.icon} size={20} /></span>
+								<span>{tab.label}</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
 				<div class="rail-spacer"></div>
 			</nav>
 
@@ -272,6 +300,11 @@
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail a:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
 	.rail a[aria-current='page'] { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); border-color: rgba(215, 167, 71, 0.28); box-shadow: inset 2px 0 var(--red); }
+	.rail-divider { height: 1px; margin: 3px 4px; background: var(--line); }
+	.rail-tabs { display: flex; flex-direction: column; gap: 5px; }
+	.rail-tab { display: grid; place-items: center; gap: 5px; min-height: 56px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #8e857c; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; cursor: pointer; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
+	.rail-tab:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
+	.rail-tab.active { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); border-color: rgba(215, 167, 71, 0.28); box-shadow: inset 2px 0 var(--red); }
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
