@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import Icon from '$lib/Icon.svelte';
+	import Icon, { type IconName } from '$lib/Icon.svelte';
 	import {
 		getRecording,
 		renameRecording,
@@ -18,6 +18,14 @@
 	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? ''; // undefined → 400 → not-found panel
+	/** Stage → shared icon glyph. Names/status stay in tooltips and accessible labels. */
+	const stageIcons: Record<StageKind, IconName> = {
+		chunk: 'chunk',
+		transcribe: 'transcript',
+		diarize: 'diarize',
+		merge_speakers: 'speakers',
+		summarize: 'summary'
+	};
 
 	let recording = $state<Recording | null>(null);
 	let loading = $state(true);
@@ -309,15 +317,23 @@
 		{/if}
 
 		<div class="detail-meta panel">
-			<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
-			<span class="meta-text">{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)} · {sizeLabel(recording.total_bytes)}</span>
-			<span class={`state-label ${recording.state}`}>{recording.state}</span>
-		</div>
-
-		<div class="stage-strip" aria-label="Pipeline stages">
-			{#each recording.stages as stage (stage.kind)}
-				<span class={`stage-chip ${stage.status}`}>{stageNames[stage.kind]} · {stage.status}</span>
-			{/each}
+			<div class="meta-row">
+				<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
+				<span class="meta-text">{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)} · {sizeLabel(recording.total_bytes)}</span>
+				<span class={`state-label ${recording.state}`}>{recording.state}</span>
+			</div>
+			<span class="stage-icons" role="group" aria-label="Pipeline stages">
+				{#each recording.stages as stage (stage.kind)}
+					<span
+						class={`stage-icon ${stage.status}`}
+						role="img"
+						title="{stageNames[stage.kind]} · {stage.status}"
+						aria-label="{stageNames[stage.kind]}: {stage.status}"
+					>
+						<Icon name={stageIcons[stage.kind]} size={16} strokeWidth={1.4} />
+					</span>
+				{/each}
+			</span>
 		</div>
 		{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
 			<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
@@ -367,7 +383,8 @@
 	.detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
 	.back-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
 	.back-button:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
-	.detail-meta { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 10px 11px; }
+	.detail-meta { display: flex; flex-direction: column; gap: 8px; padding: 10px 11px; }
+	.meta-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; }
 	.meta-text { font-size: 11px; color: #8b8278; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.state-mark { width: 7px; height: 7px; border-radius: 50%; background: #706960; box-shadow: 0 0 0 3px rgba(112,105,96,.12); }
 	.state-mark.done { background: var(--cyan); box-shadow: 0 0 9px rgba(112,215,208,.55); }
@@ -377,12 +394,11 @@
 	.state-label.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
 	.state-label.processing, .state-label.uploading { color: var(--brass); border-color: rgba(215,167,71,.25); }
 	.state-label.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
-	.stage-strip { display: flex; flex-wrap: wrap; gap: 5px; }
-	.stage-chip { padding: 5px 7px; border: 1px solid var(--line); border-radius: 2px; color: #968d83; font-size: 9px; font-weight: 700; }
-	.stage-chip.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
-	.stage-chip.running { color: var(--brass); border-color: rgba(215,167,71,.25); }
-	.stage-chip.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
-	.stage-chip.skipped, .stage-chip.pending { color: #6f685f; }
+	.stage-icons { display: flex; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+	.stage-icon { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 2px; color: #6f685f; line-height: 0; }
+	.stage-icon.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
+	.stage-icon.running { color: var(--brass); border-color: rgba(215,167,71,.25); }
+	.stage-icon.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
