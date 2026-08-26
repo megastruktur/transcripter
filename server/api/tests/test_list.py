@@ -92,3 +92,25 @@ def test_invalid_state_rejected(client: TestClient) -> None:
 def test_invalid_limit_rejected(client: TestClient) -> None:
     assert client.get("/recordings", params={"limit": 0}).status_code == 422
     assert client.get("/recordings", params={"offset": -1}).status_code == 422
+
+
+def test_offset_past_end_returns_empty_page_with_total(client: TestClient) -> None:
+    # The client's page-clamp depends on this contract: an out-of-range
+    # offset must return items=[] with the full filtered total intact.
+    for n in range(5):
+        _make(client, f"rec-{n}")
+    body = client.get("/recordings", params={"limit": 20, "offset": 100}).json()
+    assert body["items"] == []
+    assert body["total"] == 5
+
+
+def test_query_and_state_compose(client: TestClient) -> None:
+    _make(client, "morning standup")
+    _make(client, "morning sync")
+    _make(client, "evening sync")
+    body = client.get("/recordings", params={"q": "morning", "state": "uploading"}).json()
+    assert body["total"] == 2
+    assert {item["title"] for item in body["items"]} == {"morning standup", "morning sync"}
+    body = client.get("/recordings", params={"q": "morning", "state": "done"}).json()
+    assert body["total"] == 0
+    assert body["items"] == []

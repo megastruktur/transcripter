@@ -206,6 +206,9 @@ export const audioDevices = $state({
 
 let audioDevicesRequest: Promise<void> | null = null;
 let audioSelectionInitialized = false;
+// True while the selection came from the hot-unplug fallback rather than the
+// user: the saved preference is restored the moment the device reappears.
+let selectionIsFallback = false;
 // Selection the current preflight report belongs to ('' = no valid report).
 let preflightSelectionKey = '';
 
@@ -222,27 +225,40 @@ export function refreshAudioDevices(): Promise<void> {
 			const devices = await commands.listAudioDevices();
 			audioDevices.devices = devices;
 			audioDevices.error = '';
+			const keyBefore = selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput);
+			const savedMicrophone = localStorage.getItem('transcripter.microphone');
+			const savedSystemOutput = localStorage.getItem('transcripter.system-output');
 			if (!audioSelectionInitialized) {
 				audioSelectionInitialized = true;
-				audioDevices.selectedMicrophone = localStorage.getItem('transcripter.microphone') ?? '';
-				audioDevices.selectedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
+				audioDevices.selectedMicrophone = savedMicrophone ?? '';
+				audioDevices.selectedSystemOutput = savedSystemOutput ?? SYSTEM_AUDIO_OFF;
+			} else if (selectionIsFallback) {
+				// The fallback is ephemeral and never persisted: prefer the user's
+				// saved choice the moment it reappears in an enumeration (replug).
+				if (savedMicrophone && devices.microphones.some((d) => d.id === savedMicrophone)) {
+					audioDevices.selectedMicrophone = savedMicrophone;
+				}
+				if (savedSystemOutput && (savedSystemOutput === SYSTEM_AUDIO_OFF || devices.system_outputs.some((d) => d.id === savedSystemOutput))) {
+					audioDevices.selectedSystemOutput = savedSystemOutput;
+				}
 			}
 			// Validate the selection against the fresh list; fall back only when
 			// the chosen device disappeared (hot-unplug). A rewritten selection
 			// invalidates the report — it was computed for the vanished device.
-			let selectionRewritten = false;
+			let fellBack = false;
 			if (!devices.microphones.some((d) => d.id === audioDevices.selectedMicrophone)) {
 				audioDevices.selectedMicrophone = devices.default_microphone ?? devices.microphones[0]?.id ?? '';
-				selectionRewritten = true;
+				fellBack = true;
 			}
 			if (
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF &&
 				!devices.system_outputs.some((d) => d.id === audioDevices.selectedSystemOutput)
 			) {
 				audioDevices.selectedSystemOutput = devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF;
-				selectionRewritten = true;
+				fellBack = true;
 			}
-			if (selectionRewritten) {
+			selectionIsFallback = fellBack;
+			if (selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput) !== keyBefore) {
 				preflight.current = null;
 				preflightSelectionKey = '';
 			}
@@ -260,6 +276,7 @@ export function refreshAudioDevices(): Promise<void> {
 export function selectAudioDevices(microphone: string, systemOutput: string): void {
 	audioDevices.selectedMicrophone = microphone;
 	audioDevices.selectedSystemOutput = systemOutput;
+	selectionIsFallback = false;
 	preflight.current = null;
 	preflightSelectionKey = '';
 	localStorage.setItem('transcripter.microphone', microphone);
