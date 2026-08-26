@@ -278,6 +278,7 @@ export async function ensureAudioDevices(): Promise<void> {
 }
 
 let audioCheckSeq = 0;
+let audioChecksInFlight = 0;
 
 export async function checkAudioDevices(probe = true): Promise<void> {
 	const microphone = audioDevices.selectedMicrophone;
@@ -291,6 +292,7 @@ export async function checkAudioDevices(probe = true): Promise<void> {
 	// check may publish its report — a stale completion must not pin a status
 	// computed for a device that is no longer selected.
 	const seq = ++audioCheckSeq;
+	audioChecksInFlight += 1;
 	audioDevices.checking = true;
 	if (probe) clearWarnings();
 	try {
@@ -302,7 +304,11 @@ export async function checkAudioDevices(probe = true): Promise<void> {
 	} catch (error) {
 		if (seq === audioCheckSeq) recorder.warnings.push(String(error));
 	} finally {
-		if (seq === audioCheckSeq) audioDevices.checking = false;
+		// `checking` tracks ANY outstanding probe: a discarded stale check
+		// still holds its audio stream, so the button stays busy until the
+		// last in-flight invoke settles.
+		audioChecksInFlight -= 1;
+		if (audioChecksInFlight === 0) audioDevices.checking = false;
 	}
 }
 
