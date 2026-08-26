@@ -30,7 +30,11 @@ def summarize_transcript(meta: Path, cfg) -> str:
                 {"role": "user", "content": transcript[:100_000]},
             ],
         },
-        timeout=300,
+        # Must stay 30s UNDER the Temporal start_to_close (2400s) so
+        # httpx.ReadTimeout (an Exception, caught → stage failed) fires
+        # before Temporal cancellation (CancelledError bypasses
+        # except Exception and leaves the stage stuck running).
+        timeout=2370,
     )
     r.raise_for_status()
     return r.json()["choices"][0]["message"]["content"]

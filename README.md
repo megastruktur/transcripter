@@ -200,10 +200,13 @@ transcribe:
   api_key_env: ""         # ENV VAR NAME holding the key (never the key itself)
 
 summarize:
-  enabled: false          # true once model+base_url are set
-  model: ""
-  base_url: ""
-  api_key_env: ""
+  enabled: false          # true once model+base_url are set; stage
+                        # reports `skipped` while unconfigured
+  model: ""               # any OpenAI-compatible chat model id
+  base_url: ""            # MUST include /v1 (dev stack: LiteLLM proxy at
+                        # http://192.168.3.23:4000/v1, qwen3.8-27b-q4_k_m)
+  api_key_env: ""         # env var NAME (dev stack: LITELLM_API_KEY in .env —
+                        # a LiteLLM virtual key scoped to that model)
 
 diarization:
   enabled: true           # false → diarize/merge skipped, no container needed

@@ -37,6 +37,8 @@ services:
       DIARIZATION_ENDPOINT: ${DIARIZATION_ENDPOINT:-}
       # Platform speaches API key (transcribe.api_key_env references this var).
       SPEACHES_API_KEY: ${SPEACHES_API_KEY:-}
+      # LiteLLM virtual key for the summarize stage (summarize.api_key_env).
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
     volumes:
       - ./storage:/storage
       # Host-side transcripts dir (Obsidian vault); empty default keeps the
