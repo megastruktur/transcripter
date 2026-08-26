@@ -16,6 +16,12 @@
 	let loading = $state(true);
 	let query = $state('');
 	let filter = $state<'all' | Recording['state']>('all');
+	// The poll and page turns must refresh from the APPLIED filters, not the
+	// live-bound ones: the 3s tick does not wait for the search debounce and
+	// would otherwise fetch with partial text (transient empty state, and
+	// page-clamp jumps when the partial query shrinks the result set).
+	let appliedQuery = '';
+	let appliedFilter: 'all' | Recording['state'] = 'all';
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 	let searchTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 	// Monotonic request id: a stale response (poll racing a page turn or a
@@ -30,8 +36,8 @@
 			const result = await listRecordings(loadApiConfig(), {
 				limit: PAGE_SIZE,
 				offset: page * PAGE_SIZE,
-				q: query,
-				state: filter
+				q: appliedQuery,
+				state: appliedFilter
 			});
 			if (seq !== refreshSeq) return;
 			// Deletes or rows shifting under the poll can leave the current
@@ -52,6 +58,8 @@
 	}
 
 	function refilter(): void {
+		appliedQuery = query;
+		appliedFilter = filter;
 		page = 0;
 		recordings = [];
 		total = 0;
