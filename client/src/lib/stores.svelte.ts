@@ -277,26 +277,32 @@ export async function ensureAudioDevices(): Promise<void> {
 	}
 }
 
+let audioCheckSeq = 0;
+
 export async function checkAudioDevices(probe = true): Promise<void> {
-	if (!audioDevices.selectedMicrophone) {
+	const microphone = audioDevices.selectedMicrophone;
+	const systemOutput = audioDevices.selectedSystemOutput;
+	if (!microphone) {
 		recorder.warnings.push('no microphone available');
 		return;
 	}
+	// In-flight guard: a device switch fires a check and resets the key, and a
+	// concurrent remount (ensureAudioDevices) can fire another. Only the newest
+	// check may publish its report — a stale completion must not pin a status
+	// computed for a device that is no longer selected.
+	const seq = ++audioCheckSeq;
 	audioDevices.checking = true;
 	if (probe) clearWarnings();
 	try {
-		const withSystem = audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF;
-		await checkAudio(
-			audioDevices.selectedMicrophone,
-			withSystem ? audioDevices.selectedSystemOutput : null,
-			withSystem,
-			probe
-		);
-		preflightSelectionKey = selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput);
+		const withSystem = systemOutput !== SYSTEM_AUDIO_OFF;
+		const report = await commands.preFlight(probe, microphone, withSystem ? systemOutput : null, withSystem);
+		if (seq !== audioCheckSeq || audioDevices.selectedMicrophone !== microphone || audioDevices.selectedSystemOutput !== systemOutput) return;
+		preflight.current = report;
+		preflightSelectionKey = selectionKey(microphone, systemOutput);
 	} catch (error) {
-		recorder.warnings.push(String(error));
+		if (seq === audioCheckSeq) recorder.warnings.push(String(error));
 	} finally {
-		audioDevices.checking = false;
+		if (seq === audioCheckSeq) audioDevices.checking = false;
 	}
 }
 
