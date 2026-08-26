@@ -36,6 +36,10 @@ Why: whisper repetition loop lives in one request's decoder context — slicing 
 - Same-host external voice stack: shared docker network `voice` (top-level commented block in docker-compose.yml; `docker network create voice`). Multi-host: publish speaches port, point base_url at `http://<host>:8000/v1`.
 - GOTCHA: single-file bind mount `./config.yaml:...:ro` pins the inode — an editor that replaces the file leaves containers reading the OLD content. After editing config.yaml use `docker compose up -d --force-recreate worker api`, NOT `restart`.
 
+## Summarize stage (enabled 2026-08-26)
+
+`summarize` in config.yaml points at the platform LiteLLM proxy (`http://192.168.3.23:4000/v1`, model `qwen3.8-27b-q4_k_m` on llama-server); key = dedicated LiteLLM virtual key scoped to that model (metadata `transcripter-summarize`), injected as `LITELLM_API_KEY` via .env → worker env. Budgets: Temporal start_to_close 2400s (= LiteLLM deployment timeout), httpx 2370s (30s under, so ReadTimeout → stage `failed` beats Temporal cancellation), `_no_retry()`, heartbeat 60s/timeout 120s, sync httpx wrapped in `_heartbeat_while(asyncio.to_thread(...))`. A full 106KB/83-min transcript summarization took >870s on a contended llama-server (FIFO queue) — hence the 2400s ceiling; an identical immediate retry then returned in ~11s from llama-server's warm slot/KV cache.
+
 ## Smoke tests
 
 `bash server/scripts/e2e_smoke.sh` (local modes; tone audio) and

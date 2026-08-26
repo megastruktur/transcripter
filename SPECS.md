@@ -26,8 +26,9 @@
   `?limit=&offset=&q=&state=` returns `{items, total, limit, offset}`; the
   client library pages at 20 rows and sends its search box / state filter
   through `q` / `state`.
-- Summarize: disabled until a model is configured (OpenAI-compatible,
-  base_url + key_env).
+- Summarize: enabled via the platform LiteLLM proxy (OpenAI-compatible) —
+  local `qwen3.8-27b-q4_k_m` at `http://192.168.3.23:4000/v1`, key from the
+  `LITELLM_API_KEY` env var. The stage still self-skips when unconfigured.
 - Transcript export: every finished recording is exported as one consolidated
   Markdown note (frontmatter + summary + transcript) into a configurable host
   directory (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`);

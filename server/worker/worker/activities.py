@@ -422,7 +422,7 @@ async def summarize(rec_id: str) -> dict:
     try:
         from .summarize import summarize_transcript
 
-        text = summarize_transcript(meta_dir(rec_id), c)
+        text = await _heartbeat_while(asyncio.to_thread(summarize_transcript, meta_dir(rec_id), c))
         (meta_dir(rec_id) / "summary.md").write_text(text, encoding="utf-8")
         set_stage(rec_id, "summarize", StageStatus.done)
         return {"chars": len(text)}

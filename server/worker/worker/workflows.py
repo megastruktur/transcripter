@@ -168,8 +168,9 @@ class ProcessRecording:
             result["summarize"] = await workflow.execute_activity(
                 "summarize",
                 rec_id,
-                start_to_close_timeout=timedelta(seconds=180),
-                retry_policy=_retry(),
+                start_to_close_timeout=timedelta(seconds=2400),
+                retry_policy=_no_retry(),
+                heartbeat_timeout=timedelta(seconds=120),
             )
 
 @workflow.defn
