@@ -1,7 +1,7 @@
 import { commands } from '$lib/tauri';
 import type { AudioDevices, PreFlightReport } from '$lib/tauri';
 import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
-import type { ApiConfig } from '$lib/api.svelte';
+import type { ApiConfig, Stage } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
 
 export type UploadState = {
@@ -29,6 +29,35 @@ export type ArtifactTabKey = 'transcript' | 'speakers' | 'summary' | 'json';
 /** Active artifact tab on the recording detail page. The rail tab buttons
  * (layout) write this; the detail page reads it and loads the artifact. */
 export const artifactTab = $state<{ active: ArtifactTabKey }>({ active: 'transcript' });
+
+/** Canonical pipeline stage order and display names. Shared by the detail
+ * page (stage chips, error lines) and the layout context-bar (re-run cluster). */
+export const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
+export type StageKind = (typeof STAGES)[number];
+export const stageNames: Record<StageKind, string> = {
+	chunk: 'Chunks',
+	transcribe: 'Transcript',
+	diarize: 'Diarize',
+	merge_speakers: 'Speakers',
+	summarize: 'Summary'
+};
+/** Short labels for the compact re-run buttons in the context bar; the full
+ * stageNames go into tooltips and accessible names. */
+export const stageShortNames: Record<StageKind, string> = {
+	chunk: 'Chk',
+	transcribe: 'Trn',
+	diarize: 'Dia',
+	merge_speakers: 'Spk',
+	summarize: 'Sum'
+};
+
+/** Re-run context published by the recording detail page. The layout
+ * context-bar reads it to render per-stage re-run buttons above the title. */
+export const stageRetry = $state<{
+	stages: Stage[];
+	enabled: boolean;
+	rerun: ((kind: StageKind) => void) | null;
+}>({ stages: [], enabled: false, rerun: null });
 
 /** Live upload ledger: session id → current upload state. */
 export const uploads = $state<{ [id: string]: UploadState }>({});
