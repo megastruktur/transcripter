@@ -71,7 +71,7 @@ def preload_local(model_name: str) -> None:
     with _local_lock:
         if _local is None or _local.model_name != model_name:
             _local = LocalTranscriber(model_name)
-        _local._ensure_loaded()
+        _local.preload()
 
 
 def cfg() -> WorkerConfig:

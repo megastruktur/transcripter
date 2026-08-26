@@ -112,6 +112,10 @@ class LocalTranscriber:
                     )
         return self._model
 
+    def preload(self) -> None:
+        """Eagerly load the model (worker startup warm-up)."""
+        self._ensure_loaded()
+
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         model = self._ensure_loaded()
         segments_iter: Iterator[Any]
