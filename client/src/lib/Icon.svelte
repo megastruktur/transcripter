@@ -1,5 +1,5 @@
-<script lang="ts">
-	type IconName =
+	<script module lang="ts">
+	export type IconName =
 		| 'mark'
 		| 'record'
 		| 'library'
@@ -22,8 +22,12 @@
 		| 'transcript'
 		| 'speakers'
 		| 'summary'
-		| 'json';
+		| 'json'
+		| 'chunk'
+		| 'diarize';
+</script>
 
+<script lang="ts">
 	let { name, size = 20, strokeWidth = 1.8 }: { name: IconName; size?: number; strokeWidth?: number } = $props();
 </script>
 
@@ -102,6 +106,12 @@
 	{:else if name === 'json'}
 		<path d="M9.5 4.5c-2.2 0-3 .9-3 2.6v2.3c0 1.5-.9 2.6-2.3 2.6 1.4 0 2.3 1.1 2.3 2.6v2.3c0 1.7.8 2.6 3 2.6" />
 		<path d="M14.5 4.5c2.2 0 3 .9 3 2.6v2.3c0 1.5.9 2.6 2.3 2.6-1.4 0-2.3 1.1-2.3 2.6v2.3c0 1.7-.8 2.6-3 2.6" />
+	{:else if name === 'chunk'}
+		<path d="M4 8.5h16v7H4zM9.3 8.5v7M14.6 8.5v7" />
+	{:else if name === 'diarize'}
+		<path d="M4 10v4M7.5 7.5v9M11 9.5v5" />
+		<circle cx="16.8" cy="8.4" r="2.3" />
+		<path d="M14 18c.5-2.3 1.5-3.4 2.8-3.4s2.3 1.1 2.8 3.4" />
 	{/if}
 </svg>
 
