@@ -4,6 +4,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import { retryPendingUploads } from '$lib/stores.svelte';
 	import { listRecordings, loadApiConfig, type Recording } from '$lib/api.svelte';
+	import { dateLabel, durationLabel } from '$lib/format';
 
 	let recordings = $state<Recording[]>([]);
 	let error = $state('');
@@ -40,15 +41,6 @@
 		};
 	});
 
-	function dateLabel(value: string): string {
-		return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-	}
-
-	function durationLabel(seconds: number | null): string {
-		if (seconds === null) return '—';
-		const minutes = Math.floor(seconds / 60);
-		return `${minutes}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
-	}
 </script>
 
 <svelte:head><title>Archive · Transcriptor Maximus</title></svelte:head>

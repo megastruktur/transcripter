@@ -13,6 +13,7 @@
 		loadApiConfig,
 		type Recording
 	} from '$lib/api.svelte';
+	import { dateLabel, durationLabel } from '$lib/format';
 
 	const id = page.params.id ?? ''; // undefined → 400 → not-found panel
 
@@ -95,8 +96,10 @@
 			if (status === 404 || status === 400) {
 				notFound = true;
 				error = '';
+				stopPoll(); // recording gone / bad id — stop issuing doomed requests
 			} else {
 				error = String(caught);
+				if (status === 401) stopPoll(); // token changed in Settings
 			}
 		} finally {
 			loading = false;
@@ -145,16 +148,6 @@
 		} finally {
 			pendingTitle = null;
 		}
-	}
-
-	function dateLabel(value: string): string {
-		return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
-	}
-
-	function durationLabel(seconds: number | null): string {
-		if (seconds === null) return '—';
-		const minutes = Math.floor(seconds / 60);
-		return `${minutes}:${String(Math.round(seconds % 60)).padStart(2, '0')}`;
 	}
 
 	function sizeLabel(bytes: number | null): string {
