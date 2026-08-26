@@ -60,7 +60,9 @@ review checklist.
 
 Artifacts per recording: raw transcript, diarization turns, merged
 speaker-attributed transcript, summary — all fetchable over the API and shown
-in the client.
+in the client. The recording page renders the transcript, speakers, and summary
+tabs as sanitized Markdown (allowlist-only tags, no links/images); the JSON tab
+stays raw.
 ### Chunking (long recordings, CPU voice stacks)
 
 A single multi-hour STT request can collapse into the whisper **repetition
