@@ -3,7 +3,7 @@
 POST   /recordings                → create recording (uuid) + dir + stage rows
 PUT    /recordings/{id}/audio     → append chunk at ?offset=N (returns committed)
 POST   /recordings/{id}/finalize  → verify sha256, size → state=processing
-GET    /recordings                → list with stages
+GET    /recordings                → paginated list {items,total,limit,offset}; ?limit=&offset=&q=&state= filter server-side
 GET    /recordings/{id}           → detail with stages
 PATCH  /recordings/{id}           → rename (trimmed title, empty allowed) + re-export note
 DELETE /recordings/{id}           → catalog row + files
@@ -17,9 +17,9 @@ import shutil
 import uuid as uuid_mod
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app import temporal_client
@@ -234,10 +234,36 @@ def finalize(
 
 @router.get("")
 def list_recordings(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    q: str = Query(default="", max_length=200),
+    state: RecordingState | None = None,
     session: Session = Depends(get_session),
-) -> list[dict]:
-    recs = session.scalars(select(Recording).order_by(Recording.created_at.desc())).all()
-    return [serialize_recording(r) for r in recs]
+) -> dict:
+    stmt = select(Recording)
+    count_stmt = select(func.count(Recording.id))
+    if state is not None:
+        stmt = stmt.where(Recording.state == state)
+        count_stmt = count_stmt.where(Recording.state == state)
+    needle = q.strip()
+    if needle:
+        escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        condition = or_(
+            Recording.title.ilike(f"%{escaped}%", escape="\\"),
+            Recording.id.ilike(f"%{escaped}%", escape="\\"),
+        )
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
+    total = session.scalar(count_stmt) or 0
+    recs = session.scalars(
+        stmt.order_by(Recording.created_at.desc()).limit(limit).offset(offset)
+    ).all()
+    return {
+        "items": [serialize_recording(r) for r in recs],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/{recording_id}")

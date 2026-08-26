@@ -22,6 +22,10 @@
   finalize → spool cleaned after ack.
 - Regenerate: `POST /recordings/{id}/regenerate {stage}` — downstream stages
   always re-run.
+- Archive list: `GET /recordings` is paginated and filtered server-side —
+  `?limit=&offset=&q=&state=` returns `{items, total, limit, offset}`; the
+  client library pages at 20 rows and sends its search box / state filter
+  through `q` / `state`.
 - Summarize: disabled until a model is configured (OpenAI-compatible,
   base_url + key_env).
 - Transcript export: every finished recording is exported as one consolidated
