@@ -5,7 +5,7 @@
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, uploads } from '$lib/stores.svelte';
+	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, stageNames, stageRetry, stageShortNames, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let { children } = $props();
@@ -233,6 +233,21 @@
 			<main class="workspace">
 				<div class="context-bar">
 					<span class="context-name">{routeName}</span>
+					{#if onRecordingDetail && stageRetry.rerun && stageRetry.enabled && stageRetry.stages.length}
+						<div class="stage-retry" role="group" aria-label="Re-run pipeline stages">
+							{#each stageRetry.stages as stage (stage.kind)}
+								<button
+									type="button"
+									class="stage-retry-button {stage.status}"
+									title="Re-run {stageNames[stage.kind]} ({stage.status})"
+									aria-label="Re-run {stageNames[stage.kind]} ({stage.status})"
+									onclick={() => stageRetry.rerun?.(stage.kind)}
+								>
+									{stageShortNames[stage.kind]}
+								</button>
+							{/each}
+						</div>
+					{/if}
 					<span class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'} class="status-lamp" aria-hidden="true"></span>
 				</div>
 				<div class="page-scroll">
@@ -308,7 +323,14 @@
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
-	.context-bar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	.context-bar { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	.stage-retry { display: flex; gap: 5px; }
+	.stage-retry-button { display: flex; align-items: center; min-height: 22px; padding: 0 5px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; font-size: 9px; font-weight: 700; cursor: pointer; }
+	.stage-retry-button.done { color: var(--cyan); border-color: rgba(112, 215, 208, 0.25); }
+	.stage-retry-button.running { color: var(--brass); border-color: rgba(215, 167, 71, 0.25); }
+	.stage-retry-button.failed { color: #f36b60; border-color: rgba(213, 45, 36, 0.35); }
+	.stage-retry-button.skipped, .stage-retry-button.pending { color: #6f685f; }
+	.stage-retry-button:hover { border-color: var(--brass); background: rgba(215, 167, 71, 0.12); }
 	.context-name { font-size: 14px; font-weight: 650; color: #c8bbaa; }
 	.status-lamp, .status-strip i { width: 6px; height: 6px; border-radius: 50%; background: #6b655e; box-shadow: 0 0 0 2px rgba(107, 101, 94, 0.12); }
 	.status-lamp.unavailable, .status-strip i.unavailable { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }

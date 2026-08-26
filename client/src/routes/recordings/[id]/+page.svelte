@@ -15,7 +15,7 @@
 		type Stage
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
-	import { artifactTab, type ArtifactTabKey } from '$lib/stores.svelte';
+	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? ''; // undefined → 400 → not-found panel
 
@@ -57,15 +57,6 @@
 		return 'json';
 	}
 
-	const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
-	const stageNames: Record<(typeof STAGES)[number], string> = {
-		chunk: 'Chunks',
-		transcribe: 'Transcript',
-		diarize: 'Diarize',
-		merge_speakers: 'Speakers',
-		summarize: 'Summary'
-	};
-
 	function stopPoll(): void {
 		if (pollTimer) {
 			globalThis.clearInterval(pollTimer);
@@ -86,6 +77,8 @@
 	function applyRecording(next: Recording): void {
 		const previous = recording;
 		recording = pendingTitle !== null ? { ...next, title: pendingTitle } : next;
+		stageRetry.stages = next.stages;
+		stageRetry.enabled = next.state === 'done' || next.state === 'failed';
 		if (previous?.state === 'processing' && next.state !== 'processing') {
 			// A re-run finished: artifacts are rewritten only at stage completion,
 			// so a tab opened mid-rerun would otherwise cache the pre-rerun file.
@@ -107,6 +100,8 @@
 				notFound = true;
 				error = '';
 				stopPoll(); // recording gone / bad id — stop issuing doomed requests
+				stageRetry.stages = [];
+				stageRetry.enabled = false;
 			} else {
 				error = String(caught);
 				if (status === 401) stopPoll(); // token changed in Settings
@@ -117,13 +112,19 @@
 	}
 
 	onMount(() => {
+		stageRetry.rerun = rerun;
 		void (async () => {
 			await load();
 			if (!recording) return;
 			if (recording.state === 'uploading' || recording.state === 'processing') startPoll();
 			artifactTab.active = defaultTab(recording);
 		})();
-		return () => stopPoll();
+		return () => {
+			stopPoll();
+			stageRetry.stages = [];
+			stageRetry.enabled = false;
+			stageRetry.rerun = null;
+		};
 	});
 
 	// The rail tab buttons (layout) write artifactTab.active; loading happens
@@ -173,12 +174,13 @@
 		return `${(bytes / 1_000_000).toFixed(1)} MB`;
 	}
 
-	async function rerun(stage: (typeof STAGES)[number]): Promise<void> {
+	async function rerun(stage: StageKind): Promise<void> {
 		if (!recording) return;
 		rerunError = '';
 		try {
 			await regenerate(loadApiConfig(), recording.id, stage);
 			recording = { ...recording, state: 'processing' };
+			stageRetry.enabled = false;
 			invalidateArtifacts();
 			startPoll();
 		} catch (caught) {
@@ -320,6 +322,9 @@
 		{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
 			<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
 		{/each}
+		{#if rerunError}
+			<p class="inline-error" role="alert">{rerunError}</p>
+		{/if}
 
 		{#if recording.state === 'uploading'}
 			<p class="audio-note">Audio available after upload.</p>
@@ -340,16 +345,6 @@
 		</div>
 
 		{#if recording.state === 'done' || recording.state === 'failed'}
-			<div class="rerun-row">
-				<span>Re-run stage</span>
-				{#each STAGES as stage (stage)}
-					<button type="button" title={`Re-run ${stageNames[stage]}`} aria-label={`Re-run ${stageNames[stage]}`} onclick={() => rerun(stage)}><Icon name="refresh" size={14} /></button>
-				{/each}
-			</div>
-			{#if rerunError}
-				<p class="inline-error" role="alert">{rerunError}</p>
-			{/if}
-
 			{#if deleteArmed}
 				<div class="delete-confirm">
 					<span>Permanently delete?</span>
@@ -395,10 +390,6 @@
 	.artifact-panel pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
 	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
-	.rerun-row { display: grid; grid-template-columns: 1fr repeat(5, 28px); align-items: center; gap: 5px; }
-	.rerun-row > span { font-size: 9px; font-weight: 650; color: #867d73; }
-	.rerun-row button { min-height: 32px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); cursor: pointer; line-height: 0; }
-	.rerun-row button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
 	.delete-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border: 1px solid rgba(213,45,36,.4); border-radius: 2px; background: rgba(213,45,36,.08); color: #f36b60; font-size: 10px; font-weight: 700; cursor: pointer; line-height: 0; }
 	.delete-button:hover { border-color: var(--red); background: rgba(213,45,36,.14); }
 	.delete-confirm { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; }
