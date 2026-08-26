@@ -228,15 +228,23 @@ export function refreshAudioDevices(): Promise<void> {
 				audioDevices.selectedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
 			}
 			// Validate the selection against the fresh list; fall back only when
-			// the chosen device disappeared (hot-unplug).
+			// the chosen device disappeared (hot-unplug). A rewritten selection
+			// invalidates the report — it was computed for the vanished device.
+			let selectionRewritten = false;
 			if (!devices.microphones.some((d) => d.id === audioDevices.selectedMicrophone)) {
 				audioDevices.selectedMicrophone = devices.default_microphone ?? devices.microphones[0]?.id ?? '';
+				selectionRewritten = true;
 			}
 			if (
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF &&
 				!devices.system_outputs.some((d) => d.id === audioDevices.selectedSystemOutput)
 			) {
 				audioDevices.selectedSystemOutput = devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF;
+				selectionRewritten = true;
+			}
+			if (selectionRewritten) {
+				preflight.current = null;
+				preflightSelectionKey = '';
 			}
 		} catch (error) {
 			audioDevices.error = String(error);
