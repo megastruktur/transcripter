@@ -22,6 +22,8 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0"
+    "@tauri-apps/api": "^2.0.0",
+    "dompurify": "^3.4.14",
+    "marked": "^18.0.11"
   }
 }
