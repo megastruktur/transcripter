@@ -6,7 +6,14 @@
 
 	// Artifact content is machine-generated (STT / LLM summary) but can still
 	// carry raw HTML — sanitize before it reaches {@html}.
-	const html = $derived(DOMPurify.sanitize(marked.parse(text, { async: false })));
+	// Links and images are forbidden outright: an <a href> click would navigate
+	// the Tauri webview away from the app (no opener plugin installed), and a
+	// remote <img> is an unexpected network egress channel for local-only
+	// content. Link syntax degrades to its visible text; bare URLs stay
+	// readable as text.
+	const html = $derived(
+		DOMPurify.sanitize(marked.parse(text, { async: false }), { FORBID_TAGS: ['a', 'img'] })
+	);
 </script>
 
 <div class="markdown-body">{@html html}</div>
@@ -47,8 +54,6 @@
 	.markdown-body :global(ol) { margin: 7px 0; padding-left: 20px; }
 	.markdown-body :global(li) { margin: 3px 0; }
 	.markdown-body :global(li::marker) { color: var(--brass); }
-	.markdown-body :global(a) { color: var(--brass); text-decoration: underline; text-underline-offset: 2px; }
-	.markdown-body :global(a:hover) { color: var(--bone); }
 	.markdown-body :global(code) {
 		padding: 1px 4px;
 		border: 1px solid var(--line);
@@ -79,5 +84,4 @@
 	.markdown-body :global(th),
 	.markdown-body :global(td) { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
 	.markdown-body :global(th) { color: var(--bone); font-weight: 650; background: rgba(0, 0, 0, 0.18); }
-	.markdown-body :global(img) { max-width: 100%; }
 </style>
