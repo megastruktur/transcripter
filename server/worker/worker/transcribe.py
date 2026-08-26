@@ -80,14 +80,26 @@ class LocalTranscriber:
 
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
+        self._model: Any = None
 
     def _ensure_loaded(self) -> Any:
-        # Lazy import: tests and API-only environments never load the model.
-        from faster_whisper import WhisperModel
+        if self._model is None:
+            # Lazy import: tests and API-only environments never load the model.
+            from faster_whisper import WhisperModel
 
-        # cpu_threads=8 was tuned for the bundled local fallback; the API
-        # backend on the voice stack is the primary path.
-        return WhisperModel(self.model_name, device="cpu", compute_type="int8", cpu_threads=8)
+            # download_root keeps the weights in the `models` docker volume
+            # (compose worker mount) so a container recreate doesn't
+            # re-download from huggingface.co. cpu_threads=8 was tuned for
+            # the bundled local fallback; the API backend on the voice
+            # stack is the primary path.
+            self._model = WhisperModel(
+                self.model_name,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=8,
+                download_root="/models",
+            )
+        return self._model
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:
         model = self._ensure_loaded()
