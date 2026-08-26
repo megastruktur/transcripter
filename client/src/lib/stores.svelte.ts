@@ -229,7 +229,7 @@ export const SYSTEM_AUDIO_OFF = '__off__';
 
 /**
  * Audio device cache shared across page mounts. Enumerating CoreAudio and
- * running the availability check takes 1-2s on macOS, so a Record-page
+ * running the availability check takes 1-2s on macOS, so a page
  * remount (tab switch, window expand) renders from this cache instantly and
  * refreshes silently in the background instead of blocking on invoke calls.
  */
@@ -341,7 +341,7 @@ export function selectAudioDevices(patch: { microphone?: string; systemOutput?: 
 }
 
 /**
- * Record-page mount entry point. Instant when the cache is warm: the list is
+ * Page-mount entry point (Record and Settings). Instant when the cache is warm: the list is
  * re-enumerated in the background and the availability check runs only when
  * there is no report for the current selection (startup, or the selection
  * changed underneath us — the two sanctioned check moments).

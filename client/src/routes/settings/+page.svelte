@@ -1,6 +1,17 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { loadApiConfig } from '$lib/api.svelte';
-	import { checkServerConnection, connection } from '$lib/stores.svelte';
+	import {
+		audioDevices,
+		checkAudioDevices,
+		checkServerConnection,
+		connection,
+		ensureAudioDevices,
+		preflight,
+		recorder,
+		selectAudioDevices,
+		SYSTEM_AUDIO_OFF
+	} from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 
 	let cfg = $state(loadApiConfig());
@@ -21,16 +32,50 @@
 		connected ? 'Connection established' : testing ? 'Checking connection' : 'Connection failed'
 	);
 
+	onMount(() => {
+		// Instant from the shared cache on remounts; enumerates and checks in
+		// the background only when there is no report for this selection yet.
+		void ensureAudioDevices();
+	});
+
+	function sourceLabel(state: 'disabled' | 'ready' | 'silent' | 'permission_denied' | 'unavailable' | 'failed'): string {
+		if (state === 'ready') return 'Ready';
+		if (state === 'silent') return 'No signal';
+		if (state === 'permission_denied') return 'Permission denied';
+		if (state === 'disabled') return 'Off';
+		return 'Unavailable';
+	}
+
+	const micState = $derived(!preflight.current ? 'Not checked' : sourceLabel(preflight.current.mic_state));
+	const systemState = $derived(audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? 'Off' : !preflight.current ? 'Not checked' : sourceLabel(preflight.current.system_state));
+	const audioLabel = $derived(
+		audioDevices.checking
+			? 'Checking'
+			: !preflight.current
+				? 'Not checked'
+				: preflight.current.error || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(preflight.current.mic_state) || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(preflight.current.system_state)
+					? 'Needs attention'
+					: 'Ready'
+	);
+
+	function microphoneChanged(): void {
+		selectAudioDevices({ microphone: audioDevices.selectedMicrophone });
+	}
+
+	function systemOutputChanged(): void {
+		selectAudioDevices({ systemOutput: audioDevices.selectedSystemOutput });
+	}
+
 	async function onTest(): Promise<void> {
 		if (await checkServerConnection(cfg, true)) cfg = loadApiConfig();
 	}
 </script>
 
-<svelte:head><title>Link · Transcriptor Maximus</title></svelte:head>
+<svelte:head><title>Settings · Transcriptor Maximus</title></svelte:head>
 
 <section class="page settings-page">
 	<header>
-		<h1 class="page-title">Server connection</h1>
+		<h1 class="page-title">Settings</h1>
 	</header>
 
 	<form class="connection-panel panel" onsubmit={(event) => { event.preventDefault(); onTest(); }}>
@@ -71,6 +116,57 @@
 		<span class="security-icon" aria-hidden="true"><Icon name="shield" size={17} /></span>
 		<div><strong>Stored on this device</strong><p>Your connection details stay local. Use this client only on a network you trust.</p></div>
 	</aside>
+
+	<div class="device-panel panel">
+		<div class="panel-heading">
+			<div class="antenna" aria-hidden="true"><Icon name="microphone" size={17} /></div>
+			<div><span>AUDIO</span><strong>Capture devices</strong></div>
+			<div class:connected={audioLabel === 'Ready'} class="link-state"><i></i>{audioLabel}</div>
+		</div>
+
+		<div class="form-body">
+			{#if preflight.current?.error}
+				<div class="notice error" role="alert"><strong>Pre-flight failed</strong><span>{preflight.current.error}</span></div>
+			{/if}
+			{#each recorder.warnings as warning (warning)}
+				<div class="notice warning" role="status"><strong>Signal warning</strong><span>{warning}</span></div>
+			{/each}
+
+			<div class="device-control">
+				<div class="device-heading">
+					<span class="device-icon" aria-hidden="true"><Icon name="microphone" size={18} /></span>
+					<label for="microphone-device">Microphone</label>
+					<span class:ready={micState === 'Ready'} class:issue={micState === 'No signal' || micState === 'Unavailable' || micState === 'Permission denied'} class="device-status">{micState}</span>
+				</div>
+				<select id="microphone-device" bind:value={audioDevices.selectedMicrophone} onchange={microphoneChanged} disabled={audioDevices.loading || recorder.recording}>
+					{#if audioDevices.devices.microphones.length === 0}<option value="" disabled>{audioDevices.loading ? 'Loading microphones…' : 'No microphones found'}</option>{/if}
+					{#each audioDevices.devices.microphones as device (device.id)}
+						<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
+					{/each}
+				</select>
+			</div>
+
+			<div class="device-control">
+				<div class="device-heading">
+					<span class="device-icon" aria-hidden="true"><Icon name="monitor" size={18} /></span>
+					<label for="system-output-device">System audio</label>
+					<span class:ready={systemState === 'Ready'} class:issue={systemState === 'No signal' || systemState === 'Unavailable' || systemState === 'Permission denied'} class="device-status">{systemState}</span>
+				</div>
+				<select id="system-output-device" bind:value={audioDevices.selectedSystemOutput} onchange={systemOutputChanged} disabled={audioDevices.loading || recorder.recording}>
+					<option value={SYSTEM_AUDIO_OFF}>Off</option>
+					{#each audioDevices.devices.system_outputs as device (device.id)}
+						<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
+					{/each}
+				</select>
+			</div>
+
+			<button class="check-devices" type="button" disabled={audioDevices.checking || audioDevices.loading || recorder.recording || !audioDevices.selectedMicrophone} onclick={() => checkAudioDevices()}>
+				<Icon name="refresh" size={15} />
+				{audioDevices.checking ? 'Checking selected devices…' : 'Check selected devices'}
+			</button>
+			{#if audioDevices.error}<p class="device-error" role="alert">Could not load audio devices: {audioDevices.error}</p>{/if}
+		</div>
+	</div>
 </section>
 
 <style>
@@ -107,4 +203,20 @@
 	.security-icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--brass); line-height: 0; }
 	.security-note strong { color: #afa397; font-size: 10px; font-weight: 700; }
 	.security-note p { margin: 5px 0 0; font-size: 11px; line-height: 1.5; }
+	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
+	.notice.error { border-color: var(--red); background: rgba(213, 45, 36, 0.08); }
+	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
+	.notice.error strong { color: var(--red); }
+	.notice span { color: #b5aa9c; font-size: 11px; }
+	.device-panel { overflow: hidden; }
+	.device-control { display: grid; gap: 6px; }
+	.device-heading { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 7px; min-width: 0; }
+	.device-heading label { color: #c9bdad; font-size: 11px; font-weight: 650; }
+	.device-icon { width: 22px; height: 22px; display: grid; place-items: center; color: var(--brass); line-height: 0; }
+	.device-status { max-width: 100px; overflow: hidden; color: #8d847a; font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+	.device-status.ready { color: var(--cyan); }
+	.device-status.issue { color: var(--brass); }
+	.check-devices { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.check-devices:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }
+	.device-error { margin: 0; color: #df756b; font-size: 10px; line-height: 1.4; }
 </style>
