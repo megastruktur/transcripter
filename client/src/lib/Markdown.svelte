@@ -5,14 +5,24 @@
 	let { text }: { text: string } = $props();
 
 	// Artifact content is machine-generated (STT / LLM summary) but can still
-	// carry raw HTML — sanitize before it reaches {@html}.
-	// Links and images are forbidden outright: an <a href> click would navigate
-	// the Tauri webview away from the app (no opener plugin installed), and a
-	// remote <img> is an unexpected network egress channel for local-only
-	// content. Link syntax degrades to its visible text; bare URLs stay
-	// readable as text.
+	// carry raw HTML — sanitize before it reaches {@html}. An explicit allowlist
+	// (not a deny-list) keeps only the tags our artifacts actually produce:
+	// the webview has no opener plugin, so a clicked <a href> would navigate
+	// the app window away, and any media/style vector (img, video, source,
+	// poster, background…) would be a network egress channel for local-only
+	// content. Stripped tags degrade to their inner text; image alt text and
+	// link URLs are dropped by design.
 	const html = $derived(
-		DOMPurify.sanitize(marked.parse(text, { async: false }), { FORBID_TAGS: ['a', 'img'] })
+		DOMPurify.sanitize(marked.parse(text, { async: false }), {
+			ALLOWED_TAGS: [
+				'p', 'br', 'strong', 'em', 'b', 'i', 'u', 's', 'del',
+				'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
+				'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
+				'table', 'thead', 'tbody', 'tr', 'th', 'td',
+				'span', 'sup', 'sub'
+			],
+			ALLOWED_ATTR: []
+		})
 	);
 </script>
 
