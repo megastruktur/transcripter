@@ -21,7 +21,10 @@
 				'table', 'thead', 'tbody', 'tr', 'th', 'td',
 				'span', 'sup', 'sub'
 			],
-			ALLOWED_ATTR: []
+			ALLOWED_ATTR: [],
+			// data-*/aria-* bypass ALLOWED_ATTR by default — disable explicitly.
+			ALLOW_DATA_ATTR: false,
+			ALLOW_ARIA_ATTR: false
 		})
 	);
 </script>
