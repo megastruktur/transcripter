@@ -63,7 +63,7 @@
 		`${audioStatus} · ${serverStatus}${uploadingCount ? ` · ${uploadStatus.text}` : ''}`
 	);
 	const routeName = $derived(
-		page.url.pathname === '/' ? 'Recorder' : page.url.pathname === '/recordings' ? 'Recordings' : 'Settings'
+		page.url.pathname === '/' ? 'Recorder' : page.url.pathname.startsWith('/recordings') ? 'Recordings' : 'Settings'
 	);
 	onMount(async () => {
 		void checkServerConnection();
@@ -194,7 +194,7 @@
 			<nav class="rail" aria-label="Primary navigation">
 				{#each navItems as item (item.href)}
 
-					<a href={item.href} aria-current={page.url.pathname === item.href ? 'page' : undefined} title={item.label}>
+					<a href={item.href} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
 						<span class="nav-icon" aria-hidden="true"><Icon name={item.icon} size={20} /></span>
 						<span>{item.label}</span>
 					</a>

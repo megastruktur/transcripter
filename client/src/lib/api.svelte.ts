@@ -53,7 +53,7 @@ async function req(
 			...(init?.headers ?? {})
 		}
 	});
-	if (resp.status === 401) throw new Error('unauthorized: check token in Settings');
+	if (resp.status === 401) throw Object.assign(new Error('unauthorized: check token in Settings'), { status: 401 });
 	return resp;
 }
 
@@ -78,7 +78,7 @@ export async function listRecordings(cfg: ApiConfig): Promise<Recording[]> {
 
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
-	if (!resp.ok) throw new Error(`get ${resp.status}`);
+	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });
 	return resp.json();
 }
 
@@ -121,6 +121,13 @@ export async function fetchArtifact(
 ): Promise<string> {
 	const q = file ? `?file=${encodeURIComponent(file)}` : '';
 	const resp = await req(cfg, `/recordings/${id}/artifacts/${stage}${q}`);
-	if (!resp.ok) throw new Error(`artifact ${resp.status}`);
+	if (!resp.ok) throw Object.assign(new Error(`artifact ${resp.status}`), { status: resp.status });
 	return resp.text();
+}
+export async function deleteRecording(cfg: ApiConfig, id: string): Promise<void> {
+	const resp = await req(cfg, `/recordings/${id}`, { method: 'DELETE' });
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw Object.assign(new Error(detail.detail ?? `delete ${resp.status}`), { status: resp.status });
+	}
 }
