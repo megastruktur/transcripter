@@ -256,7 +256,11 @@ def list_recordings(
         count_stmt = count_stmt.where(condition)
     total = session.scalar(count_stmt) or 0
     recs = session.scalars(
-        stmt.order_by(Recording.created_at.desc()).limit(limit).offset(offset)
+        # created_at is not unique; id is the deterministic tiebreak so
+        # offset paging never shuffles rows with equal timestamps.
+        stmt.order_by(Recording.created_at.desc(), Recording.id.desc())
+        .limit(limit)
+        .offset(offset)
     ).all()
     return {
         "items": [serialize_recording(r) for r in recs],
