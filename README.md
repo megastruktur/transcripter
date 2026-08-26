@@ -32,9 +32,75 @@ and a summary** — every stage re-runnable on demand.
   regenerate for that single stage; downstream stages re-run automatically.
 - **FLAC everywhere.** Lossless transport and storage; PCM is captured
   disk-first, so recording survives even if encoding dies.
-- **Pre-flight on every record start.** Permission check + live RMS probe
-  before capture begins — no more silent empty first recordings.
+- **Pre-flight checks.** Permissions and device availability are checked on
+  every record start; **Settings** runs a live RMS probe of both capture
+  paths — no more silent empty first recordings.
 - **Single-user by design.** One bearer token, LAN-oriented, zero accounts.
+
+## Screenshots
+
+| Record | Library | Recording detail |
+| ------ | ------- | ---------------- |
+| ![Record page](docs/images/readme-record.png) | ![Library](docs/images/readme-library.png) | ![Recording detail](docs/images/readme-recording-detail.png) |
+
+## Hosting 100% locally
+
+All ML runs on-box — no cloud account, no external API key, nothing leaves
+your LAN. The **default configuration is the fully local one**:
+
+```bash
+cd server
+cp config.example.yaml config.yaml     # defaults are already local
+cp .env.example .env                   # set TRANSCRIPTER_TOKEN (openssl rand -hex 32)
+docker compose up -d --profile diarization
+```
+
+| Concern       | Local answer                                                        |
+| ------------- | ------------------------------------------------------------------- |
+| Transcription | faster-whisper `small` (int8 CPU) inside the worker container       |
+| Diarization   | bundled LinTO container (`diarization` profile) — pyannote weights  |
+|               | are baked into the image: no HuggingFace token, no runtime download |
+| Summary       | off by default; optionally point at a local LLM server (below)      |
+| Recordings    | `server/storage/recordings/` (bind mount — repoint at any dir)      |
+| Notes         | `./storage/transcripts` unless `TRANSCRIPTS_DIR` is set             |
+| Metadata      | postgres in the `pgdata` named volume                               |
+
+**One-time downloads, then offline.** The first worker start pulls the
+whisper weights (~0.5 GB for `small`) from huggingface.co into the `models`
+named volume; container recreates keep them. After that the whole stack
+works with no internet access. Never run `docker compose down -v` unless
+you mean it — it deletes the whisper cache, the postgres database, and the
+Speaches cache.
+
+**Resources.** ~4 GB free RAM for the base stack (local whisper + LinTO).
+The LinTO container takes ~2 min to load its weights on first start —
+Temporal's diarize retry absorbs it, so an early recording's `diarize`
+stage may simply wait. Enabling the bundled Speaches profile with a larger
+model needs several GB more; check `docker stats`.
+
+**Optional: local summarizer.** Any OpenAI-compatible chat endpoint on the
+same host/LAN works — e.g. Ollama (`ollama pull qwen3:14b`, serves
+`:11434`):
+
+```yaml
+# server/config.yaml
+summarize:
+  enabled: true
+  model: qwen3:14b
+  base_url: http://<ollama-host>:11434/v1   # LAN IP or host.docker.internal —
+                                            # NOT localhost (worker is a container)
+  api_key_env: ""                            # keyless endpoint: no auth header sent
+```
+
+`docker compose restart worker` to apply.
+
+**Verify the install:** `cd server && bash scripts/e2e_smoke.sh` pushes a
+synthetic two-speaker recording through upload → pipeline → artifacts;
+green output means the whole local stack works.
+
+**Client:** build on your desktop OS (see
+[Building the client](#building-the-client-for-windows--macos)), then point
+Settings at `http://<server-LAN-IP>:8090` + your token.
 
 ## Design language
 
@@ -54,7 +120,7 @@ review checklist.
 |              |                                          | repetition loop poisons ≤1 chunk, not the recording |
 | `transcribe` | faster-whisper (local) or OpenAI API     | model configurable, `small` by default             |
 | `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`)      |
-| `merge`      | IoU word↔segment matching                | fuses transcript words with speaker turns          |
+| `merge_speakers` | IoU word↔segment matching           | fuses transcript words with speaker turns          |
 | `summarize`  | OpenAI-compatible endpoint               | optional; stage reports `skipped` when no model    |
 | `finalize`   | —                                        | always runs (even on stage failure) — unblocks UI |
 
@@ -187,7 +253,7 @@ docker compose up -d --profile diarization
 | API          | `http://localhost:8090`    | REST + health at `/health`  |
 | Temporal UI  | `http://localhost:8082`    | pipeline observability      |
 | Speaches     | internal (opt-in profile)  | OpenAI-compatible STT       |
-| Diarization  | internal (`:8070` on host) | LinTO HTTP service          |
+| Diarization  | host `:8070` (container `:80`) | LinTO HTTP service     |
 
 Recordings land in `server/storage/recordings/<uuid>/` — point the compose
 bind-mount at your NAS/export path to store elsewhere.
@@ -259,9 +325,12 @@ transcripts:
   server — not worth it for a personal vault.
   Consider a systemd drop-in `RequiresMountsFor=/mnt/your-nas` on the docker
   unit so binds never capture an empty mountpoint.
+- Renaming a recording (`PATCH /recordings/{id}`) re-exports its note under
+  the new filename (the old note and its lockfile are swept) —
+  fire-and-forget: the rename stands even if Temporal is down
+  (`worker.backfill` is the recovery path).
 - Deleting a recording does NOT delete its note (the `recording_id` in
-  frontmatter is the hook for a future cleanup). A future title-edit API
-  must either re-export or drop the title from the filename.
+  frontmatter is the hook for a future cleanup).
 - Workflow deploy note: the export activity was added to the workflow
   `finally` — deploy when no `ProcessRecording` executions are open and the
   worker isn't restart-looping (in-flight workflows replay against the new
@@ -280,11 +349,15 @@ pnpm tauri dev     # desktop app window
 
 In-app **Settings**: enter the server URL (`http://<server-host>:8090`) and the
 token from your `.env`, then select **Test and save connection** once. Saved
-credentials are checked automatically on later launches. On **Record**, select
-the microphone and system output. **Start recording** opens and probes both
-capture paths; if selected system audio cannot start, recording is blocked rather
-than silently falling back to microphone-only. Select **Off** for an intentional
-microphone-only recording.
+credentials are checked automatically on later launches. Device selection
+also lives in **Settings**: pick the microphone and system output there —
+select **Off** for system audio when a microphone-only recording is
+intended. On **Record**, **Start recording** opens both capture paths; the
+microphone is authoritative — if it fails or stalls, the recording stops
+with an error. System audio is a bonus source: a tap that fails to open
+blocks the start, but one that delivers no frames within 10 s (no audio
+flowing, slow aggregate spin-up) degrades the recording to microphone-only
+with a live warning in the UI instead of killing it.
 
 ## API
 
@@ -296,9 +369,12 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | PUT    | `/recordings/{id}/audio?offset=N`                    | upload chunk (≤16 MB), resumable         |
 | POST   | `/recordings/{id}/finalize`                          | SHA-256 check → start pipeline           |
 | GET    | `/recordings` / `/recordings/{id}`                   | paginated list (`?limit=&offset=&q=&state=`) / detail      |
+| PATCH  | `/recordings/{id}`                                   | rename (trims title) + re-export note    |
+| DELETE | `/recordings/{id}`                                   | delete recording + stored audio (204)    |
 | POST   | `/recordings/{id}/regenerate`                        | `{"stage": "transcribe"}` → rerun chain  |
-| GET    | `/recordings/{id}/artifacts/{stage}[?file=…]`        | stage artifacts (transcript, summary, …) |
-|GET/HEAD| `/recordings/{id}/audio`                             | download the FLAC                        |
+| GET    | `/recordings/{id}/artifacts/{stage}[?file=…]`        | stage artifacts (transcript, diarization, …) |
+| GET    | `/recordings/{id}/summary`                           | latest summary artifact                  |
+|GET/HEAD| `/recordings/{id}/audio`                             | download the FLAC (HTTP Range supported) |
 | GET    | `/settings`                                          | effective config (secrets masked)        |
 
 Quick check:
@@ -378,8 +454,11 @@ pnpm install
 pnpm tauri build            # bundle/macos/*.app + bundle/dmg/*.dmg
 ```
 
-Note: the `.app`/`.dmg` will be unsigned — right-click → Open on first
-launch, or [sign it yourself](https://v2.tauri.app/distribute/sign/macos/).
+Note: the `.app`/`.dmg` is unsigned and not notarized. On macOS Sequoia+ a
+downloaded copy reports *"damaged and can't be opened"* with no **Open
+Anyway** option — clear the quarantine attribute once after install:
+`xattr -cr "/Applications/Transcriptor Maximus.app"`. Permanent fix:
+[sign and notarize it yourself](https://v2.tauri.app/distribute/sign/macos/).
 
 **First run after install:** Settings → Server URL
 `http://<server-LAN-IP>:8090` + your `TRANSCRIPTER_TOKEN`. Windows Firewall
