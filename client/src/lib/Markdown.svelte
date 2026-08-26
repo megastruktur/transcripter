@@ -1,8 +1,29 @@
 <script lang="ts">
-	import { marked } from 'marked';
+	import { marked, Renderer, type RendererObject, type Tokens } from 'marked';
 	import DOMPurify from 'dompurify';
 
 	let { text }: { text: string } = $props();
+	// Wrap every table in a horizontally scrollable container. The window is
+	// fixed-width, and the overflow-wrap:anywhere on .markdown-body would
+	// otherwise shred wide tables into unreadable one-character columns.
+	// Body mirrors marked's default table renderer plus the wrapper div;
+	// `this` is the shared Renderer instance.
+	const tableScrollRenderer: RendererObject = {
+		table(this: Renderer, token: Tokens.Table): string {
+			let header = '';
+			for (const cell of token.header) header += this.tablecell(cell);
+			const head = this.tablerow({ text: header });
+			let body = '';
+			for (const row of token.rows) {
+				let cells = '';
+				for (const cell of row) cells += this.tablecell(cell);
+				body += this.tablerow({ text: cells });
+			}
+			if (body) body = `<tbody>${body}</tbody>`;
+			return `<div class="table-scroll"><table>\n<thead>\n${head}</thead>\n${body}</table></div>\n`;
+		}
+	};
+	marked.use({ renderer: tableScrollRenderer });
 
 	// Artifact content is machine-generated (STT / LLM summary) but can still
 	// carry raw HTML — sanitize before it reaches {@html}. An explicit allowlist
@@ -19,7 +40,7 @@
 				'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
 				'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr',
 				'table', 'thead', 'tbody', 'tr', 'th', 'td',
-				'span', 'sup', 'sub'
+				'span', 'sup', 'sub', 'div'
 			],
 			ALLOWED_ATTR: [],
 			// data-*/aria-* bypass ALLOWED_ATTR by default — disable explicitly.
@@ -93,8 +114,23 @@
 		color: var(--ash);
 	}
 	.markdown-body :global(hr) { margin: 12px 0; border: 0; border-top: 1px solid var(--line); }
+	.markdown-body :global(.table-scroll) {
+		margin: 8px 0;
+		max-width: 100%;
+		overflow-x: auto;
+		scrollbar-width: thin;
+		scrollbar-color: var(--red-dark) transparent;
+	}
+	.markdown-body :global(.table-scroll table) { margin: 0; }
 	.markdown-body :global(table) { margin: 8px 0; border-collapse: collapse; font-size: 11px; }
 	.markdown-body :global(th),
-	.markdown-body :global(td) { padding: 4px 8px; border: 1px solid var(--line); text-align: left; }
+	.markdown-body :global(td) {
+		padding: 4px 8px;
+		border: 1px solid var(--line);
+		text-align: left;
+		/* cells keep normal word wrapping; horizontal scroll absorbs overflow */
+		overflow-wrap: normal;
+		word-break: normal;
+	}
 	.markdown-body :global(th) { color: var(--bone); font-weight: 650; background: rgba(0, 0, 0, 0.18); }
 </style>
