@@ -1,5 +1,5 @@
 import { commands } from '$lib/tauri';
-import type { PreFlightReport } from '$lib/tauri';
+import type { AudioDevices, PreFlightReport } from '$lib/tauri';
 import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
 import type { ApiConfig } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
@@ -184,6 +184,120 @@ export async function checkAudio(
 	const report = await commands.preFlight(probe, microphone, systemOutput, checkSystem);
 	preflight.current = report;
 	return report;
+}
+
+export const SYSTEM_AUDIO_OFF = '__off__';
+
+/**
+ * Audio device cache shared across page mounts. Enumerating CoreAudio and
+ * running the availability check takes 1-2s on macOS, so a Record-page
+ * remount (tab switch, window expand) renders from this cache instantly and
+ * refreshes silently in the background instead of blocking on invoke calls.
+ */
+export const audioDevices = $state({
+	devices: { microphones: [], system_outputs: [], default_microphone: null, default_system_output: null } as AudioDevices,
+	// True only until the first enumeration settles; remounts never see it.
+	loading: true,
+	checking: false,
+	error: '',
+	selectedMicrophone: '',
+	selectedSystemOutput: SYSTEM_AUDIO_OFF
+});
+
+let audioDevicesRequest: Promise<void> | null = null;
+let audioSelectionInitialized = false;
+// Selection the current preflight report belongs to ('' = no valid report).
+let preflightSelectionKey = '';
+
+function selectionKey(microphone: string, systemOutput: string): string {
+	const withSystem = systemOutput !== SYSTEM_AUDIO_OFF;
+	return `${microphone} ${withSystem ? systemOutput : ''} ${withSystem}`;
+}
+
+/** Enumerate devices; deduped. Never re-blocks the UI after the first load. */
+export function refreshAudioDevices(): Promise<void> {
+	if (audioDevicesRequest) return audioDevicesRequest;
+	audioDevicesRequest = (async () => {
+		try {
+			const devices = await commands.listAudioDevices();
+			audioDevices.devices = devices;
+			audioDevices.error = '';
+			if (!audioSelectionInitialized) {
+				audioSelectionInitialized = true;
+				audioDevices.selectedMicrophone = localStorage.getItem('transcripter.microphone') ?? '';
+				audioDevices.selectedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
+			}
+			// Validate the selection against the fresh list; fall back only when
+			// the chosen device disappeared (hot-unplug).
+			if (!devices.microphones.some((d) => d.id === audioDevices.selectedMicrophone)) {
+				audioDevices.selectedMicrophone = devices.default_microphone ?? devices.microphones[0]?.id ?? '';
+			}
+			if (
+				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF &&
+				!devices.system_outputs.some((d) => d.id === audioDevices.selectedSystemOutput)
+			) {
+				audioDevices.selectedSystemOutput = devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF;
+			}
+		} catch (error) {
+			audioDevices.error = String(error);
+		} finally {
+			audioDevices.loading = false;
+			audioDevicesRequest = null;
+		}
+	})();
+	return audioDevicesRequest;
+}
+
+/** Persist a new selection and re-check availability (device switch moment). */
+export function selectAudioDevices(microphone: string, systemOutput: string): void {
+	audioDevices.selectedMicrophone = microphone;
+	audioDevices.selectedSystemOutput = systemOutput;
+	preflight.current = null;
+	preflightSelectionKey = '';
+	localStorage.setItem('transcripter.microphone', microphone);
+	localStorage.setItem('transcripter.system-output', systemOutput);
+	void checkAudioDevices(false);
+}
+
+/**
+ * Record-page mount entry point. Instant when the cache is warm: the list is
+ * re-enumerated in the background and the availability check runs only when
+ * there is no report for the current selection (startup, or the selection
+ * changed underneath us — the two sanctioned check moments).
+ */
+export async function ensureAudioDevices(): Promise<void> {
+	await refreshAudioDevices();
+	if (!audioDevices.selectedMicrophone) return;
+	if (preflightSelectionKey === selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput)) return;
+	await checkAudioDevices(false);
+	// macOS first run: the mic permission prompt only appears when an input
+	// stream is opened, so probe once while undetermined.
+	if (preflight.current?.mic_permission === 'not_determined' && audioDevices.selectedMicrophone) {
+		await checkAudioDevices(true);
+	}
+}
+
+export async function checkAudioDevices(probe = true): Promise<void> {
+	if (!audioDevices.selectedMicrophone) {
+		recorder.warnings.push('no microphone available');
+		return;
+	}
+	audioDevices.checking = true;
+	if (probe) clearWarnings();
+	try {
+		const withSystem = audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF;
+		await checkAudio(
+			audioDevices.selectedMicrophone,
+			withSystem ? audioDevices.selectedSystemOutput : null,
+			withSystem,
+			probe
+		);
+		preflightSelectionKey = selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput);
+	} catch (error) {
+		recorder.warnings.push(String(error));
+	} finally {
+		audioDevices.checking = false;
+	}
 }
 
 export async function startRecording(
