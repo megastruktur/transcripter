@@ -290,7 +290,7 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | POST   | `/recordings`                                        | register recording (returns uuid)        |
 | PUT    | `/recordings/{id}/audio?offset=N`                    | upload chunk (≤16 MB), resumable         |
 | POST   | `/recordings/{id}/finalize`                          | SHA-256 check → start pipeline           |
-| GET    | `/recordings` / `/recordings/{id}`                   | list / detail with per-stage status      |
+| GET    | `/recordings` / `/recordings/{id}`                   | paginated list (`?limit=&offset=&q=&state=`) / detail      |
 | POST   | `/recordings/{id}/regenerate`                        | `{"stage": "transcribe"}` → rerun chain  |
 | GET    | `/recordings/{id}/artifacts/{stage}[?file=…]`        | stage artifacts (transcript, summary, …) |
 | GET    | `/recordings/{id}/audio`                             | download the FLAC                        |
@@ -299,6 +299,7 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 Quick check:
 
 ```bash
+# returns {"items":[…],"total":N,"limit":50,"offset":0}
 curl -s -H "Authorization: Bearer $TRANSCRIPTER_TOKEN" http://localhost:8090/recordings
 ```
 
