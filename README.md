@@ -55,6 +55,9 @@ cp .env.example .env                   # set TRANSCRIPTER_TOKEN (openssl rand -h
 docker compose up -d --profile diarization
 ```
 
+All `docker compose` commands in this README run from `server/` — the
+relative `./storage` bind and the `config.yaml` mount depend on it.
+
 | Concern       | Local answer                                                        |
 | ------------- | ------------------------------------------------------------------- |
 | Transcription | faster-whisper `small` (int8 CPU) inside the worker container       |

@@ -13,6 +13,7 @@ from .activities import (
     export_transcript,
     finalize_recording,
     merge_speakers,
+    preload_local,
     summarize,
     transcribe,
 )
@@ -32,11 +33,12 @@ async def amain() -> None:
     init_engine(cfg.database.url)
 
     # Preload whisper model so the first activity doesn't pay cold-start.
+    # preload_local assigns the shared module-level instance in activities —
+    # a throwaway LocalTranscriber here would be GC'd and the first activity
+    # would load the weights a second time.
     if cfg.transcribe.backend == "local":
-        from .transcribe import LocalTranscriber
-
         log.info("preloading whisper model %r", cfg.transcribe.model)
-        LocalTranscriber(cfg.transcribe.model)._ensure_loaded()
+        preload_local(cfg.transcribe.model)
 
     # The diarization container is profile-gated; a plain `up -d` no longer
     # starts it. One cheap probe at startup (no retry loop — Temporal's

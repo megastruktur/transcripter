@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,24 +83,33 @@ class LocalTranscriber:
     def __init__(self, model_name: str) -> None:
         self.model_name = model_name
         self._model: Any = None
+        # Activities run via asyncio.to_thread — concurrent transcribes
+        # must not each construct a WhisperModel (double load time + peak
+        # RAM on a CPU box).
+        self._load_lock = threading.Lock()
 
     def _ensure_loaded(self) -> Any:
         if self._model is None:
-            # Lazy import: tests and API-only environments never load the model.
-            from faster_whisper import WhisperModel
+            with self._load_lock:
+                if self._model is None:
+                    # Lazy import: tests and API-only environments never
+                    # load the model.
+                    from faster_whisper import WhisperModel
 
-            # download_root keeps the weights in the `models` docker volume
-            # (compose worker mount) so a container recreate doesn't
-            # re-download from huggingface.co. cpu_threads=8 was tuned for
-            # the bundled local fallback; the API backend on the voice
-            # stack is the primary path.
-            self._model = WhisperModel(
-                self.model_name,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=8,
-                download_root="/models",
-            )
+                    # download_root pins the weights to the `models` docker
+                    # volume (compose sets WHISPER_DOWNLOAD_ROOT=/models) so
+                    # a container recreate doesn't re-download from
+                    # huggingface.co. Unset (native run) → huggingface_hub
+                    # default cache. cpu_threads=8 was tuned for the bundled
+                    # local fallback; the API backend on the voice stack is
+                    # the primary path.
+                    self._model = WhisperModel(
+                        self.model_name,
+                        device="cpu",
+                        compute_type="int8",
+                        cpu_threads=8,
+                        download_root=os.environ.get("WHISPER_DOWNLOAD_ROOT") or None,
+                    )
         return self._model
 
     def transcribe(self, audio_path: Path) -> TranscriptionResult:

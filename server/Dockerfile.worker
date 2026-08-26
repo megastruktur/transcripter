@@ -11,6 +11,6 @@ RUN cd worker && uv sync --frozen --no-dev || uv sync --no-dev
 
 COPY worker/ ./worker/
 
-# Whisper model is downloaded on first start into /models (baked-in download
-# would bloat the image; see plan T3 for warm-up handling).
+# Whisper model is downloaded on first start into /models (compose sets
+# WHISPER_DOWNLOAD_ROOT=/models; baked-in download would bloat the image).
 CMD ["uv", "run", "--directory", "worker", "python", "-m", "worker.main"]

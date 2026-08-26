@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from collections.abc import Awaitable
 from pathlib import Path
 
@@ -56,7 +57,21 @@ DIARIZE_PER_MIN = 40.0
 
 _cfg: WorkerConfig | None = None
 _local: LocalTranscriber | None = None
+_local_lock = threading.Lock()
 _api: ApiTranscriber | None = None
+
+
+def preload_local(model_name: str) -> None:
+    """Load the shared local whisper model at worker startup.
+
+    Assigns the module-level `_local` so the first transcribe activity
+    reuses the warm instance instead of paying a second model load.
+    """
+    global _local
+    with _local_lock:
+        if _local is None or _local.model_name != model_name:
+            _local = LocalTranscriber(model_name)
+        _local._ensure_loaded()
 
 
 def cfg() -> WorkerConfig:
@@ -204,9 +219,11 @@ async def _transcribe_file(
             )
         )
     global _local
-    if _local is None or _local.model_name != c.transcribe.model:
-        _local = LocalTranscriber(c.transcribe.model)
-    return await _heartbeat_while(asyncio.to_thread(_local.transcribe, audio))
+    with _local_lock:
+        if _local is None or _local.model_name != c.transcribe.model:
+            _local = LocalTranscriber(c.transcribe.model)
+        local = _local
+    return await _heartbeat_while(asyncio.to_thread(local.transcribe, audio))
 
 
 async def _transcribe_chunked(
