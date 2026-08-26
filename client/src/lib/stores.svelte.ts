@@ -310,7 +310,12 @@ export async function checkAudioDevices(probe = true): Promise<void> {
 		preflight.current = report;
 		preflightSelectionKey = selectionKey(microphone, systemOutput);
 	} catch (error) {
-		if (seq === audioCheckSeq) recorder.warnings.push(String(error));
+		// Same staleness rule as the success path: a hot-unplug rewrite changes
+		// the selection without bumping the seq, and the vanished device's
+		// error must not surface either.
+		if (seq === audioCheckSeq && audioDevices.selectedMicrophone === microphone && audioDevices.selectedSystemOutput === systemOutput) {
+			recorder.warnings.push(String(error));
+		}
 	} finally {
 		// `checking` tracks ANY outstanding probe: a discarded stale check
 		// still holds its audio stream, so the button stays busy until the

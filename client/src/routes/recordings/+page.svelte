@@ -100,7 +100,7 @@
 	<div class="archive-tools">
 		<label>
 			<span class="sr-only">Search recordings</span>
-			<input type="search" placeholder="Search recordings" bind:value={query} oninput={queryChanged} />
+			<input type="search" placeholder="Search recordings" maxlength="200" bind:value={query} oninput={queryChanged} />
 		</label>
 		<label>
 			<span class="sr-only">Filter by state</span>
