@@ -160,7 +160,7 @@ def test_list_and_delete(client: TestClient) -> None:
     assert r.status_code == 200
 
     lst = client.get("/recordings").json()
-    assert any(item["id"] == rid for item in lst)
+    assert any(item["id"] == rid for item in lst["items"])
 
     r = client.delete(f"/recordings/{rid}")
     assert r.status_code == 204

@@ -24,6 +24,20 @@ export type Recording = {
 	stages: Stage[];
 };
 
+export type RecordingPage = {
+	items: Recording[];
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type ListParams = {
+	limit: number;
+	offset: number;
+	q?: string;
+	state?: Recording['state'] | 'all';
+};
+
 const STORAGE_KEY = 'transcripter.apiConfig';
 
 export function loadApiConfig(): ApiConfig {
@@ -70,8 +84,12 @@ export async function testConnection(cfg: ApiConfig): Promise<string> {
 	return 'ok';
 }
 
-export async function listRecordings(cfg: ApiConfig): Promise<Recording[]> {
-	const resp = await req(cfg, '/recordings');
+export async function listRecordings(cfg: ApiConfig, params: ListParams): Promise<RecordingPage> {
+	const search = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
+	const q = params.q?.trim();
+	if (q) search.set('q', q);
+	if (params.state && params.state !== 'all') search.set('state', params.state);
+	const resp = await req(cfg, `/recordings?${search}`);
 	if (!resp.ok) throw new Error(`list ${resp.status}`);
 	return resp.json();
 }

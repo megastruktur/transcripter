@@ -6,30 +6,68 @@
 	import { listRecordings, loadApiConfig, type Recording } from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
 
+	const PAGE_SIZE = 20;
+	const SEARCH_DEBOUNCE_MS = 300;
+
 	let recordings = $state<Recording[]>([]);
+	let total = $state(0);
+	let page = $state(0);
 	let error = $state('');
 	let loading = $state(true);
 	let query = $state('');
 	let filter = $state<'all' | Recording['state']>('all');
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
+	let searchTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+	// Monotonic request id: a stale response (poll racing a page turn or a
+	// debounced search) must not overwrite newer state.
+	let refreshSeq = 0;
 
-	const filteredRecordings = $derived(
-		recordings.filter((recording) => {
-			const matchesState = filter === 'all' || recording.state === filter;
-			const needle = query.trim().toLowerCase();
-			return matchesState && (!needle || recording.title.toLowerCase().includes(needle) || recording.id.toLowerCase().includes(needle));
-		})
-	);
+	const pageCount = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
 
 	async function refresh(): Promise<void> {
+		const seq = ++refreshSeq;
 		try {
-			recordings = await listRecordings(loadApiConfig());
+			const result = await listRecordings(loadApiConfig(), {
+				limit: PAGE_SIZE,
+				offset: page * PAGE_SIZE,
+				q: query,
+				state: filter
+			});
+			if (seq !== refreshSeq) return;
+			// Deletes or rows shifting under the poll can leave the current
+			// page out of range — clamp and refetch once.
+			if (result.items.length === 0 && result.total > 0 && page > 0) {
+				page = Math.min(page, Math.ceil(result.total / PAGE_SIZE) - 1);
+				return refresh();
+			}
+			recordings = result.items;
+			total = result.total;
 			error = '';
 		} catch (caught) {
+			if (seq !== refreshSeq) return;
 			error = String(caught);
 		} finally {
-			loading = false;
+			if (seq === refreshSeq) loading = false;
 		}
+	}
+
+	function refilter(): void {
+		page = 0;
+		recordings = [];
+		total = 0;
+		loading = true;
+		void refresh();
+	}
+
+	function queryChanged(): void {
+		if (searchTimer) globalThis.clearTimeout(searchTimer);
+		searchTimer = globalThis.setTimeout(refilter, SEARCH_DEBOUNCE_MS);
+	}
+
+	function gotoPage(next: number): void {
+		if (next < 0 || next >= pageCount) return;
+		page = next;
+		void refresh();
 	}
 
 	onMount(() => {
@@ -38,6 +76,7 @@
 		pollTimer = globalThis.setInterval(refresh, 3000);
 		return () => {
 			if (pollTimer) globalThis.clearInterval(pollTimer);
+			if (searchTimer) globalThis.clearTimeout(searchTimer);
 		};
 	});
 
@@ -53,11 +92,11 @@
 	<div class="archive-tools">
 		<label>
 			<span class="sr-only">Search recordings</span>
-			<input type="search" placeholder="Search recordings" bind:value={query} />
+			<input type="search" placeholder="Search recordings" bind:value={query} oninput={queryChanged} />
 		</label>
 		<label>
 			<span class="sr-only">Filter by state</span>
-			<select bind:value={filter}>
+			<select bind:value={filter} onchange={refilter}>
 				<option value="all">All states</option>
 				<option value="uploading">Uploading</option>
 				<option value="processing">Processing</option>
@@ -84,7 +123,7 @@
 				</div>
 			{/each}
 		{:else}
-			{#each filteredRecordings as recording (recording.id)}
+			{#each recordings as recording (recording.id)}
 				<article class="record-card panel">
 					<button class="record-heading" type="button" onclick={() => goto(`/recordings/${recording.id}`)}>
 						<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
@@ -98,6 +137,18 @@
 			{/each}
 		{/if}
 	</div>
+
+	{#if total > PAGE_SIZE}
+		<nav class="pager" aria-label="Recordings pages">
+			<button class="pager-button" type="button" disabled={page === 0} onclick={() => gotoPage(page - 1)} aria-label="Previous page">
+				<Icon name="back" size={15} />
+			</button>
+			<span class="pager-status">Page {page + 1} of {pageCount} · {total} capture{total === 1 ? '' : 's'}</span>
+			<button class="pager-button" type="button" disabled={page >= pageCount - 1} onclick={() => gotoPage(page + 1)} aria-label="Next page">
+				<span class="pager-flip"><Icon name="back" size={15} /></span>
+			</button>
+		</nav>
+	{/if}
 </section>
 
 <style>
@@ -143,4 +194,10 @@
 	.skeleton-label { width: 46px; height: 18px; }
 	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
 	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } }
+	.pager { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 8px; }
+	.pager-button { height: 34px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); cursor: pointer; line-height: 0; }
+	.pager-button:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }
+	.pager-button:disabled { opacity: 0.4; cursor: default; }
+	.pager-status { text-align: center; font-size: 10px; color: #8d847a; font-variant-numeric: tabular-nums; }
+	.pager-flip { display: grid; place-items: center; transform: scaleX(-1); line-height: 0; }
 </style>
