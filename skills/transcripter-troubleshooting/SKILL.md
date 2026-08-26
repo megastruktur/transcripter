@@ -15,7 +15,7 @@ Symptom → cause → confirm → fix, for failures actually hit in this repo. A
 cd server
 docker compose ps                                   # which service is down/unhealthy
 curl -s http://localhost:8090/health                # expect {"status":"ok"}
-curl -s -H "authorization: Bearer dev-local-token" http://localhost:8090/recordings   # expect []
+curl -s -H "authorization: Bearer dev-local-token" http://localhost:8090/recordings   # expect {"items":[],"total":0,"limit":50,"offset":0}
 docker compose logs --tail=50 worker                # model download? queue connected?
 docker compose logs --tail=50 api                   # startup exit? auth errors?
 ```
