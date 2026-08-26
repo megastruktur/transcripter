@@ -1,21 +1,25 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { checkAudio, clearWarnings, recorder, preflight, startRecording, stopRecording } from '$lib/stores.svelte';
-	import { commands, type AudioDevices } from '$lib/tauri';
+	import {
+		audioDevices,
+		checkAudioDevices,
+		clearWarnings,
+		ensureAudioDevices,
+		preflight,
+		recorder,
+		selectAudioDevices,
+		startRecording,
+		stopRecording,
+		SYSTEM_AUDIO_OFF
+	} from '$lib/stores.svelte';
+	import { commands } from '$lib/tauri';
 	import Icon from '$lib/Icon.svelte';
 
-	const SYSTEM_AUDIO_OFF = '__off__';
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
 	// session's written-frame count, so elapsed time survives window collapse.
 	const CAPTURE_RATE = 48_000;
 	let title = $state('');
 	let starting = $state(false);
-	let checkingAudio = $state(false);
-	let loadingDevices = $state(true);
-	let deviceError = $state('');
-	let devices = $state<AudioDevices>({ microphones: [], system_outputs: [], default_microphone: null, default_system_output: null });
-	let selectedMicrophone = $state('');
-	let selectedSystemOutput = $state(SYSTEM_AUDIO_OFF);
 
 	function sourceLabel(state: 'disabled' | 'ready' | 'silent' | 'permission_denied' | 'unavailable' | 'failed'): string {
 		if (state === 'ready') return 'Ready';
@@ -26,10 +30,12 @@
 	}
 
 	const micState = $derived(!preflight.current ? 'Not checked' : sourceLabel(preflight.current.mic_state));
-	const systemState = $derived(selectedSystemOutput === SYSTEM_AUDIO_OFF ? 'Off' : !preflight.current ? 'Not checked' : sourceLabel(preflight.current.system_state));
+	const systemState = $derived(audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? 'Off' : !preflight.current ? 'Not checked' : sourceLabel(preflight.current.system_state));
 
 	onMount(() => {
-		void loadAudioDevices();
+		// Instant from the shared cache on remounts; enumerates and checks in
+		// the background only when there is no report for this selection yet.
+		void ensureAudioDevices();
 		// A remount (window re-expanded mid-recording) must not restart the
 		// clock: seed frames immediately instead of waiting for the poller.
 		if (recorder.recording) {
@@ -49,64 +55,12 @@
 		return h ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 	}
 
-	async function loadAudioDevices(): Promise<void> {
-		loadingDevices = true;
-		deviceError = '';
-		try {
-			devices = await commands.listAudioDevices();
-			const savedMicrophone = localStorage.getItem('transcripter.microphone');
-			const savedSystemOutput = localStorage.getItem('transcripter.system-output');
-			selectedMicrophone = savedMicrophone && devices.microphones.some((device) => device.id === savedMicrophone)
-				? savedMicrophone
-				: (devices.default_microphone ?? devices.microphones[0]?.id ?? '');
-			selectedSystemOutput = savedSystemOutput && (savedSystemOutput === SYSTEM_AUDIO_OFF || devices.system_outputs.some((device) => device.id === savedSystemOutput))
-				? savedSystemOutput
-				: (devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF);
-			// Availability check (no RMS probe): startup is one of the two
-			// sanctioned moments; silence at record time is not an error.
-			if (selectedMicrophone) await checkAudioDevices(false);
-			// macOS first run: the mic permission prompt only appears when an
-			// input stream is opened, so probe once while undetermined.
-			if (preflight.current?.mic_permission === 'not_determined' && selectedMicrophone) {
-				await checkAudioDevices(true);
-			}
-		} catch (error) {
-			deviceError = String(error);
-		} finally {
-			loadingDevices = false;
-		}
-	}
-
-	function deviceSelectionChanged(): void {
-		preflight.current = null;
-		localStorage.setItem('transcripter.microphone', selectedMicrophone);
-		localStorage.setItem('transcripter.system-output', selectedSystemOutput);
-		// Device switch is the second sanctioned check moment.
-		void checkAudioDevices(false);
-	}
-	async function checkAudioDevices(probe = true): Promise<void> {
-		if (!selectedMicrophone) {
-			recorder.warnings.push('no microphone available');
-			return;
-		}
-		checkingAudio = true;
-		if (probe) clearWarnings();
-		try {
-			await checkAudio(
-				selectedMicrophone,
-				selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : selectedSystemOutput,
-				selectedSystemOutput !== SYSTEM_AUDIO_OFF,
-				probe
-			);
-		} catch (error) {
-			recorder.warnings.push(String(error));
-		} finally {
-			checkingAudio = false;
-		}
+	function selectionChanged(): void {
+		selectAudioDevices(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput);
 	}
 
 	async function beginRecording(): Promise<void> {
-		if (!selectedMicrophone) {
+		if (!audioDevices.selectedMicrophone) {
 			recorder.warnings.push('no microphone available');
 			return;
 		}
@@ -115,9 +69,9 @@
 		try {
 			await startRecording(
 				title,
-				selectedMicrophone,
-				selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : selectedSystemOutput,
-				selectedSystemOutput !== SYSTEM_AUDIO_OFF
+				audioDevices.selectedMicrophone,
+				audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
+				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF
 			);
 		} catch (error) {
 			recorder.warnings.push(String(error));
@@ -178,9 +132,9 @@
 				<label for="microphone-device">Microphone</label>
 				<span class:ready={micState === 'Ready'} class:issue={micState === 'No signal' || micState === 'Unavailable' || micState === 'Permission denied'} class="device-status">{micState}</span>
 			</div>
-			<select id="microphone-device" bind:value={selectedMicrophone} onchange={deviceSelectionChanged} disabled={loadingDevices || recorder.recording}>
-				{#if devices.microphones.length === 0}<option value="" disabled>{loadingDevices ? 'Loading microphones…' : 'No microphones found'}</option>{/if}
-				{#each devices.microphones as device (device.id)}
+			<select id="microphone-device" bind:value={audioDevices.selectedMicrophone} onchange={selectionChanged} disabled={audioDevices.loading || recorder.recording}>
+				{#if audioDevices.devices.microphones.length === 0}<option value="" disabled>{audioDevices.loading ? 'Loading microphones…' : 'No microphones found'}</option>{/if}
+				{#each audioDevices.devices.microphones as device (device.id)}
 					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
 				{/each}
 			</select>
@@ -192,19 +146,19 @@
 				<label for="system-output-device">System audio</label>
 				<span class:ready={systemState === 'Ready'} class:issue={systemState === 'No signal' || systemState === 'Unavailable' || systemState === 'Permission denied'} class="device-status">{systemState}</span>
 			</div>
-			<select id="system-output-device" bind:value={selectedSystemOutput} onchange={deviceSelectionChanged} disabled={loadingDevices || recorder.recording}>
+			<select id="system-output-device" bind:value={audioDevices.selectedSystemOutput} onchange={selectionChanged} disabled={audioDevices.loading || recorder.recording}>
 				<option value={SYSTEM_AUDIO_OFF}>Off</option>
-				{#each devices.system_outputs as device (device.id)}
+				{#each audioDevices.devices.system_outputs as device (device.id)}
 					<option value={device.id}>{device.label}{device.is_default ? ' — default' : ''}</option>
 				{/each}
 			</select>
 		</div>
 
-		<button class="check-devices" type="button" disabled={checkingAudio || loadingDevices || recorder.recording || !selectedMicrophone} onclick={() => checkAudioDevices()}>
+		<button class="check-devices" type="button" disabled={audioDevices.checking || audioDevices.loading || recorder.recording || !audioDevices.selectedMicrophone} onclick={() => checkAudioDevices()}>
 			<Icon name="refresh" size={15} />
-			{checkingAudio ? 'Checking selected devices…' : 'Check selected devices'}
+			{audioDevices.checking ? 'Checking selected devices…' : 'Check selected devices'}
 		</button>
-		{#if deviceError}<p class="device-error" role="alert">Could not load audio devices: {deviceError}</p>{/if}
+		{#if audioDevices.error}<p class="device-error" role="alert">Could not load audio devices: {audioDevices.error}</p>{/if}
 	</div>
 </section>
 
