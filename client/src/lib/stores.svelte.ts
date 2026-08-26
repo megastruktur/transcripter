@@ -183,6 +183,10 @@ export async function checkAudio(
 ): Promise<PreFlightReport> {
 	const report = await commands.preFlight(probe, microphone, systemOutput, checkSystem);
 	preflight.current = report;
+	// A published report always carries its selection key, no matter which
+	// entry point produced it — remounts compare keys to decide whether a
+	// fresh check is due, and a keyless report would force a redundant one.
+	preflightSelectionKey = selectionKey(microphone ?? '', checkSystem ? (systemOutput ?? '') : SYSTEM_AUDIO_OFF);
 	return report;
 }
 
@@ -206,8 +210,9 @@ export const audioDevices = $state({
 
 let audioDevicesRequest: Promise<void> | null = null;
 let audioSelectionInitialized = false;
-// True while the selection came from the hot-unplug fallback rather than the
-// user: the saved preference is restored the moment the device reappears.
+// True while the effective selection diverges from the saved preference
+// (hot-unplug fallback): the saved device is restored the moment it
+// reappears, however many enumerations pass while it stays unplugged.
 let selectionIsFallback = false;
 // Selection the current preflight report belongs to ('' = no valid report).
 let preflightSelectionKey = '';
@@ -245,19 +250,24 @@ export function refreshAudioDevices(): Promise<void> {
 			// Validate the selection against the fresh list; fall back only when
 			// the chosen device disappeared (hot-unplug). A rewritten selection
 			// invalidates the report — it was computed for the vanished device.
-			let fellBack = false;
 			if (!devices.microphones.some((d) => d.id === audioDevices.selectedMicrophone)) {
 				audioDevices.selectedMicrophone = devices.default_microphone ?? devices.microphones[0]?.id ?? '';
-				fellBack = true;
 			}
 			if (
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF &&
 				!devices.system_outputs.some((d) => d.id === audioDevices.selectedSystemOutput)
 			) {
 				audioDevices.selectedSystemOutput = devices.default_system_output ?? devices.system_outputs[0]?.id ?? SYSTEM_AUDIO_OFF;
-				fellBack = true;
 			}
-			selectionIsFallback = fellBack;
+			// The flag derives from DIVERGENCE from the saved preference, not from
+			// this enumeration's rewrite — otherwise a second mount while still
+			// unplugged would clear it (the fallback device IS present in the
+			// list) and kill the restore path before the replug arrives.
+			const savedMic = savedMicrophone ?? '';
+			const savedSys = savedSystemOutput ?? SYSTEM_AUDIO_OFF;
+			selectionIsFallback =
+				(savedMic !== '' || savedSys !== SYSTEM_AUDIO_OFF) &&
+				(audioDevices.selectedMicrophone !== savedMic || audioDevices.selectedSystemOutput !== savedSys);
 			if (selectionKey(audioDevices.selectedMicrophone, audioDevices.selectedSystemOutput) !== keyBefore) {
 				preflight.current = null;
 				preflightSelectionKey = '';
