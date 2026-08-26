@@ -24,6 +24,12 @@ export const recorder = $state({
 
 export const preflight = $state<{ current: PreFlightReport | null }>({ current: null });
 
+export type ArtifactTabKey = 'transcript' | 'speakers' | 'summary' | 'json';
+
+/** Active artifact tab on the recording detail page. The rail tab buttons
+ * (layout) write this; the detail page reads it and loads the artifact. */
+export const artifactTab = $state<{ active: ArtifactTabKey }>({ active: 'transcript' });
+
 /** Live upload ledger: session id → current upload state. */
 export const uploads = $state<{ [id: string]: UploadState }>({});
 
