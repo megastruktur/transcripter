@@ -194,6 +194,36 @@ def test_audio_range_unsatisfiable_416(client: TestClient) -> None:
     )
     assert r.status_code == 416
 
+def test_audio_head_200_empty_body(client: TestClient) -> None:
+    """HEAD probe (WebKit media stack) → 200, no body, accurate length/type."""
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.head(f"/recordings/{rid}/audio")
+    assert r.status_code == 200
+    assert r.content == b""
+    assert r.headers["content-length"] == str(len(data))
+    assert r.headers["content-type"] == "audio/flac"
+    assert r.headers["accept-ranges"] == "bytes"
+
+
+def test_audio_head_valid_query_token_200(client: TestClient) -> None:
+    """HEAD with ?token= (the WebKit <audio> probe path) must auth the same as GET."""
+    data = b"a" * 128
+    rid = _upload_and_finalize(client, data)
+    r = client.head(
+        f"/recordings/{rid}/audio?token=sekrit",
+        headers={"authorization": ""},
+    )
+    assert r.status_code == 200
+    assert r.content == b""
+
+
+def test_audio_head_missing_file_404(client: TestClient) -> None:
+    """Recording row exists but audio.flac does not → 404 (also on HEAD)."""
+    rid = _make_recording(client)
+    _force_state(rid, "done")
+    assert client.head(f"/recordings/{rid}/audio").status_code == 404
+
 
 def test_audio_valid_query_token_200(client: TestClient) -> None:
     """<audio> cannot send Authorization; ?token= works on the audio route."""

@@ -293,7 +293,7 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | GET    | `/recordings` / `/recordings/{id}`                   | paginated list (`?limit=&offset=&q=&state=`) / detail      |
 | POST   | `/recordings/{id}/regenerate`                        | `{"stage": "transcribe"}` → rerun chain  |
 | GET    | `/recordings/{id}/artifacts/{stage}[?file=…]`        | stage artifacts (transcript, summary, …) |
-| GET    | `/recordings/{id}/audio`                             | download the FLAC                        |
+|GET/HEAD| `/recordings/{id}/audio`                             | download the FLAC                        |
 | GET    | `/settings`                                          | effective config (secrets masked)        |
 
 Quick check:

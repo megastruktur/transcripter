@@ -104,7 +104,7 @@ def get_artifact(
     raise HTTPException(status_code=404, detail="artifact not generated yet")
 
 
-@router.get("/{recording_id}/audio")
+@router.api_route("/{recording_id}/audio", methods=["GET", "HEAD"])
 def get_audio(
     recording_id: str,
     request: Request,
