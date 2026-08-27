@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import ServerConfig, load_config
 from app.db import STAGE_KINDS, Base, engine, init_engine
+from app.routes import profiles as profiles_route
 from app.routes import recordings, regenerate, settings
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
@@ -43,8 +44,8 @@ app = FastAPI(title="Transcriptor API")
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=".*",  # single-user LAN; token is the auth boundary
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods="*",
+    allow_headers="*",
 )
 app.state.config = cfg
 app.state.on_finalize = lambda rec_id, duration: regenerate.trigger_pipeline_async(rec_id, duration)
@@ -66,11 +67,35 @@ def _migrate_stage_kind_enum() -> None:
             conn.execute(text(f"ALTER TYPE stage_kind ADD VALUE IF NOT EXISTS '{kind}'"))
 
 
+def _migrate_tags_column() -> None:
+    """Backfill `tags` for databases created before the knowledge-graph
+    feature landed. create_all only sees the CURRENT schema, so pre-tags
+    Postgres recordings tables get the column added at startup. Tagged
+    recordings get a GIN index for substring-array queries (the ?q=
+    path falls back to a cast + ilike today, but the index is cheap
+    insurance and matches the contract documented in the wave-A plan).
+    Idempotent: ADD COLUMN IF NOT EXISTS + CREATE INDEX IF NOT EXISTS.
+    SQLite has no TEXT[]; create_all already builds the JSON variant."""
+    if engine().dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    with engine().begin() as conn:
+        conn.execute(
+            text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'")
+        )
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_recordings_tags ON recordings USING GIN (tags)")
+        )
+
+
 _migrate_stage_kind_enum()
+_migrate_tags_column()
 
 app.include_router(recordings.router)
 app.include_router(regenerate.router)
 app.include_router(settings.router)
+app.include_router(profiles_route.router)
 
 
 @app.middleware("http")

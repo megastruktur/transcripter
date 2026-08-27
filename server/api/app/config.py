@@ -34,8 +34,13 @@ class DatabaseConfig(BaseModel):
     url: str = "postgresql+psycopg://transcripter:transcripter@postgres/transcripter"
 
 
+class ProfilesConfig(BaseModel):
+    path: Path = Path("/etc/transcripter/profiles")
+
+
 class ServerConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
@@ -55,4 +60,6 @@ def load_config() -> ServerConfig:
         cfg.storage.path = Path(env_storage)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
+    if env_profiles := os.environ.get("PROFILES_DIR"):
+        cfg.profiles.path = Path(env_profiles)
     return cfg

@@ -5,7 +5,7 @@ PUT    /recordings/{id}/audio     → append chunk at ?offset=N (returns committ
 POST   /recordings/{id}/finalize  → verify sha256, size → state=processing
 GET    /recordings                → paginated list {items,total,limit,offset}; ?limit=&offset=&q=&state= filter server-side
 GET    /recordings/{id}           → detail with stages
-PATCH  /recordings/{id}           → rename (trimmed title, empty allowed) + re-export note
+PATCH  /recordings/{id}           → update title and/or tags; triggers re-export
 DELETE /recordings/{id}           → catalog row + files
 """
 
@@ -15,12 +15,14 @@ import os
 import re
 import shutil
 import uuid as uuid_mod
+from collections.abc import Iterable
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import cast, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.types import Text
 
 from app import temporal_client
 from app.config import ServerConfig
@@ -42,6 +44,7 @@ MIN_FREE_BYTES = 2 * MAX_CHUNK
 class CreateRecording(BaseModel):
     title: str = ""
     total_bytes: int | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class ChunkAck(BaseModel):
@@ -52,8 +55,35 @@ class FinalizeRequest(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
     duration_sec: float | None = None
 
-class RenameRequest(BaseModel):
-    title: str = ""
+
+class UpdateRequest(BaseModel):
+    # Both fields optional: PATCH updates only what is supplied. The vault
+    # folder embeds the title in its name and the summarize profile matches
+    # on normalized tags, so a change to either side triggers start_export
+    # to refresh the exported notes.
+    title: str | None = None
+    tags: list[str] | None = None
+
+
+def _normalize_tags(raw: Iterable[str] | None) -> list[str]:
+    """Trim, lower-case, drop blanks; preserve first-seen order, drop dupes.
+
+    Empty strings and whitespace-only tags are silently discarded — they
+    are user-input garbage rather than meaningful labels.
+    """
+    if raw is None:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        norm = item.strip().lower()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    return out
 
 
 def audio_path(cfg: ServerConfig, rec_id: str) -> Path:
@@ -122,6 +152,7 @@ def create_recording(
         id=str(uuid_mod.uuid4()),
         title=body.title,
         total_bytes=body.total_bytes,
+        tags=_normalize_tags(body.tags),
     )
     session.add(rec)
     for kind in STAGE_KINDS:
@@ -248,9 +279,15 @@ def list_recordings(
     needle = q.strip()
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        # tags is TEXT[] on Postgres / JSON on sqlite; casting to Text gives
+        # both dialects a common ilike surface — Postgres renders
+        # `tags::text` (a "{a,b,c}" string the substring matches), sqlite
+        # json_extract makes JSON usable as text for ilike.
+        tags_as_text = cast(Recording.tags, Text)
         condition = or_(
             Recording.title.ilike(f"%{escaped}%", escape="\\"),
             Recording.id.ilike(f"%{escaped}%", escape="\\"),
+            tags_as_text.ilike(f"%{escaped}%", escape="\\"),
         )
         stmt = stmt.where(condition)
         count_stmt = count_stmt.where(condition)
@@ -278,19 +315,27 @@ def get_recording(
     rec = _get(recording_id, session)
     return serialize_recording(rec)
 
+
 @router.patch("/{recording_id}")
-async def rename_recording(
+async def update_recording(
     recording_id: str,
-    body: RenameRequest,
+    body: UpdateRequest,
     session: Session = Depends(get_session),
 ) -> dict:
     rec = _get(recording_id, session)
-    rec.title = body.title.strip()
+    # PATCH semantics: only the supplied fields are touched. At least one
+    # field must be set or the call is a no-op that would still trigger an
+    # export cycle.
+    if body.title is None and body.tags is None:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    if body.title is not None:
+        rec.title = body.title.strip()
+    if body.tags is not None:
+        rec.tags = _normalize_tags(body.tags)
     session.commit()
-    # The vault folder embeds the title in its name, so rename it.
-    # rename_only=True: files inside are NOT rewritten — Obsidian edits are
-    # sacred; the frontmatter title goes stale until the next regenerate.
-    # Fire-and-forget: the rename stands even if Temporal is down
+    # Either kind of change requires re-emitting the vault export: a new
+    # title renames the folder, new tags shift the summarize profile match.
+    # Fire-and-forget; the rename stands even if Temporal is down
     # (worker.backfill is the recovery path).
     try:
         await temporal_client.start_export(rec.id, rename_only=True)
@@ -303,6 +348,7 @@ def serialize_recording(rec: Recording) -> dict:
     return {
         "id": rec.id,
         "title": rec.title,
+        "tags": list(rec.tags or []),
         "state": rec.state.value,
         "committed_bytes": rec.committed_bytes,
         "total_bytes": rec.total_bytes,
