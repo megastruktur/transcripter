@@ -9,13 +9,14 @@ import pytest
 import yaml
 
 from worker.export import (
+    ARTIFACTS,
     ExportError,
     Rec,
-    build_note,
+    build_artifact,
     configured_zone,
     export_recording,
-    note_name,
-    note_path,
+    folder_name,
+    folder_path,
     run,
     write_note_atomic,
 )
@@ -29,53 +30,59 @@ def rec(title: str = "", duration: float | None = None, state: str = "done") -> 
     return Rec(REC_ID, title, CREATED, duration, state)
 
 
-class TestNoteName:
+class TestFolderName:
     def test_title(self):
-        assert note_name("Standup", REC_ID, CREATED, UTC) == "2026-08-23_18-45 Standup a1b2c3d4.md"
+        assert folder_name("Standup", REC_ID, CREATED, UTC) == "2026-08-23_18-45 Standup a1b2c3d4"
 
     def test_empty_title_becomes_call(self):
-        assert note_name("", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4.md"
+        assert folder_name("", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4"
 
     def test_whitespace_only_title(self):
-        assert note_name("   ", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4.md"
+        assert folder_name("   ", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4"
 
     def test_dot_only_title_is_not_a_dotfile(self):
-        name = note_name(". ", REC_ID, CREATED, UTC)
-        assert name == "2026-08-23_18-45 call a1b2c3d4.md"
+        name = folder_name(". ", REC_ID, CREATED, UTC)
+        assert name == "2026-08-23_18-45 call a1b2c3d4"
         assert not Path(name).name.startswith(".")
 
     def test_illegal_chars_replaced(self):
-        name = note_name('a/b\\c:d*e?f"g<h>i|j#k[l]m^n', REC_ID, CREATED, UTC)
+        name = folder_name('a/b\\c:d*e?f"g<h>i|j#k[l]m^n', REC_ID, CREATED, UTC)
         assert "/" not in name and ":" not in name
         assert "#" not in name and "[" not in name and "]" not in name and "^" not in name
-        assert name.endswith(" a1b2c3d4.md")
+        assert name.endswith(" a1b2c3d4")
+        assert ".md" not in name  # folder, not file
 
     def test_control_chars_stripped(self):
-        name = note_name("a\tb\nc\x00d", REC_ID, CREATED, UTC)
+        name = folder_name("a\tb\nc\x00d", REC_ID, CREATED, UTC)
         assert "\t" not in name and "\n" not in name and "\x00" not in name
 
     def test_leading_trailing_dots_and_spaces_stripped(self):
-        assert note_name("  .call. ", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4.md"
+        assert folder_name("  .call. ", REC_ID, CREATED, UTC) == "2026-08-23_18-45 call a1b2c3d4"
 
     def test_unique_for_same_minute_same_title(self):
         # id8 differs => different names (the real anti-collision property)
         other = "ffff0000-9999-8888-7777-666666666666"
-        assert note_name("Standup", REC_ID, CREATED, UTC) != note_name("Standup", other, CREATED, UTC)
+        assert folder_name("Standup", REC_ID, CREATED, UTC) != folder_name(
+            "Standup", other, CREATED, UTC
+        )
         # Same recording: deterministic (regenerate overwrites, never forks)
-        assert note_name("Standup", REC_ID, CREATED, UTC) == note_name("Standup", REC_ID, CREATED, UTC)
+        assert folder_name("Standup", REC_ID, CREATED, UTC) == folder_name(
+            "Standup", REC_ID, CREATED, UTC
+        )
 
     def test_timezone_converted(self):
         # 18:45 UTC == 21:45 Moscow
-        assert note_name("t", REC_ID, CREATED, MOSCOW).startswith("2026-08-23_21-45 ")
+        assert folder_name("t", REC_ID, CREATED, MOSCOW).startswith("2026-08-23_21-45 ")
 
     def test_long_cyrillic_title_byte_capped(self):
         title = "Д" * 300  # 2 bytes/char
-        name = note_name(title, REC_ID, CREATED, UTC)
+        name = folder_name(title, REC_ID, CREATED, UTC)
         encoded = name.encode()
         assert len(encoded) <= 240, len(encoded)
-        assert encoded.endswith(b" a1b2c3d4.md")
+        assert encoded.endswith(b" a1b2c3d4")
+        assert b".md" not in encoded  # folder, not file
         # truncated on a char boundary: decodable without loss
-        name.encode().decode()  # no UnicodeDecodeError
+        encoded.decode()  # no UnicodeDecodeError
         assert name.count("Д") >= 100  # kept most of the title
 
 
@@ -94,12 +101,14 @@ class TestZone:
             configured_zone()
 
 
-class TestBuildNote:
-    def make_meta(self, tmp_path: Path, *, diarized=False, summary=False, transcript=True):
+class TestBuildArtifact:
+    def write_meta(self, tmp_path: Path, *, diarized=False, summary=False, transcript=True):
         meta = tmp_path / "meta"
         meta.mkdir()
         if transcript:
-            (meta / "transcript.md").write_text("# Transcript (ru)\n\nplain text", encoding="utf-8")
+            (meta / "transcript.md").write_text(
+                "# Transcript (ru)\n\nplain text", encoding="utf-8"
+            )
         if diarized:
             (meta / "diarized-transcript.md").write_text(
                 "# Diarized transcript\n\n**SPEAKER_00:** hi", encoding="utf-8"
@@ -114,8 +123,10 @@ class TestBuildNote:
         return yaml.safe_load(fm)
 
     def test_frontmatter_fields(self, tmp_path):
-        meta = self.make_meta(tmp_path)
-        note = build_note(meta, rec("Разговор", 123.5), MOSCOW)
+        meta = self.write_meta(tmp_path)
+        r = rec("Разговор", 123.5)
+        artifact = meta / "transcript.md"
+        note = build_artifact(artifact, r, MOSCOW)
         fm = self.parse_fm(note)
         assert fm["recording_id"] == REC_ID
         assert fm["title"] == "Разговор"
@@ -125,26 +136,39 @@ class TestBuildNote:
         assert fm["tags"] == ["transcripter/call"]
 
     def test_duration_null_omitted(self, tmp_path):
-        meta = self.make_meta(tmp_path)
-        fm = self.parse_fm(build_note(meta, rec("t"), UTC))
+        meta = self.write_meta(tmp_path)
+        artifact = meta / "transcript.md"
+        fm = self.parse_fm(build_artifact(artifact, rec("t"), UTC))
         assert "duration_sec" not in fm
 
     def test_hostile_title_safe_yaml(self, tmp_path):
-        meta = self.make_meta(tmp_path)
+        meta = self.write_meta(tmp_path)
         hostile = 'a: b "[c] {d} #e'
-        fm = self.parse_fm(build_note(meta, rec(hostile), UTC))
+        artifact = meta / "transcript.md"
+        fm = self.parse_fm(build_artifact(artifact, rec(hostile), UTC))
         assert fm["title"] == hostile  # round-trips through YAML intact
 
-    def test_summary_and_transcript_sections(self, tmp_path):
-        meta = self.make_meta(tmp_path, summary=True)
-        note = build_note(meta, rec("t"), UTC)
-        assert "## Summary" in note and "key points" in note
-        assert "## Transcript" in note and "plain text" in note
+    def test_body_is_raw_artifact_no_section_headers(self, tmp_path):
+        """Each artifact file is its own note: frontmatter + the raw artifact
+        body, with no cross-cutting `## Summary` / `## Transcript` headings."""
+        meta = self.write_meta(tmp_path, summary=True)
+        artifact = meta / "summary.md"
+        note = build_artifact(artifact, rec("t"), UTC)
+        # Body is verbatim what was in the source artifact.
+        body = note.split("---\n", 2)[2]
+        assert body.lstrip("\n").startswith("key points")
+        assert "## Summary" not in note
+        assert "## Transcript" not in note
 
-    def test_diarized_preferred(self, tmp_path):
-        meta = self.make_meta(tmp_path, diarized=True, summary=True)
-        note = build_note(meta, rec("t"), UTC)
-        assert "SPEAKER_00" in note and "plain text" not in note
+    def test_per_artifact_body_matches_source(self, tmp_path):
+        """Each artifact file gets only its own content, never concatenated."""
+        meta = self.write_meta(tmp_path, transcript=True, summary=True)
+        diarized_note = build_artifact(meta / "transcript.md", rec("t"), UTC)
+        summary_note = build_artifact(meta / "summary.md", rec("t"), UTC)
+        assert "plain text" in diarized_note
+        assert "key points" in summary_note
+        assert "plain text" not in summary_note
+        assert "key points" not in diarized_note
 
 
 class TestWriteAtomic:
@@ -175,16 +199,38 @@ class TestExportRecording:
         meta = tmp_path / "meta"
         meta.mkdir()
         assert export_recording(tmp_path / "out", meta, rec(), UTC) is None
+    def test_fresh_root_created_on_first_export(self, tmp_path):
+        """TRANSCRIPTS_DIR unset → ./storage/transcripts may not exist yet;
+        the first export ever must not FileNotFoundError on the rename-scan."""
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        (meta / "transcript.md").write_text("body", encoding="utf-8")
+        root = tmp_path / "out"  # deliberately never mkdir'd
+        path = export_recording(root, meta, rec("Meet"), UTC)
+        assert path is not None and path.is_dir()
 
-    def test_exports_note(self, tmp_path):
+    def test_exports_folder_with_only_existing_artifacts(self, tmp_path):
         meta = tmp_path / "meta"
         meta.mkdir()
         (meta / "transcript.md").write_text("body", encoding="utf-8")
         root = tmp_path / "out"
         path = export_recording(root, meta, rec("Meet"), UTC)
-        assert path is not None and path.is_file()
-        assert path.parent == root
-        assert "body" in path.read_text(encoding="utf-8")
+        expected = folder_path(root, rec("Meet"), UTC)
+        assert path == expected
+        assert path.is_dir()
+        # Only transcript.md (no diarized-transcript.md / summary.md / extras).
+        # .transcript.md.lock lives beside it but is hidden (dotfile).
+        visible = sorted(p.name for p in path.iterdir() if not p.name.startswith("."))
+
+        assert visible == ["transcript.md"]
+        # Mirror-side lockfile lives next to it.
+        assert (path / ".transcript.md.lock").exists()
+        assert "body" in (path / "transcript.md").read_text(encoding="utf-8")
+        # ARTIFACTS that were absent from meta must not appear in the folder.
+        for missing in ARTIFACTS:
+            if missing == "transcript.md":
+                continue
+            assert not (path / missing).exists()
 
     def test_sentinel_missing_refuses(self, tmp_path):
         meta = tmp_path / "meta"
@@ -205,6 +251,68 @@ class TestExportRecording:
         assert export_recording(root, meta, rec(), UTC, sentinel=".obsidian") is not None
 
 
+class TestFolderRename:
+    def test_old_title_folder_renamed_user_files_preserved(self, tmp_path):
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        (meta / "transcript.md").write_text("new body", encoding="utf-8")
+
+        root = tmp_path / "out"
+        old = root / folder_name("Old title", REC_ID, CREATED, UTC)
+        old.mkdir(parents=True)
+        # Stale artifact from prior export under the old title.
+        (old / "transcript.md").write_text("old body", encoding="utf-8")
+        (old / ".transcript.md.lock").write_text("", encoding="utf-8")
+        # A user-authored file must survive the rename.
+        user = old / "user-notes.md"
+        user.write_text("mine", encoding="utf-8")
+        user_lock = old / ".user-notes.md.lock"
+        user_lock.write_text("", encoding="utf-8")
+
+        path = export_recording(root, meta, rec("New title"), UTC)
+
+        new = folder_path(root, rec("New title"), UTC)
+        assert path == new
+        assert path.is_dir()
+        # Old folder name no longer present at root.
+        assert not old.exists()
+        # New folder has refreshed artifact content.
+        assert (new / "transcript.md").read_text(encoding="utf-8").startswith("---")
+        assert "new body" in (new / "transcript.md").read_text(encoding="utf-8")
+        # User file survived intact under the renamed folder.
+        assert (new / "user-notes.md").read_text(encoding="utf-8") == "mine"
+        assert (new / ".user-notes.md.lock").exists()
+
+
+class TestMirrorDelete:
+    def test_dropped_artifact_removed_user_files_kept(self, tmp_path):
+        meta = tmp_path / "meta"
+        meta.mkdir()
+        # Prior export wrote summary.md to the folder; this regenerate only
+        # has transcript.md in meta. summary.md must be cleaned up.
+        folder = folder_path(tmp_path / "out", rec("Meet"), UTC)
+        folder.mkdir(parents=True)
+        (folder / "transcript.md").write_text("stale body", encoding="utf-8")
+        (folder / ".transcript.md.lock").write_text("", encoding="utf-8")
+        (folder / "summary.md").write_text("stale summary", encoding="utf-8")
+        (folder / ".summary.md.lock").write_text("", encoding="utf-8")
+        # An unknown user file must NOT be touched by mirror-delete.
+        user = folder / "scratch.md"
+        user.write_text("mine", encoding="utf-8")
+
+        # meta now has only transcript.md
+        (meta / "transcript.md").write_text("fresh body", encoding="utf-8")
+
+        path = export_recording(tmp_path / "out", meta, rec("Meet"), UTC)
+        assert path == folder
+        assert (folder / "transcript.md").exists()
+        assert (folder / ".transcript.md.lock").exists()
+        assert not (folder / "summary.md").exists()
+        assert not (folder / ".summary.md.lock").exists()
+        # Unknown user files untouched.
+        assert (folder / "scratch.md").read_text(encoding="utf-8") == "mine"
+
+
 class TestFlockConcurrency:
     def test_parallel_writes_produce_one_valid_file(self, tmp_path):
         import concurrent.futures
@@ -214,7 +322,8 @@ class TestFlockConcurrency:
         (meta / "transcript.md").write_text("body", encoding="utf-8")
         root = tmp_path / "out"
         root.mkdir()
-        path = note_path(root, rec("Meet"), UTC)
+        path = folder_path(root, rec("Meet"), UTC) / "transcript.md"
+        path.parent.mkdir()
 
         def write(i):
             write_note_atomic(path, f"content-{i}")
@@ -222,12 +331,14 @@ class TestFlockConcurrency:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
             assert sorted(ex.map(write, range(16))) == list(range(16))
-        files = sorted(p.name for p in root.iterdir() if not p.name.startswith("."))
-        assert files == [path.name]
+        # Inside the folder: exactly the artifact + its lock sibling (no .tmp).
+        files = sorted(p.name for p in path.parent.iterdir() if not p.name.startswith("."))
+        assert files == ["transcript.md"]
         assert path.read_text().startswith("content-")
 
-class TestSweepStaleNotes:
-    """run() removes stale app-scheme notes (old titles) but never user notes."""
+
+class TestLegacyMigration:
+    """run() removes stale app-scheme flat notes (old titles) but never user notes."""
 
     def stub_run(self, tmp_path, monkeypatch, r: Rec) -> Path:
         """Point run()'s config/DB at tmp_path; returns the transcripts root."""
@@ -247,7 +358,7 @@ class TestSweepStaleNotes:
         monkeypatch.delenv("TRANSCRIPTER_TZ", raising=False)  # deterministic UTC
         return root
 
-    def test_stale_app_scheme_note_and_lock_removed(self, tmp_path, monkeypatch):
+    def test_stale_app_scheme_flat_note_and_lock_removed(self, tmp_path, monkeypatch):
         root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
         stale = root / "2026-01-01_10-00 Old title a1b2c3d4.md"
         stale.write_text("old", encoding="utf-8")
@@ -256,12 +367,16 @@ class TestSweepStaleNotes:
 
         path = run(REC_ID)
 
+        assert path is not None
         assert not stale.exists()
         assert not lock.exists()
-        assert path == root / "2026-08-23_18-45 New title a1b2c3d4.md"
-        assert path.is_file()
+        # Folder path is the deterministic folder (no .md).
+        assert path == folder_path(root, rec("New title"), UTC)
+        assert path.is_dir()
+        # Folder was populated by export_recording before the sweep ran.
+        assert (path / "transcript.md").exists()
 
-    def test_user_note_without_timestamp_prefix_survives(self, tmp_path, monkeypatch):
+    def test_user_flat_note_without_timestamp_prefix_survives(self, tmp_path, monkeypatch):
         root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
         user = root / "My standup a1b2c3d4.md"
         user.write_text("mine", encoding="utf-8")

@@ -1,9 +1,13 @@
-"""Export finished transcripts as consolidated notes into the transcripts dir.
+"""Export finished transcripts as a folder of per-artifact notes.
 
-The note filename is fully deterministic ({date} {title} {id8}.md): the file
-is always overwritten, never probed for existence — a stale NFS stat or an
-Obsidian user edit can't fork duplicates or race two workers (see
-.ship-it/plans/transcripts-export-2026-08-23.md).
+Each done recording gets one folder in the transcripts dir:
+`{YYYY-MM-DD_HH-MM} {title} {id8}/` containing the meta artifacts 1:1
+(`transcript.md`, `diarized-transcript.md`, `summary.md`), each with its own
+frontmatter. The folder name is fully deterministic (id8 always appended):
+rename renames the folder in place (`os.rename`), regenerate rewrites the
+artifact files under the same name — an Obsidian user edit or a stale NFS
+stat can't fork duplicates or race two workers (see
+.ship-it/plans/vault-folder-export-2026-08-27.md).
 """
 
 import fcntl
@@ -27,6 +31,10 @@ _CTRL = re.compile(r"[\x00-\x1f]")
 # 255-byte NAME_MAX with margin for ".{uuid8}.tmp" and ".lock".
 _MAX_NAME_BYTES = 240
 
+# Meta artifacts exported 1:1 into the folder (whitelist for mirror-delete:
+# anything else in the folder is user content and is never touched).
+ARTIFACTS = ("transcript.md", "diarized-transcript.md", "summary.md")
+
 TZ_ENV = "TRANSCRIPTER_TZ"
 DEFAULT_ZONE = "UTC"
 
@@ -36,7 +44,7 @@ class ExportError(Exception):
 
 
 def configured_zone() -> ZoneInfo:
-    """Timezone for note names/frontmatter. Env TRANSCRIPTER_TZ, default UTC.
+    """Timezone for folder names/frontmatter. Env TRANSCRIPTER_TZ, default UTC.
 
     The worker reads env at start (existing convention), so a TZ change means
     a worker restart — same as every other knob.
@@ -48,16 +56,16 @@ def configured_zone() -> ZoneInfo:
         raise ExportError(f"invalid {TZ_ENV}={name!r}: {e}") from e
 
 
-def note_name(title: str, recording_id: str, created_at: datetime, zone: ZoneInfo) -> str:
-    """Deterministic note basename: `{YYYY-MM-DD_HH-MM} {title|call} {id8}.md`.
+def folder_name(title: str, recording_id: str, created_at: datetime, zone: ZoneInfo) -> str:
+    """Deterministic folder name: `{YYYY-MM-DD_HH-MM} {title|call} {id8}`.
 
     - id8 is ALWAYS in the name: two same-minute same-title calls can never
       collide, so no existence probe / read-back is ever needed.
-    - Capped by UTF-8 bytes on a char boundary, always preserving ` {id8}.md`.
+    - Capped by UTF-8 bytes on a char boundary, always preserving ` {id8}`.
     """
     ts = created_at.astimezone(zone).strftime("%Y-%m-%d_%H-%M")
     id8 = recording_id[:8].lower()
-    suffix = f" {id8}.md"
+    suffix = f" {id8}"
 
     t = _CTRL.sub(" ", title)
     t = _ILLEGAL.sub(" ", t)
@@ -86,12 +94,12 @@ class Rec:
     state: str = ""
 
 
-def note_path(root: Path, rec: Rec, zone: ZoneInfo) -> Path:
-    return root / note_name(rec.title, rec.id, rec.created_at, zone)
+def folder_path(root: Path, rec: Rec, zone: ZoneInfo) -> Path:
+    return root / folder_name(rec.title, rec.id, rec.created_at, zone)
 
 
-def build_note(meta: Path, rec: Rec, zone: ZoneInfo) -> str:
-    """Assemble frontmatter + Summary + Transcript from meta artifacts.
+def build_artifact(path: Path, rec: Rec, zone: ZoneInfo) -> str:
+    """One exported artifact file: frontmatter + raw artifact body.
 
     Frontmatter is serialized with yaml.safe_dump — a title containing
     `: " [ {` must never produce broken YAML (the deterministic naming means
@@ -107,19 +115,10 @@ def build_note(meta: Path, rec: Rec, zone: ZoneInfo) -> str:
     if rec.duration_sec is not None:
         fm["duration_sec"] = rec.duration_sec
 
-    parts = ["---", yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip(), "---", ""]
-
-    summary = meta / "summary.md"
-    if summary.is_file():
-        parts += ["## Summary", "", summary.read_text(encoding="utf-8").rstrip(), ""]
-
-    src = meta / "diarized-transcript.md"
-    if not src.is_file():
-        src = meta / "transcript.md"
-    body = src.read_text(encoding="utf-8").rstrip() if src.is_file() else ""
-    if body:
-        parts += ["## Transcript", "", body, ""]
-    return "\n".join(parts)
+    body = path.read_text(encoding="utf-8").rstrip()
+    return "\n".join(
+        ["---", yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).rstrip(), "---", "", body, ""]
+    )
 
 
 def write_note_atomic(path: Path, content: str) -> None:
@@ -127,19 +126,18 @@ def write_note_atomic(path: Path, content: str) -> None:
     recording (activity + backfill, or two regenerates) can never tear the
     note or interleave partial content."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Hidden lockfile, never unlinked: unlinking a locked file lets two
-    # writers hold locks on different inodes simultaneously. Dot-prefix keeps
-    # it out of Obsidian (dotfiles are hidden there by default).
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     lock = path.with_name(f".{path.name}.lock")
-    with open(lock, "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-        try:
-            tmp.write_text(content, encoding="utf-8")
-            os.replace(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
-            fcntl.flock(lf, fcntl.LOCK_UN)
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        with open(lock, "a+b") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                os.replace(tmp, path)
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def load_recording(rec_id: str) -> Rec:
@@ -161,6 +159,17 @@ def check_sentinel(root: Path, sentinel: str) -> None:
         )
 
 
+def _folder_pattern(rec: Rec) -> re.Pattern[str]:
+    """Match app-scheme folders for this recording: `{ts} {anything} {id8}`.
+
+    Timestamp is derived from created_at at call time (TZ may change between
+    exports), so the pattern pins only the id8 suffix — the same property the
+    old flat-note sweep relied on."""
+    return re.compile(
+        rf"^\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}} .+ {re.escape(rec.id[:8].lower())}$"
+    )
+
+
 def export_recording(
     root: Path,
     meta: Path,
@@ -168,18 +177,58 @@ def export_recording(
     zone: ZoneInfo,
     sentinel: str = "",
 ) -> Path | None:
-    """Export one recording's note; None when there is nothing to export."""
+    """Export one recording's folder; None when there is nothing to export.
+
+    - Rename: an existing folder for this recording under a previous title is
+      renamed in place (os.rename) — Obsidian edits and user files survive.
+      FileNotFoundError from a concurrent export having already renamed it is
+      a no-op; other OSError propagates (next export / backfill recovers).
+    - Regenerate: artifact files are rewritten atomically in place.
+    - Mirror: known artifact names absent from meta are unlinked from the
+      folder (e.g. diarize disabled → diarized-transcript.md must not go
+      stale in the vault); unknown/user files are never touched.
+    """
     check_sentinel(root, sentinel)
     if not (meta / "transcript.md").is_file() and not (meta / "diarized-transcript.md").is_file():
         return None
-    path = note_path(root, rec, zone)
-    write_note_atomic(path, build_note(meta, rec, zone))
-    return path
+
+    # A fresh export dir may not exist yet (TRANSCRIPTS_DIR unset →
+    # ./storage/transcripts, first export ever). The rename-scan below must
+    # not crash on it — write_note_atomic creates parents for the files.
+    root.mkdir(parents=True, exist_ok=True)
+    target = folder_path(root, rec, zone)
+    if not target.is_dir():
+        pattern = _folder_pattern(rec)
+        for entry in list(root.iterdir()):
+            if entry.is_dir() and pattern.match(entry.name):
+                try:
+                    os.rename(entry, target)
+                    log.info("export: renamed folder %s -> %s", entry.name, target.name)
+                except FileNotFoundError:
+                    # Concurrent export already renamed it — same deterministic
+                    # target, nothing left to do.
+                    pass
+                break
+
+    written = False
+    for name in ARTIFACTS:
+        src = meta / name
+        if src.is_file():
+            write_note_atomic(target / name, build_artifact(src, rec, zone))
+            written = True
+        else:
+            # Mirror: a regenerate that dropped the artifact (diarize disabled,
+            # summarize skipped) must not leave it stale in the vault.
+            stale = target / name
+            if stale.exists():
+                stale.unlink()
+                stale.with_name(f".{name}.lock").unlink(missing_ok=True)
+    return target if written else None
 
 
 def sweep_stale_notes(root: Path, rec: Rec, keep: Path) -> None:
-    """Delete older app-scheme notes for this recording (e.g. pre-rename
-    titles) and their permanent lockfile siblings, keeping `keep`.
+    """Delete legacy flat notes for this recording (pre-folder scheme) and
+    their permanent lockfile siblings.
 
     Scoped to the app's own filename scheme — a `YYYY-MM-DD_HH-MM ` prefix
     AND the ` {id8}.md` suffix — so user-authored notes are never touched.
@@ -189,15 +238,16 @@ def sweep_stale_notes(root: Path, rec: Rec, keep: Path) -> None:
         rf"^\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}} .+ {re.escape(rec.id[:8].lower())}\.md$"
     )
     for entry in list(root.iterdir()):
-        if entry.name == keep.name or not pattern.match(entry.name):
+        if not entry.is_file() or not pattern.match(entry.name):
             continue
         try:
             entry.unlink()
             # Lockfiles (.{name}.lock) are permanent per write_note_atomic
             # and never match the sweep regex themselves.
             entry.with_name(f".{entry.name}.lock").unlink(missing_ok=True)
+            log.info("export: migrated legacy flat note %s", entry.name)
         except OSError as e:
-            log.warning("export sweep: could not remove stale note %s: %s", entry, e)
+            log.warning("export sweep: could not remove legacy note %s: %s", entry, e)
 
 
 def run(rec_id: str) -> Path | None:
@@ -207,6 +257,8 @@ def run(rec_id: str) -> Path | None:
     in a SUBPROCESS spawned (and SIGKILL-abandoned on timeout) by the
     export_transcript activity / backfill — a dead NAS mount parks the child
     in D-state, which no in-process exception handling can survive.
+
+    Returns the exported folder path (or None on no-op).
     """
     from .config import load_config
     from .db import init_engine
@@ -222,4 +274,3 @@ def run(rec_id: str) -> Path | None:
     if path is not None:
         sweep_stale_notes(cfg.transcripts.path, rec, path)
     return path
-

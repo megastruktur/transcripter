@@ -29,11 +29,14 @@
 - Summarize: enabled via the platform LiteLLM proxy (OpenAI-compatible) —
   local `qwen3.8-27b-q4_k_m` at `http://192.168.3.23:4000/v1`, key from the
   `LITELLM_API_KEY` env var. The stage still self-skips when unconfigured.
-- Transcript export: every finished recording is exported as one consolidated
-  Markdown note (frontmatter + summary + transcript) into a configurable host
-  directory (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`);
-  best-effort, subprocess-isolated, regenerate overwrites, `worker.backfill`
-  re-exports.
+- Transcript export: every finished recording is exported as a folder
+  `{YYYY-MM-DD_HH-MM} {title} {id8}/` in the same configurable host directory
+  (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`); inside, the
+  meta artifacts 1:1 (`transcript.md`, `diarized-transcript.md`, `summary.md`),
+  each with its own frontmatter; recording rename renames the folder in place
+  (Obsidian edits survive); regenerate rewrites artifact files; legacy flat
+  `* {id8}.md` notes are migrated (deleted) on export; best-effort,
+  subprocess-isolated, `worker.backfill` re-exports and migrates all.
 - Pre-flight opens and probes every selected source before recording. A selected
   system source that cannot start blocks recording; microphone-only capture is
   available only when System audio is explicitly Off.

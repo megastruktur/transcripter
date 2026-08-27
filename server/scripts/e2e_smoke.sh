@@ -209,14 +209,14 @@ if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="do
     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
 fi
 
-echo "== 9b. exported transcript note"
+echo "== 9b. exported transcript note folder"
 TRANSCRIPTS_DIR_HOST="$(cd "$(dirname "$0")/.." && pwd)/storage/transcripts"
-# Notes carry the recording id8 suffix; exactly one must exist per recording.
-NOTES=$(find "$TRANSCRIPTS_DIR_HOST" -maxdepth 1 -name "* ${RID:0:8}.md" 2>/dev/null)
-N=$(printf '%s\n' "$NOTES" | grep -c .)
-NOTE=$(printf '%s\n' "$NOTES" | head -1)
-test "$N" -eq 1 && test -s "$NOTE" && echo "  ok: $(basename "$NOTE")" || { echo "  MISSING/dup exported note (N=$N)"; exit 1; }
-grep -q "recording_id: $RID" "$NOTE" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
+# Exported folders carry the recording id8 suffix; exactly one must exist per recording.
+FOLDERS=$(find "$TRANSCRIPTS_DIR_HOST" -maxdepth 1 -type d -name "* ${RID:0:8}" 2>/dev/null)
+N=$(printf '%s\n' "$FOLDERS" | grep -c .)
+FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
+test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
+grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
 
 echo "== 10. regenerate diarize"
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \

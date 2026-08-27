@@ -9,9 +9,9 @@ storage:
   path: /storage
 
 transcripts:
-  # Exported consolidated notes (one .md per call). The in-container path is
-  # FIXED at /transcripts — the host dir is chosen by TRANSCRIPTS_DIR in .env
-  # (compose bind), never overridden in yaml.
+  # Exported notes (one folder per call, per-artifact .md files inside). The
+  # in-container path is FIXED at /transcripts — the host dir is chosen by
+  # TRANSCRIPTS_DIR in .env (compose bind), never overridden in yaml.
   # Optional boot-race guard: when set (e.g. ".transcripter"), export refuses
   # to run unless this marker exists INSIDE the dir (create it once:
   # touch "$TRANSCRIPTS_DIR/.transcripter") — a bind over an empty NAS
