@@ -62,6 +62,40 @@ class SummarizeSpec(BaseModel):
         return v
 
 
+class EnrichNodeLabels(BaseModel):
+    """Optional per-profile label overrides for the knowledge graph.
+
+    The defaults below match the data-model section of the wave-B plan:
+    every node carries ``origin_recording_id`` and ``tag`` regardless of
+    label. Profiles only ever pick different label *names* for the same
+    concept (``Event`` / ``Entity``) so cross-profile queries still work.
+    """
+
+    event: str = "Event"
+    entity: str = "Entity"
+
+
+class EnrichSpec(BaseModel):
+    """Profile-driven knowledge-graph extraction (wave B).
+
+    The schema is fixed in code (events/entities/relations — see
+    ``worker/enrich.py``); profiles steer the domain by shaping the
+    prompt. ``prompt`` must contain ``{transcript}``; ``{title}`` is
+    optional. ``node_labels`` lets a profile rename the default node
+    labels without forking the extraction pipeline.
+    """
+
+    prompt: str = Field(min_length=1)
+    node_labels: EnrichNodeLabels = Field(default_factory=EnrichNodeLabels)
+
+    @field_validator("prompt")
+    @classmethod
+    def _must_contain_transcript(cls, v: str) -> str:
+        if "{transcript}" not in v:
+            raise ValueError("enrich.prompt must contain {transcript}")
+        return v
+
+
 class Profile(BaseModel):
     """One yaml profile (validate-on-load: bad files are skipped, never crash)."""
 
@@ -72,7 +106,7 @@ class Profile(BaseModel):
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     summarize: SummarizeSpec
-
+    enrich: EnrichSpec | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -86,6 +120,7 @@ class Profile(BaseModel):
                 "description",
                 "tags",
                 "summarize",
+                "enrich",
             }
             extras = set(data) - known
             if extras:
@@ -94,6 +129,7 @@ class Profile(BaseModel):
                     sorted(extras),
                 )
         return data
+
     @field_validator("id")
     @classmethod
     def _id_safe(cls, v: str) -> str:

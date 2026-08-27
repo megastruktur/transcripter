@@ -31,3 +31,17 @@ summarize:
     ТРАНСКРИПТ:
     {transcript}
   output_artifact: session-log.md
+# Wave B: extract campaign entities/events into the knowledge graph.
+enrich:
+  prompt: |
+    Ты извлекаешь структурированные данные из транскрипта настольной
+    RPG-сессии «{title}». Верни JSON-объект:
+    {"events": [{"ts": "…", "kind": "…", "summary": "…"}],
+     "entities": [{"slug": "…", "label": "…", "type": "character|npc|item|location|faction"}],
+     "relations": [{"from_slug": "…", "to_slug": "…", "type": "…"}]}
+    Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
+    имя; events — ключевые игровые события в хронологическом порядке;
+    relations — связи между сущностями (owns, met, located_in, member_of…).
+    Пустые разделы — пустые списки.
+    ТРАНСКРИПТ:
+    {transcript}

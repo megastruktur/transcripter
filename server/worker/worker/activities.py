@@ -471,10 +471,112 @@ async def summarize(rec_id: str) -> dict:
         set_stage(rec_id, "summarize", StageStatus.failed, error=str(e))
         raise
 
+# Diarization, merge_speakers, and enrich (wave B) are best-effort: the
+# transcript is the load-bearing artifact; if knowledge-graph
+# extraction can't happen (no graph backend, no profile with an
+# enrich section, or just a flakey llama-server), the recording is
+# still useful with just transcript + summary.
+BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers", "enrich"})
 
-# Diarization (and the merge that depends on it) is best-effort: a recording
-# with a good transcript is still useful, so these stages do not fail it.
-BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers"})
+
+@activity.defn
+async def enrich(rec_id: str) -> dict:
+    """Wave-B knowledge-graph extraction stage (best-effort).
+
+    Skipped when EITHER (a) no profile with an ``enrich`` section
+    matched the recording, OR (b) the graph backend is not configured
+    (empty ``graph.uri``). The same shape as ``diarize``/``merge_speakers``
+    so the activity is honest about WHY it did nothing.
+
+    Otherwise: extract (json_object, ×3 attempts), dedup with slug+LLM,
+    write one transaction (DETACH DELETE by ``origin_recording_id``
+    then MERGE/CREATE), and report the entity count.
+    """
+    set_stage(rec_id, "enrich", StageStatus.running, inc_attempts=True)
+    c = cfg()
+    if not c.graph.enabled:
+        set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "graph disabled"})
+        return {"skipped": "graph disabled"}
+    profile = None
+    title = ""
+    tags: list[str] = []
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        title = rec.title or ""
+        tags = list(rec.tags or [])
+        from .profiles import match_profile
+
+        profile = match_profile(tags, c.profiles.path)
+    if profile is None or profile.enrich is None:
+        set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
+        return {"skipped": "no profile with enrich"}
+    try:
+        from .enrich import (
+            extract_from_transcript,
+            pre_existing_lookup,
+            resolve_slugs,
+            write_to_graph,
+        )
+
+        # Extract (json_object + ×3 attempts) — synchronous LLM call.
+        extracted = await _heartbeat_while(
+            asyncio.to_thread(
+                extract_from_transcript,
+                meta_dir(rec_id) / "transcript.md",
+                title,
+                profile.enrich.prompt,
+                c,
+            )
+        )
+        # Two-level dedup: slug collisions across the local extraction
+        # (already-present in `extracted`) AND against the live graph
+        # (pre-existing entities on the same tag).
+        lookup = pre_existing_lookup(
+            c.graph.uri,
+            c.graph.user,
+            os.environ.get(c.graph.password_env, ""),
+            c.graph.database,
+            tag=tags[0] if tags else "",
+        )
+        try:
+            try:
+                resolved = await asyncio.to_thread(
+                    resolve_slugs, extracted, c, tags[0] if tags else "", lookup
+                )
+            except Exception:
+                # Dedup is best-effort: a flakey LLM (or neo4j) must
+                # never kill the stage. Fall back to the raw extraction
+                # — slug collisions inside the extraction itself are
+                # already handled by ``slugify``.
+                log.exception("enrich: dedup failed; falling back to raw extraction")
+                resolved = extracted
+        finally:
+            lookup._driver.close()
+        # Write to graph (sync neo4j driver via to_thread).
+        _count = await asyncio.to_thread(
+            write_to_graph,
+            rec_id,
+            tags[0] if tags else "",
+            resolved,
+            profile.enrich.node_labels,
+            c.graph.uri,
+            c.graph.user,
+            os.environ.get(c.graph.password_env, ""),
+            c.graph.database,
+        )
+        details = {
+            "events": len(resolved.events),
+            "entities": len(resolved.entities),
+            "relations": len(resolved.relations),
+            "profile_id": profile.id,
+        }
+        set_stage(rec_id, "enrich", StageStatus.done, details=details)
+        return details
+    except Exception as e:
+        log.exception("enrich failed for %s", rec_id)
+        set_stage(rec_id, "enrich", StageStatus.failed, error=str(e))
+        raise
 
 
 @activity.defn

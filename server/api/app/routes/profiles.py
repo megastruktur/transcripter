@@ -78,6 +78,19 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
             )
             continue
 
+        # Wave B: surface whether the profile declares a usable enrich
+        # section. The host doesn't fully validate here (worker's
+        # profiles.py is the authority on what counts as usable), but
+        # the rough shape — a mapping with a string ``prompt`` that
+        # mentions ``{transcript}`` — is enough for the UI to advertise
+        # the capability. Unknown shapes don't break the listing.
+        enrich_raw = raw.get("enrich")
+        has_enrich = bool(
+            isinstance(enrich_raw, dict)
+            and isinstance(enrich_raw.get("prompt"), str)
+            and "{transcript}" in enrich_raw["prompt"]
+        )
+
         out.append(
             {
                 "id": raw["id"],
@@ -85,6 +98,7 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
                 "display_name": raw["display_name"],
                 "description": raw["description"],
                 "tags": tags_raw,
+                "has_enrich": has_enrich,
             }
         )
     return out

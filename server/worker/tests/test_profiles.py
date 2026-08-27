@@ -13,7 +13,6 @@ from worker.profiles import (
 )
 
 
-# Minimal valid profile (used as a template; tests mutate fields).
 def _valid_yaml() -> str:
     return """\
 id: test-profile
@@ -312,3 +311,53 @@ class TestArtifactsForExport:
         )
         wl = artifacts_for_export(tmp_path)
         assert {"session-log.md", "notes.md"} <= wl
+
+
+# --- Profile.enrich (wave B) ------------------------------------------------
+
+
+class TestProfileEnrich:
+    """The enrich section is OPTIONAL — wave-A profiles still validate
+    with no enrich block. A present block must (a) contain
+    ``{transcript}`` in the prompt and (b) accept an optional
+    ``node_labels`` override."""
+
+    def test_no_enrich_block_is_valid(self, tmp_path):
+        _write_profile(tmp_path, "no-enrich.yaml", _valid_yaml())
+        profiles = load_profiles(tmp_path)
+        assert len(profiles) == 1
+        assert profiles[0].enrich is None
+
+    def test_enrich_block_loads(self, tmp_path):
+        body = (
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    extract. {transcript}\n"
+        )
+        _write_profile(tmp_path, "with-enrich.yaml", body)
+        profiles = load_profiles(tmp_path)
+        assert len(profiles) == 1
+        assert profiles[0].enrich is not None
+        assert "{transcript}" in profiles[0].enrich.prompt
+        # Default node_labels match the contract.
+        assert profiles[0].enrich.node_labels.event == "Event"
+        assert profiles[0].enrich.node_labels.entity == "Entity"
+
+    def test_enrich_prompt_without_transcript_skipped(self, tmp_path):
+        body = (
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    no placeholder here\n"
+        )
+        _write_profile(tmp_path, "bad-enrich.yaml", body)
+        profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_enrich_node_labels_override(self, tmp_path):
+        body = (
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    p {transcript}\n  node_labels:\n    event: CampaignEvent\n    entity: Thing\n"
+        )
+        _write_profile(tmp_path, "with-labels.yaml", body)
+        profiles = load_profiles(tmp_path)
+        assert len(profiles) == 1
+        assert profiles[0].enrich.node_labels.event == "CampaignEvent"
+        assert profiles[0].enrich.node_labels.entity == "Thing"

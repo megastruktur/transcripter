@@ -22,6 +22,7 @@ class PipelineResult(TypedDict, total=False):
     diarize: dict
     merge_speakers: dict
     summarize: dict
+    enrich: dict
     export: dict
 
 
@@ -76,7 +77,7 @@ class ProcessRecording:
         duration: float | None = args.get("duration_sec")
         result: PipelineResult = {}
 
-        order = ["chunk", "transcribe", "diarize", "merge_speakers", "summarize"]
+        order = ["chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"]
         assert start in order, f"unknown stage {start}"
         idx = order.index(start)
 
@@ -172,6 +173,23 @@ class ProcessRecording:
                 retry_policy=_no_retry(),
                 heartbeat_timeout=timedelta(seconds=120),
             )
+        # Wave B: enrich is best-effort like diarize/merge — a failure
+        # must not abort the recording. The activity catches its own
+        # errors and marks `failed`; we only escalate infra errors.
+        if idx <= 5:
+            try:
+                result["enrich"] = await workflow.execute_activity(
+                    "enrich",
+                    rec_id,
+                    # Same envelope as summarize: the LiteLLM proxy
+                    # timeout is the binding constraint, and the HTTP
+                    # budget inside the activity is 30 s under.
+                    start_to_close_timeout=timedelta(seconds=2400),
+                    retry_policy=_no_retry(),
+                    heartbeat_timeout=timedelta(seconds=120),
+                )
+            except ActivityError:
+                workflow.logger.warning("enrich failed for %s; recording still done", rec_id)
 
 @workflow.defn
 class ExportRecording:
