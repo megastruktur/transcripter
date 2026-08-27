@@ -57,7 +57,9 @@ def test_rename_triggers_export(client: TestClient) -> None:
     rid = _make_recording(client)
     r = client.patch(f"/recordings/{rid}", json={"title": "x"})
     assert r.status_code == 200
-    temporal_client.start_export.assert_awaited_once_with(rid)
+    # Rename path is rename-only: the folder is renamed, files are NOT
+    # rewritten (Obsidian edits survive).
+    temporal_client.start_export.assert_awaited_once_with(rid, rename_only=True)
 
 
 def test_rename_succeeds_when_export_trigger_fails(

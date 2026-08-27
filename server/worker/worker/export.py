@@ -197,27 +197,9 @@ def export_recording(
     # ./storage/transcripts, first export ever). The rename-scan below must
     # not crash on it — write_note_atomic creates parents for the files.
     root.mkdir(parents=True, exist_ok=True)
-    target = folder_path(root, rec, zone)
-    if not target.is_dir():
-        pattern = _folder_pattern(rec)
-        matches = [
-            entry
-            for entry in list(root.iterdir())
-            if entry.is_dir() and pattern.match(entry.name)
-        ]
-        # Multiple matches = a double-rename race leftover. Prefer the folder
-        # holding non-app (user-authored) files: edits are the only content
-        # that cannot be regenerated from meta; the app-only leftovers are
-        # swept after the export.
-        matches.sort(key=lambda e: not any(not _is_app_file(c.name) for c in e.iterdir()))
-        for entry in matches[:1]:
-            try:
-                os.rename(entry, target)
-                log.info("export: renamed folder %s -> %s", entry.name, target.name)
-            except FileNotFoundError:
-                # Concurrent export already renamed it — same deterministic
-                # target, nothing left to do.
-                pass
+    target = _rename_to_target(root, rec, zone)
+    if target is None:
+        target = folder_path(root, rec, zone)
 
     written = False
     for name in ARTIFACTS:
@@ -236,6 +218,44 @@ def export_recording(
                 # inodes (the permanence invariant write_note_atomic relies on).
     return target if written else None
 
+
+def rename_folder(root: Path, rec: Rec, zone: ZoneInfo, sentinel: str = "") -> Path | None:
+    """Rename-only: move the recording's folder to its current-title name
+    WITHOUT rewriting any files inside (Obsidian edits are sacred here —
+    frontmatter title inside files goes stale until the next regenerate).
+
+    Returns the folder path, or None when nothing was ever exported."""
+    check_sentinel(root, sentinel)
+    if not root.is_dir():
+        return None
+    return _rename_to_target(root, rec, zone)
+
+
+def _rename_to_target(root: Path, rec: Rec, zone: ZoneInfo) -> Path | None:
+    """Rename an existing old-title folder to the current deterministic name.
+
+    Returns the target path when the folder exists (renamed or already in
+    place), None when no folder for this recording exists at all. With
+    multiple matches (double-rename race leftover) prefers the folder holding
+    non-app (user-authored) files — edits are the only content that cannot be
+    regenerated from meta; the app-only leftovers are swept after export."""
+    target = folder_path(root, rec, zone)
+    if target.is_dir():
+        return target
+    pattern = _folder_pattern(rec)
+    matches = [
+        entry for entry in list(root.iterdir()) if entry.is_dir() and pattern.match(entry.name)
+    ]
+    matches.sort(key=lambda e: not any(not _is_app_file(c.name) for c in e.iterdir()))
+    for entry in matches[:1]:
+        try:
+            os.rename(entry, target)
+            log.info("export: renamed folder %s -> %s", entry.name, target.name)
+        except FileNotFoundError:
+            # Concurrent export already renamed it — same deterministic
+            # target, nothing left to do.
+            pass
+    return target if target.is_dir() else None
 
 def sweep_stale_notes(root: Path, rec: Rec, keep: Path) -> None:
     """Delete stale app-scheme vault entries for this recording, keeping `keep`:
@@ -294,15 +314,20 @@ def _is_app_file(name: str) -> bool:
         for a in ARTIFACTS
     )
 
-def run(rec_id: str) -> Path | None:
+def run(rec_id: str, rename_only: bool = False) -> Path | None:
     """Load config + recording, no-op unless done, export.
+
+    rename_only=True is the PATCH-rename path: the folder is moved to the
+    new-title name and NOTHING inside it is rewritten (Obsidian edits are
+    sacred); full exports (pipeline finally / regenerate / backfill) always
+    run with rename_only=False and refresh the artifact files.
 
     Shared by the export_once CLI (subprocess) and unit tests. The CLI runs
     in a SUBPROCESS spawned (and SIGKILL-abandoned on timeout) by the
     export_transcript activity / backfill — a dead NAS mount parks the child
     in D-state, which no in-process exception handling can survive.
 
-    Returns the exported folder path (or None on no-op).
+    Returns the folder path (or None on no-op).
     """
     from .config import load_config
     from .db import init_engine
@@ -313,6 +338,8 @@ def run(rec_id: str) -> Path | None:
     rec = load_recording(rec_id)
     if rec.state != "done":
         return None
+    if rename_only:
+        return rename_folder(cfg.transcripts.path, rec, zone, cfg.transcripts.sentinel)
     meta = cfg.recordings_root / rec_id / "meta"
     path = export_recording(cfg.transcripts.path, meta, rec, zone, cfg.transcripts.sentinel)
     if path is not None:

@@ -523,9 +523,13 @@ _export_children = _ExportRegistry()
 
 
 @activity.defn
-async def export_transcript(rec_id: str) -> dict:
+async def export_transcript(args: dict) -> dict:
     """Export the recording's note folder (per-artifact files); best-effort,
     fully process-isolated.
+
+    args: {"recording_id": str, "rename_only": bool}. rename_only=True (the
+    PATCH-rename path) moves the folder to the new-title name without
+    rewriting any files inside — Obsidian edits are sacred there.
 
     The actual I/O runs in `python -m worker.export_once` (start_new_session
     => own process group). On timeout the group gets SIGKILL and is ABANDONED
@@ -535,8 +539,11 @@ async def export_transcript(rec_id: str) -> dict:
     """
     if not _export_children.try_acquire():
         return {"transcript_note": f"error: too many stuck export subprocesses (>{_EXPORT_MAX_CHILDREN}); skipping"}
+    cmd = [sys.executable, "-m", "worker.export_once", args["recording_id"]]
+    if args.get("rename_only"):
+        cmd.append("--rename-only")
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "worker.export_once", rec_id,
+        *cmd,
         start_new_session=True,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

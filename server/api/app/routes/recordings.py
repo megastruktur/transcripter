@@ -287,11 +287,13 @@ async def rename_recording(
     rec = _get(recording_id, session)
     rec.title = body.title.strip()
     session.commit()
-    # The exported Obsidian note embeds the title in its filename, so
-    # re-export it. Fire-and-forget: the rename stands even if Temporal is
-    # down (worker.backfill is the recovery path).
+    # The vault folder embeds the title in its name, so rename it.
+    # rename_only=True: files inside are NOT rewritten — Obsidian edits are
+    # sacred; the frontmatter title goes stale until the next regenerate.
+    # Fire-and-forget: the rename stands even if Temporal is down
+    # (worker.backfill is the recovery path).
     try:
-        await temporal_client.start_export(rec.id)
+        await temporal_client.start_export(rec.id, rename_only=True)
     except Exception:
         logging.getLogger("transcripter.api").exception("start_export failed for %s", rec.id)
     return serialize_recording(rec)

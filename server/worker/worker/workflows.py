@@ -100,7 +100,7 @@ class ProcessRecording:
             try:
                 result["export"] = await workflow.execute_activity(
                     "export_transcript",
-                    rec_id,
+                    {"recording_id": rec_id},
                     start_to_close_timeout=timedelta(seconds=30),
                     retry_policy=RetryPolicy(maximum_attempts=3),
                     cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
@@ -183,10 +183,9 @@ class ExportRecording:
 
     @workflow.run
     async def run(self, args: dict) -> dict:
-        rec_id: str = args["recording_id"]
         return await workflow.execute_activity(
             "export_transcript",
-            rec_id,
+            {"recording_id": args["recording_id"], "rename_only": args.get("rename_only", False)},
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy=RetryPolicy(maximum_attempts=3),
             # Same semantics as the ProcessRecording finally-block export:

@@ -339,7 +339,8 @@ transcripts:
   Consider a systemd drop-in `RequiresMountsFor=/mnt/your-nas` on the docker
   unit so binds never capture an empty mountpoint.
 - Renaming a recording (`PATCH /recordings/{id}`) renames its vault folder
-  in place (`os.rename`; folder contents and your edits survive) —
+  in place (`os.rename`) and does NOT rewrite the files inside — your edits
+  survive (the frontmatter `title` goes stale until the next regenerate) —
   fire-and-forget: the rename stands even if Temporal is down
   (`worker.backfill` is the recovery path).
 - Deleting a recording does NOT delete its folder (the `recording_id` in

@@ -33,8 +33,10 @@
   `{YYYY-MM-DD_HH-MM} {title} {id8}/` in the same configurable host directory
   (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`); inside, the
   meta artifacts 1:1 (`transcript.md`, `diarized-transcript.md`, `summary.md`),
-  each with its own frontmatter; recording rename renames the folder in place
-  (Obsidian edits survive); regenerate rewrites artifact files; legacy flat
+  each with its own frontmatter; recording rename only renames the folder in
+  place (files are NOT rewritten — Obsidian edits survive, frontmatter title
+  goes stale until the next regenerate); regenerate rewrites artifact files;
+  legacy flat
   `* {id8}.md` notes are migrated (deleted) on export; best-effort,
   subprocess-isolated, `worker.backfill` re-exports and migrates all.
 - Pre-flight opens and probes every selected source before recording. A selected

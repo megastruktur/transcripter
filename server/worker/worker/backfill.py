@@ -26,7 +26,9 @@ _CHILD_TIMEOUT_SEC = 20
 async def _run_one(rec_id: str) -> dict:
     # Reuse the activity function directly (it is a plain async callable
     # behind the @activity.defn decorator for non-intercepted use).
-    return await export_transcript(rec_id)  # type: ignore[call-arg]
+    # Full export (rename_only omitted): backfill rewrites artifacts — it is
+    # the designated recovery/migration path.
+    return await export_transcript({"recording_id": rec_id})  # type: ignore[call-arg]
 
 
 def _done_recording_ids() -> list[str]:

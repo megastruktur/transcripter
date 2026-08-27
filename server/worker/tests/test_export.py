@@ -387,6 +387,45 @@ class TestLegacyMigration:
 
         assert user.read_text(encoding="utf-8") == "mine"
 
+class TestRenameOnly:
+    """run(rename_only=True): folder renamed, files NOT rewritten."""
+
+    def stub_run(self, tmp_path, monkeypatch, r: Rec) -> Path:
+        root = tmp_path / "notes"
+        root.mkdir()
+        meta = tmp_path / "recordings" / r.id / "meta"
+        meta.mkdir(parents=True)
+        (meta / "transcript.md").write_text("fresh body", encoding="utf-8")
+        cfg = SimpleNamespace(
+            database=SimpleNamespace(url="sqlite://"),
+            recordings_root=tmp_path / "recordings",
+            transcripts=SimpleNamespace(path=root, sentinel=""),
+        )
+        monkeypatch.setattr("worker.config.load_config", lambda: cfg)
+        monkeypatch.setattr("worker.db.init_engine", lambda url: None)
+        monkeypatch.setattr("worker.export.load_recording", lambda rec_id: r)
+        monkeypatch.delenv("TRANSCRIPTER_TZ", raising=False)
+        return root
+
+    def test_folder_renamed_files_untouched(self, tmp_path, monkeypatch):
+        root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        old = root / folder_name("Old title", REC_ID, CREATED, UTC)
+        old.mkdir()
+        edited = old / "transcript.md"
+        edited.write_text("USER EDIT", encoding="utf-8")
+
+        path = run(REC_ID, rename_only=True)
+
+        assert path == folder_path(root, rec("New title"), UTC)
+        # File content NOT refreshed from meta ("fresh body") — edit survives.
+        assert (path / "transcript.md").read_text(encoding="utf-8") == "USER EDIT"
+        assert not old.exists()
+
+    def test_no_folder_noop(self, tmp_path, monkeypatch):
+        self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        assert run(REC_ID, rename_only=True) is None
+
+
 class TestOrphanFolderSweep:
     """Old-title folders orphaned by a double-rename race are swept — but
     only when they contain nothing user-authored."""

@@ -47,13 +47,15 @@ async def regenerate_stage(rec_id: str, stage: str, duration_sec: float | None =
     )
     return handle.id
 
-async def start_export(rec_id: str) -> str:
-    """Re-export the Obsidian note (e.g. after a rename). Unique workflow id
-    so renames never collide with an in-flight pipeline run."""
+async def start_export(rec_id: str, rename_only: bool = False) -> str:
+    """Re-export the recording's vault folder. rename_only=True (the PATCH
+    rename path) only renames the folder — files inside are NOT rewritten,
+    so Obsidian edits survive. Unique workflow id so renames never collide
+    with an in-flight pipeline run."""
     client = await get_client()
     handle = await client.start_workflow(
         EXPORT_WORKFLOW_NAME,
-        {"recording_id": rec_id},
+        {"recording_id": rec_id, "rename_only": rename_only},
         id=f"{EXPORT_WORKFLOW_ID_PREFIX}{rec_id}-{int(time.time())}",
         task_queue=TASK_QUEUE,
     )

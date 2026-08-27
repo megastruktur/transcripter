@@ -15,8 +15,14 @@ Related: `mem:transcripter_stack`.
   `summary.md` (only those that exist), each with its own yaml.safe_dump
   frontmatter (recording_id, title, created ISO+offset, date,
   tags [transcripter/call], duration_sec omitted when NULL).
-- Rename recording (PATCH) → `os.rename` of the folder in place: user edits
-  and extra files survive. Rename-scan finds the old folder by regex
+- Rename recording (PATCH) → RENAME-ONLY: `os.rename` of the folder in
+  place, files inside NOT rewritten (user edits sacred; frontmatter title
+  goes stale until next regenerate). Plumbing: PATCH →
+  `start_export(rec_id, rename_only=True)` → ExportRecording workflow input
+  `{recording_id, rename_only}` → `export_transcript(args: dict)` activity →
+  `export_once <id> --rename-only` → `run(rec_id, rename_only=True)` →
+  `rename_folder()`. Full exports (pipeline finally / regenerate / backfill)
+  always pass rename_only=False. Rename-scan finds the old folder by regex
   (`{ts} * {id8}`); with multiple matches (double-rename race) it PREFERS the
   folder with non-app files (edits are unregenerable); FileNotFoundError from
   a concurrent rename is a no-op, other OSError propagates.
