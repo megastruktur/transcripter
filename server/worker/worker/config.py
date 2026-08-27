@@ -54,6 +54,12 @@ class TranscriptsConfig(BaseModel):
     sentinel: str = ""
 
 
+class ProfilesConfig(BaseModel):
+    """Profile loader root (wave A — yaml knowledge-graph profiles)."""
+
+    path: Path = Path("/etc/transcripter/profiles")
+
+
 class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
@@ -62,6 +68,7 @@ class WorkerConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
 
     @property
     def recordings_root(self) -> Path:
@@ -81,4 +88,7 @@ def load_config() -> WorkerConfig:
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):
         cfg.diarization.endpoint = env_diar
+    if env_profiles := os.environ.get("PROFILES_DIR"):
+        cfg.profiles.path = Path(env_profiles)
     return cfg
+

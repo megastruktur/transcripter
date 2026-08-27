@@ -1,0 +1,314 @@
+"""Profile loader + matcher: validation, warn+skip, re-scan per call."""
+
+import logging
+from pathlib import Path
+
+from worker.profiles import (
+    HOST_VERSION,
+    Profile,
+    SummarizeSpec,
+    artifacts_for_export,
+    load_profiles,
+    match_profile,
+)
+
+
+# Minimal valid profile (used as a template; tests mutate fields).
+def _valid_yaml() -> str:
+    return """\
+id: test-profile
+version: 1.0.0
+min_host_version: 0.9.0
+display_name: Test
+description: Test profile
+tags: [alpha, beta]
+summarize:
+  prompt: |
+    Hello {title}. {transcript}
+  output_artifact: session-log.md
+"""
+
+
+def _write_profile(tmp_path: Path, name: str, body: str) -> Path:
+    p = tmp_path / name
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+# --- Profile model ----------------------------------------------------------
+
+
+class TestProfileModel:
+    def test_minimal_valid(self):
+        prof = Profile.model_validate(
+            {
+                "id": "foo",
+                "version": "1.0.0",
+                "min_host_version": "0.9.0",
+                "display_name": "Foo",
+                "description": "x",
+                "tags": ["a"],
+                "summarize": {
+                    "prompt": "before {transcript} after",
+                    "output_artifact": "x.md",
+                },
+            }
+        )
+        assert prof.id == "foo"
+        assert prof.tags == ["a"]
+
+    def test_min_host_version_too_new_warns(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "future.yaml",
+            """\
+id: future
+version: 1.0.0
+min_host_version: 99.0.0
+display_name: F
+description: d
+tags: [a]
+summarize:
+  prompt: 'p {transcript}'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_prompt_missing_transcript_skipped(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "no-transcript.yaml",
+            """\
+id: notp
+version: 1.0.0
+display_name: T
+description: d
+tags: [a]
+summarize:
+  prompt: 'no transcript placeholder here'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_unsafe_artifact_skipped(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "unsafe-art.yaml",
+            """\
+id: unsafe
+version: 1.0.0
+display_name: T
+description: d
+tags: [a]
+summarize:
+  prompt: 'p {transcript}'
+  output_artifact: '../evil.md'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_empty_tags_skipped(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "empty-tags.yaml",
+            """\
+id: emptytags
+version: 1.0.0
+display_name: T
+description: d
+tags: []
+summarize:
+  prompt: 'p {transcript}'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_duplicate_tags_skipped(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "dup-tags.yaml",
+            """\
+id: dup
+version: 1.0.0
+display_name: D
+description: d
+tags: [a, A]
+summarize:
+  prompt: 'p {transcript}'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_unknown_field_logs_warning(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "unknown.yaml",
+            """\
+id: un
+version: 1.0.0
+display_name: U
+description: d
+tags: [a]
+unknown_field: hi
+summarize:
+  prompt: 'p {transcript}'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        # Loaded (unknown field is forward-compat, not fatal).
+        assert len(profiles) == 1
+        assert any("unknown_field" in r.message for r in caplog.records)
+
+    def test_broken_yaml_skipped(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "broken.yaml",
+            "id: x\n: : : bad: yaml: :\n  - [\n",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_non_mapping_root_skipped(self, tmp_path, caplog):
+        _write_profile(tmp_path, "list.yaml", "- one\n- two\n")
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+
+# --- load_profiles ----------------------------------------------------------
+
+
+class TestLoadProfiles:
+    def test_missing_dir_returns_empty(self, tmp_path):
+        assert load_profiles(tmp_path / "does-not-exist") == []
+
+    def test_empty_dir_returns_empty(self, tmp_path):
+        assert load_profiles(tmp_path) == []
+
+    def test_only_non_yaml_files_ignored(self, tmp_path):
+        (tmp_path / "readme.txt").write_text("not a profile")
+        (tmp_path / "config.json").write_text("{}")
+        assert load_profiles(tmp_path) == []
+
+    def test_loads_yml_extension(self, tmp_path):
+        _write_profile(tmp_path, "a.yml", _valid_yaml().replace("test-profile", "a"))
+        profiles = load_profiles(tmp_path)
+        assert len(profiles) == 1
+        assert profiles[0].id == "a"
+
+    def test_one_bad_file_does_not_block_others(self, tmp_path, caplog):
+        _write_profile(tmp_path, "broken.yaml", ": : :")
+        _write_profile(tmp_path, "good.yaml", _valid_yaml().replace("test-profile", "good"))
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert [p.id for p in profiles] == ["good"]
+
+    def test_sorted_by_id(self, tmp_path):
+        for i in ("zebra", "alpha", "mango"):
+            _write_profile(tmp_path, f"{i}.yaml", _valid_yaml().replace("test-profile", i))
+        profiles = load_profiles(tmp_path)
+        assert [p.id for p in profiles] == ["alpha", "mango", "zebra"]
+
+    def test_rescan_picks_up_new_file(self, tmp_path):
+        assert load_profiles(tmp_path) == []
+        _write_profile(tmp_path, "late.yaml", _valid_yaml().replace("test-profile", "late"))
+        # No cache: a fresh call must see the new file.
+        profiles = load_profiles(tmp_path)
+        assert [p.id for p in profiles] == ["late"]
+
+
+# --- match_profile ----------------------------------------------------------
+
+
+class TestMatchProfile:
+    def test_no_profiles_dir_returns_none(self, tmp_path):
+        assert match_profile(["alpha"], tmp_path / "absent") is None
+
+    def test_empty_recording_tags_returns_none(self, tmp_path):
+        _write_profile(tmp_path, "p.yaml", _valid_yaml())
+        assert match_profile([], tmp_path) is None
+
+    def test_no_overlap_returns_none(self, tmp_path):
+        _write_profile(tmp_path, "p.yaml", _valid_yaml())
+        assert match_profile(["nothing"], tmp_path) is None
+
+    def test_overlap_returns_profile(self, tmp_path):
+        _write_profile(tmp_path, "p.yaml", _valid_yaml())
+        prof = match_profile(["alpha"], tmp_path)
+        assert prof is not None
+        assert prof.id == "test-profile"
+
+    def test_multi_match_picks_sorted_first_with_warning(self, tmp_path, caplog):
+        _write_profile(tmp_path, "zeta.yaml", _valid_yaml().replace("test-profile", "zeta"))
+        _write_profile(
+            tmp_path,
+            "alpha.yaml",
+            _valid_yaml().replace("test-profile", "alpha"),
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            prof = match_profile(["alpha"], tmp_path)
+        assert prof is not None
+        assert prof.id == "alpha"
+        assert any(
+            "sorted id" in r.message or "match" in r.message.lower()
+            for r in caplog.records
+        )
+
+    def test_tags_compared_case_insensitive(self, tmp_path):
+        _write_profile(
+            tmp_path,
+            "p.yaml",
+            _valid_yaml().replace("test-profile", "p").replace("[alpha, beta]", "[ALPHA]"),
+        )
+        # Profile tags are normalized lowercase by the validator; rec tags
+        # with mixed case should still match after the loader's defens­ive
+        # lowercasing.
+        prof = match_profile(["alpha"], tmp_path)
+        assert prof is not None
+        assert prof.id == "p"
+
+    def test_summary_spec_prompt_includes_transcript(self):
+        spec = SummarizeSpec(prompt="Hello {title}, transcript: {transcript}")
+        assert "{transcript}" in spec.prompt
+
+    def test_host_version_constant(self):
+        # Constant is the contract for wave A — bump on release.
+        assert HOST_VERSION == "0.9.0"
+
+
+# --- artifacts_for_export ---------------------------------------------------
+
+
+class TestArtifactsForExport:
+    def test_static_three_when_dir_missing(self, tmp_path):
+        wl = artifacts_for_export(tmp_path / "absent")
+        assert wl == frozenset({"transcript.md", "diarized-transcript.md", "summary.md"})
+
+    def test_includes_profile_output_artifact(self, tmp_path):
+        _write_profile(tmp_path, "p.yaml", _valid_yaml())
+        wl = artifacts_for_export(tmp_path)
+        assert "session-log.md" in wl
+        # Static base still present.
+        assert {"transcript.md", "diarized-transcript.md", "summary.md"} <= wl
+
+    def test_union_across_multiple_profiles(self, tmp_path):
+        _write_profile(tmp_path, "a.yaml", _valid_yaml().replace("test-profile", "a"))
+        _write_profile(
+            tmp_path,
+            "b.yaml",
+            _valid_yaml().replace("test-profile", "b").replace("session-log.md", "notes.md"),
+        )
+        wl = artifacts_for_export(tmp_path)
+        assert {"session-log.md", "notes.md"} <= wl

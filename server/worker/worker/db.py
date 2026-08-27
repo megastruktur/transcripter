@@ -6,7 +6,8 @@ Worker owns stage transitions while executing activities.
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Enum, ForeignKey, String, Text, create_engine
+from sqlalchemy import ARRAY, JSON, Enum, ForeignKey, String, Text, create_engine
+from sqlalchemy.dialects.postgresql import TEXT
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -46,6 +47,14 @@ STAGE_KINDS = ("chunk", "transcribe", "diarize", "merge_speakers", "summarize")
 class Recording(Base):
     __tablename__ = "recordings"
 
+    # Wave A knowledge-graph tags. Postgres stores TEXT[]; SQLite (worker
+    # unit tests + local dev) gets a JSON variant so the same python-side
+    # ``list[str]`` default works in both dialects. Matches the API schema.
+    tags: Mapped[list[str]] = mapped_column(
+        ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[RecordingState] = mapped_column(

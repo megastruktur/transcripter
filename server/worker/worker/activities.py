@@ -436,13 +436,36 @@ async def summarize(rec_id: str) -> dict:
     if not (c.summarize.enabled and c.summarize.model):
         set_stage(rec_id, "summarize", StageStatus.skipped)
         return {"skipped": True}
+    profile = None
+    title = ""
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        title = rec.title or ""
+        # Re-scan profiles per D11: editing a yaml in PROFILES_DIR is meant
+        # to take effect on the next stage run, no worker restart needed.
+        from .profiles import match_profile
+
+        profile = match_profile(rec.tags or [], c.profiles.path)
+    prompt_template = profile.summarize.prompt if profile is not None else None
     try:
         from .summarize import summarize_transcript
 
-        text = await _heartbeat_while(asyncio.to_thread(summarize_transcript, meta_dir(rec_id), c))
+        text = await _heartbeat_while(
+            asyncio.to_thread(
+                summarize_transcript,
+                meta_dir(rec_id),
+                c,
+                prompt_template,
+                title,
+            )
+        )
+        # Meta path is canonical (see §1 in wave-A impl plan): export.py
+        # renames the artifact in the note folder to profile.output_artifact
+        # when a profile matched; meta/summary.md stays the canonical name.
         (meta_dir(rec_id) / "summary.md").write_text(text, encoding="utf-8")
         set_stage(rec_id, "summarize", StageStatus.done)
-        return {"chars": len(text)}
+        return {"chars": len(text), "profile_id": profile.id if profile else None}
     except Exception as e:
         log.exception("summarize failed for %s", rec_id)
         set_stage(rec_id, "summarize", StageStatus.failed, error=str(e))
