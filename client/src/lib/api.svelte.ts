@@ -16,6 +16,7 @@ export type Stage = {
 export type Recording = {
 	id: string;
 	title: string;
+	tags: string[];
 	state: 'uploading' | 'processing' | 'done' | 'failed';
 	committed_bytes: number;
 	total_bytes: number | null;
@@ -36,6 +37,11 @@ export type ListParams = {
 	offset: number;
 	q?: string;
 	state?: Recording['state'] | 'all';
+};
+
+export type UpdateRecordingPatch = {
+	title?: string;
+	tags?: string[];
 };
 
 const STORAGE_KEY = 'transcripter.apiConfig';
@@ -75,7 +81,6 @@ export async function testConnection(cfg: ApiConfig): Promise<string> {
 	const base = cfg.baseUrl.replace(/\/$/, '');
 	const health = await fetch(`${base}/health`);
 	if (!health.ok) throw new Error(`health ${health.status}`);
-	// Token check: /health is public, so probe an authed endpoint too.
 	const authed = await fetch(`${base}/recordings`, {
 		headers: { authorization: `Bearer ${cfg.token}` }
 	});
@@ -100,14 +105,34 @@ export async function getRecording(cfg: ApiConfig, id: string): Promise<Recordin
 	return resp.json();
 }
 
-export async function renameRecording(cfg: ApiConfig, id: string, title: string): Promise<Recording> {
-	const resp = await req(cfg, `/recordings/${id}`, {
-		method: 'PATCH',
-		body: JSON.stringify({ title })
+export async function createRecording(
+	cfg: ApiConfig,
+	title: string,
+	tags: string[] = []
+): Promise<{ id: string }> {
+	const resp = await req(cfg, '/recordings', {
+		method: 'POST',
+		body: JSON.stringify({ title, tags })
 	});
 	if (!resp.ok) {
 		const detail = await resp.json().catch(() => ({ detail: resp.status }));
-		throw new Error(detail.detail ?? `rename ${resp.status}`);
+		throw new Error(detail.detail ?? `create ${resp.status}`);
+	}
+	return resp.json();
+}
+
+export async function updateRecording(
+	cfg: ApiConfig,
+	id: string,
+	patch: UpdateRecordingPatch
+): Promise<Recording> {
+	const resp = await req(cfg, `/recordings/${id}`, {
+		method: 'PATCH',
+		body: JSON.stringify(patch)
+	});
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw new Error(detail.detail ?? `update ${resp.status}`);
 	}
 	return resp.json();
 }
@@ -142,6 +167,7 @@ export async function fetchArtifact(
 	if (!resp.ok) throw Object.assign(new Error(`artifact ${resp.status}`), { status: resp.status });
 	return resp.text();
 }
+
 export async function deleteRecording(cfg: ApiConfig, id: string): Promise<void> {
 	const resp = await req(cfg, `/recordings/${id}`, { method: 'DELETE' });
 	if (!resp.ok) {

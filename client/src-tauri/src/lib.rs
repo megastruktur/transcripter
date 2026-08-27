@@ -130,6 +130,7 @@ fn cmd_pre_flight(
 fn cmd_start_recording(
     app: AppHandle,
     title: Option<String>,
+    tags: Option<Vec<String>>,
     microphone: Option<String>,
     system_output: Option<String>,
     capture_system: Option<bool>,
@@ -138,12 +139,12 @@ fn cmd_start_recording(
     recording::start(
         &spool,
         title.as_deref().unwrap_or(""),
+        tags.as_deref().unwrap_or(&[]),
         microphone.as_deref(),
         system_output.as_deref(),
         capture_system.unwrap_or(true),
     )
 }
-
 #[tauri::command]
 fn cmd_stop_recording(
     app: AppHandle,

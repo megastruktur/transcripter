@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub struct SpoolSession {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub started_at: String,
     pub duration_sec: f64,
     pub sample_rate: u32,
@@ -131,8 +133,8 @@ mod tests {
         SpoolSession {
             id: id.into(),
             title: "t".into(),
+            tags: vec![],
             started_at: "0".into(),
-            duration_sec: 1.5,
             sample_rate: 48000,
             channels: 2,
             mic_active: true,

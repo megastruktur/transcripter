@@ -26,6 +26,7 @@ export type AudioDevices = {
 export type SpoolSession = {
 	id: string;
 	title: string;
+	tags: string[];
 	started_at: string;
 	duration_sec: number;
 	sample_rate: number;
@@ -50,8 +51,8 @@ export const commands = {
 	preFlight(probe: boolean, microphone: string | null, systemOutput: string | null, checkSystem: boolean): Promise<PreFlightReport> {
 		return invoke('cmd_pre_flight', { probe, microphone, systemOutput, checkSystem });
 	},
-	startRecording(title: string | null, microphone: string | null, systemOutput: string | null, captureSystem: boolean): Promise<string> {
-		return invoke('cmd_start_recording', { title, microphone, systemOutput, captureSystem });
+	startRecording(title: string | null, tags: string[] | null, microphone: string | null, systemOutput: string | null, captureSystem: boolean): Promise<string> {
+		return invoke('cmd_start_recording', { title, tags, microphone, systemOutput, captureSystem });
 	},
 	stopRecording(serverUrl: string | null, serverToken: string | null): Promise<SpoolSession> {
 		return invoke('cmd_stop_recording', { serverUrl, serverToken });

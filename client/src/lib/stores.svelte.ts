@@ -400,6 +400,7 @@ export async function checkAudioDevices(probe = true): Promise<void> {
 
 export async function startRecording(
 	title: string,
+	tags: string[],
 	microphone: string | null,
 	systemOutput: string | null,
 	captureSystem: boolean
@@ -420,7 +421,7 @@ export async function startRecording(
 		recorder.warnings.push(report.error ?? 'system audio unavailable');
 		return;
 	}
-	recorder.sessionId = await commands.startRecording(title || null, microphone, systemOutput, captureSystem);
+	recorder.sessionId = await commands.startRecording(title || null, tags, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
 	recorder.frames = 0;
 	recordingStatusTimer = globalThis.setInterval(async () => {

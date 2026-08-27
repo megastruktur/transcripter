@@ -16,7 +16,53 @@
 	// session's written-frame count, so elapsed time survives window collapse.
 	const CAPTURE_RATE = 48_000;
 	let title = $state('');
+	let tagDraft = $state('');
+	let tags = $state<string[]>([]);
 	let starting = $state(false);
+
+	/** Client-side normalization mirrors the server's `_normalize_tags`
+	 * (server/api/app/routes/recordings.py): trim, lowercase, drop blanks,
+	 * preserve first-seen order, dedupe. Doing it here too means the chips
+	 * render in their final canonical form and the POST body never carries
+	 * whitespace variants the server would silently drop. */
+	function normalizeTag(raw: string): string | null {
+		const norm = raw.trim().toLowerCase();
+		return norm.length > 0 ? norm : null;
+	}
+
+	function addTag(raw: string): void {
+		const norm = normalizeTag(raw);
+		if (norm === null) return;
+		if (tags.includes(norm)) return;
+		tags = [...tags, norm];
+	}
+
+	function removeTagAt(index: number): void {
+		tags = tags.filter((_, i) => i !== index);
+	}
+
+	function commitTagDraft(): void {
+		const draft = tagDraft;
+		if (draft.trim().length === 0) return;
+		// Comma splits allow paste-friendly multi-tag entry ("a, b, c").
+		const parts = draft.split(',');
+		for (const part of parts) addTag(part);
+		tagDraft = '';
+	}
+
+	function onTagKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Enter' || event.key === ',') {
+			event.preventDefault();
+			commitTagDraft();
+			return;
+		}
+		// Backspace on an empty draft pops the last chip — the standard
+		// chips-input ergonomics so the user is not trapped behind a chip.
+		if (event.key === 'Backspace' && tagDraft === '' && tags.length > 0) {
+			event.preventDefault();
+			removeTagAt(tags.length - 1);
+		}
+	}
 
 	onMount(() => {
 		// Instant from the shared cache on remounts; enumerates and checks in
@@ -48,9 +94,13 @@
 		}
 		starting = true;
 		clearWarnings();
+		// Flush the draft before the recording starts so any in-progress
+		// chip the user did not press Enter for is not silently dropped.
+		commitTagDraft();
 		try {
 			await startRecording(
 				title,
+				tags,
 				audioDevices.selectedMicrophone,
 				audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF
@@ -91,6 +141,36 @@
 			<input type="text" placeholder="e.g. Product sync — August 22" bind:value={title} disabled={recorder.recording} />
 		</label>
 
+		<label class="tags-field" class:disabled={recorder.recording}>
+			<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
+			<div class="tags-input" role="group" aria-label="Recording tags">
+				{#each tags as tag, index (tag)}
+					<span class="tag-chip">
+						<span class="tag-chip-text">{tag}</span>
+						<button
+							type="button"
+							class="tag-chip-remove"
+							aria-label={`Remove tag ${tag}`}
+							disabled={recorder.recording}
+							onclick={() => removeTagAt(index)}
+						>
+							<Icon name="close" size={10} />
+						</button>
+					</span>
+				{/each}
+				<input
+					type="text"
+					class="tags-draft"
+					placeholder={tags.length === 0 ? 'e.g. meeting, planning' : ''}
+					bind:value={tagDraft}
+					onkeydown={onTagKeydown}
+					onblur={commitTagDraft}
+					disabled={recorder.recording}
+					aria-label="Add tag"
+				/>
+			</div>
+		</label>
+
 		{#if recorder.recording}
 			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => stopRecording()}>
 				<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
@@ -118,6 +198,64 @@
 	.timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
 	.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin: 5px 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 10px; color: #8d847a; }
 	.title-field { display: block; margin-bottom: 10px; }
+	.tags-field { display: block; margin-bottom: 10px; }
+	.tags-field.disabled { opacity: 0.55; }
+	.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
+	.tags-input {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 5px;
+		min-height: 42px;
+		padding: 6px 7px;
+		border: 1px solid rgba(231, 214, 190, 0.18);
+		border-radius: 3px;
+		background: rgba(7, 6, 5, 0.58);
+		transition: border-color 120ms ease, background 120ms ease;
+	}
+	.tags-input:focus-within { border-color: var(--brass); background: rgba(7, 6, 5, 0.82); }
+	.tag-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 4px 3px 8px;
+		border: 1px solid rgba(215, 167, 71, 0.32);
+		border-radius: 2px;
+		background: rgba(215, 167, 71, 0.08);
+		color: var(--brass);
+		font-size: 11px;
+		font-weight: 650;
+		line-height: 1;
+	}
+	.tag-chip-text { white-space: nowrap; }
+	.tag-chip-remove {
+		display: grid;
+		place-items: center;
+		width: 16px;
+		height: 16px;
+		padding: 0;
+		border: 0;
+		border-radius: 1px;
+		background: transparent;
+		color: var(--brass);
+		cursor: pointer;
+		line-height: 0;
+		opacity: 0.7;
+	}
+	.tag-chip-remove:hover:not(:disabled) { opacity: 1; background: rgba(213, 45, 36, 0.18); color: #ff8b7c; }
+	.tag-chip-remove:disabled { cursor: default; }
+	.tags-draft {
+		flex: 1 1 80px;
+		min-width: 80px;
+		min-height: 26px;
+		padding: 2px 4px;
+		border: 0;
+		background: transparent;
+		color: var(--bone);
+		font-size: 12px;
+	}
+	.tags-draft::placeholder { color: #665f58; }
+	.tags-draft:focus { outline: none; }
 	.record-control { width: 100%; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
 	.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
 	.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }
