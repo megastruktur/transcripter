@@ -1,5 +1,9 @@
 # 🎙️ Transcriptor Maximus
 
+<p align="center">
+  <img src="docs/images/readme-record.png" alt="Transcriptor Maximus — main window" width="880">
+</p>
+
 Self-hosted call recorder with server-side ML: record meetings/calls on your
 desktop, upload in the background, and get a **transcript with speaker labels
 and a summary** — every stage re-runnable on demand.
@@ -39,9 +43,9 @@ and a summary** — every stage re-runnable on demand.
 
 ## Screenshots
 
-| Record | Library | Recording detail |
-| ------ | ------- | ---------------- |
-| ![Record page](docs/images/readme-record.png) | ![Library](docs/images/readme-library.png) | ![Recording detail](docs/images/readme-recording-detail.png) |
+| Library | Recording detail |
+| ------- | ---------------- |
+| ![Library](docs/images/readme-library.png) | ![Recording detail](docs/images/readme-recording-detail.png) |
 
 ## Hosting 100% locally
 
