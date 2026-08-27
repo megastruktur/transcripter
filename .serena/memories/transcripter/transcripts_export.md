@@ -1,62 +1,74 @@
-# Transcript Note Export (2026-08-23)
+# Transcript Folder Export (2026-08-27, supersedes 2026-08-23 flat-note scheme)
 
-Worker-side export of finished recordings as consolidated Markdown notes into a
-host-configurable directory (Obsidian vault). Plan:
-`.ship-it/plans/transcripts-export-2026-08-23.md` (5-round kimi-k3 critique,
-ACCEPT-WITH-RESERVATIONS; critique trail in `transcripts-export-critique-kimi-k3.md`).
+Worker-side export of finished recordings as a folder of per-artifact Markdown
+notes into a host-configurable directory (Obsidian vault). Plans:
+`.ship-it/plans/vault-folder-export-2026-08-27.md` (1-cycle critic,
+ACCEPT-WITH-RESERVATIONS) and the superseded
+`.ship-it/plans/transcripts-export-2026-08-23.md`.
 Related: `mem:transcripter_stack`.
 
-## Architecture
+## Scheme
 
-- New Temporal activity `export_transcript` (activities.py), scheduled in
+- Folder per done recording: `{YYYY-MM-DD_HH-MM} {title|call} {id8}/` —
+  same sanitize + UTF-8 byte-cap-240 rules as the old flat name, minus `.md`.
+- Inside: meta artifacts 1:1 — `transcript.md`, `diarized-transcript.md`,
+  `summary.md` (only those that exist), each with its own yaml.safe_dump
+  frontmatter (recording_id, title, created ISO+offset, date,
+  tags [transcripter/call], duration_sec omitted when NULL).
+- Rename recording (PATCH) → `os.rename` of the folder in place: user edits
+  and extra files survive. Rename-scan finds the old folder by regex
+  (`{ts} * {id8}`); with multiple matches (double-rename race) it PREFERS the
+  folder with non-app files (edits are unregenerable); FileNotFoundError from
+  a concurrent rename is a no-op, other OSError propagates.
+- Regenerate → artifact files rewritten atomically in place
+  (`write_note_atomic`: uuid tmp + os.replace + hidden `.{name}.lock` flock,
+  lock NEVER unlinked — unlinking a locked inode lets two writers lock
+  different inodes).
+- Mirror-delete: known artifact names absent from meta are unlinked from the
+  folder (diarize disabled → diarized-transcript.md must not go stale);
+  unknown/user files never touched (whitelist `_is_app_file`).
+- `sweep_stale_notes`: deletes legacy flat `* {id8}.md` + `.lock` (migration),
+  and orphaned app-only old-title folders via shutil.rmtree — but leaves (and
+  warns on) any stale folder containing non-app files.
+- `export_recording` tolerates a missing export root (mkdir parents; first-
+  ever export with TRANSCRIPTS_DIR unset).
+
+## Architecture (unchanged from 2026-08-23)
+
+- Temporal activity `export_transcript` (activities.py), scheduled in
   `ProcessRecording.run` `finally` after `finalize_recording`, with
-  `cancellation_type=WAIT_CANCELLATION_COMPLETED`. IMPORTANT: temporalio 1.31
-  REMOVED `workflow.shield` and `CancellationScope` — this cancellation_type is
-  the documented replacement; do not re-introduce shield.
+  `cancellation_type=WAIT_CANCELLATION_COMPLETED`. temporalio 1.31 REMOVED
+  `workflow.shield` — do not re-introduce it.
 - Activity = async Popen wrapper around `python -m worker.export_once <rec_id>`
-  (start_new_session, 20s asyncio.wait_for, on timeout killpg SIGKILL + ABANDON
-  never wait). PID registry with WNOHANG reap sweep (ECHILD ⇒ discard), cap 4
-  live children. Errors return as `transcript_note` values, never exceptions.
-- `worker/export.py`: pure functions — `note_name` (deterministic
-  `{YYYY-MM-DD_HH-MM} {title|call} {id8}.md`; sanitize Windows-reserved +
-  `#[]^` + control chars + edge dots; UTF-8 byte cap 240; zone from
-  `TRANSCRIPTER_TZ` env, default UTC), `build_note` (yaml.safe_dump frontmatter:
-  recording_id, title, created ISO+offset, date, tags [transcripter/call],
-  duration_sec omitted when NULL; ## Summary if present; ## Transcript
-  diarized > plain), `write_note_atomic` (unique uuid tmp + os.replace + hidden
-  `.name.md.lock` flock, never unlinked). `run()` loads config, init_engine,
-  no-ops unless state==done.
-- `worker/backfill.py`: `cd /app/worker && .venv/bin/python -m worker.backfill`
-  re-exports all done recordings via the same activity wrapper; refuses when
-  `transcripts.sentinel` set but missing.
+  (start_new_session, 20s wait_for, timeout → killpg SIGKILL + ABANDON never
+  wait). PID registry with WNOHANG reap sweep, cap 4 live children. Errors
+  return as `transcript_note` values, never exceptions.
+- `worker/backfill.py` re-exports (= migrates) all done recordings via the
+  same wrapper; refuses when `transcripts.sentinel` set but missing.
 
-## Config
+## Config (unchanged)
 
 - `TranscriptsConfig` in worker config.py: `path` fixed `/transcripts`,
-  `sentinel: ""` optional (e.g. `.transcripter` — marker INSIDE the dir). No env override of the container
-  path by design (divergence footgun). Host dir: `TRANSCRIPTS_DIR` in server/.env
-  → compose bind `${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts`
-  (worker service only). Dir must exist before `up` (docker creates root-owned
-  dirs otherwise; this host: storage is root-owned, created transcripts dir via
-  `docker run -v ...: alpine mkdir+chown 1000:1000`).
+  `sentinel: ""` optional (marker INSIDE the export ROOT, not the recording
+  folder). Host dir: `TRANSCRIPTS_DIR` in server/.env → compose bind
+  `${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts` (worker only).
 
-## Policies (critic-forced)
+## Policies
 
-- Machine owns the note: regenerate OVERWRITES (never existence-probe/read-back
-  — TOCTOU + Obsidian-edit fragility). User annotations → linked notes.
-- DELETE recording leaves the note (recording_id in frontmatter = cleanup hook).
-- Future title-edit endpoint MUST hook re-export or drop title from filename.
-- Future UI-configurable path = mount-model change (stable parent + subpath),
-  not config plumbing.
-- NAS bind: keep HARD mount (subprocess 20s kill fences pipeline; atomic
-  rename can't truncate notes); systemd RequiresMountsFor= drop-in
-  recommended. Sentinel marker `.transcripter` lives INSIDE the export dir.
+- Regenerate OVERWRITES artifact files (never existence-probe/read-back);
+  rename PRESERVES the folder (user content survives).
+- DELETE recording leaves the folder (recording_id in frontmatter = cleanup
+  hook).
+- NAS bind: keep HARD mount (subprocess 20s kill fences the pipeline);
+  systemd RequiresMountsFor= drop-in recommended.
 
 ## Ops
 
-- E2E smoke step 9b asserts the note (exists, frontmatter recording_id,
-  exactly one).
-- After worker code edits: `docker compose build worker` REQUIRED (image layer
-  cache), then `up -d worker`.
-- Deploy checklist: no open ProcessRecording workflows + worker not
-  restart-looping (finally-command-sequence change replays in-flight).
+- E2E smoke step 9b asserts exactly one folder `* {RID:0:8}` at maxdepth 1,
+  non-empty `transcript.md` inside, frontmatter recording_id. NOTE: the smoke
+  script reads `./storage/transcripts` — with a prod `.env`
+  (`TRANSCRIPTS_DIR=/mnt/synology/...`) you must recreate the worker with
+  `TRANSCRIPTS_DIR=` (default bind) before running e2e, then `up -d worker`
+  again after. This asymmetry predates the folder scheme.
+- After worker code edits: `docker compose build worker` REQUIRED (image
+  layer cache), then `up -d worker`.

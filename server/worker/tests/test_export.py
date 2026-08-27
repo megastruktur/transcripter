@@ -308,7 +308,9 @@ class TestMirrorDelete:
         assert (folder / "transcript.md").exists()
         assert (folder / ".transcript.md.lock").exists()
         assert not (folder / "summary.md").exists()
-        assert not (folder / ".summary.md.lock").exists()
+        # The lockfile stays — write_note_atomic's permanence invariant:
+        # unlinking a locked inode would let two writers flock different inodes.
+        assert (folder / ".summary.md.lock").exists()
         # Unknown user files untouched.
         assert (folder / "scratch.md").read_text(encoding="utf-8") == "mine"
 
@@ -384,3 +386,66 @@ class TestLegacyMigration:
         run(REC_ID)
 
         assert user.read_text(encoding="utf-8") == "mine"
+
+class TestOrphanFolderSweep:
+    """Old-title folders orphaned by a double-rename race are swept — but
+    only when they contain nothing user-authored."""
+
+    def stub_run(self, tmp_path, monkeypatch, r: Rec) -> Path:
+        root = tmp_path / "notes"
+        root.mkdir()
+        meta = tmp_path / "recordings" / r.id / "meta"
+        meta.mkdir(parents=True)
+        (meta / "transcript.md").write_text("body", encoding="utf-8")
+        cfg = SimpleNamespace(
+            database=SimpleNamespace(url="sqlite://"),
+            recordings_root=tmp_path / "recordings",
+            transcripts=SimpleNamespace(path=root, sentinel=""),
+        )
+        monkeypatch.setattr("worker.config.load_config", lambda: cfg)
+        monkeypatch.setattr("worker.db.init_engine", lambda url: None)
+        monkeypatch.setattr("worker.export.load_recording", lambda rec_id: r)
+        monkeypatch.delenv("TRANSCRIPTER_TZ", raising=False)
+        return root
+
+    def test_app_only_orphan_folder_removed(self, tmp_path, monkeypatch):
+        root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        # Two stale folders (double-rename race): the rename-scan renames the
+        # first match; the sweep must remove the remaining app-only one.
+        first = root / folder_name("First title", REC_ID, CREATED, UTC)
+        first.mkdir()
+        (first / "transcript.md").write_text("stale", encoding="utf-8")
+        orphan = root / folder_name("Race loser", REC_ID, CREATED, UTC)
+        orphan.mkdir()
+        (orphan / "transcript.md").write_text("stale", encoding="utf-8")
+        (orphan / ".transcript.md.lock").write_text("", encoding="utf-8")
+
+        path = run(REC_ID)
+
+        assert path is not None and path.is_dir()
+        # Exactly one folder for this recording survives — the renamed one.
+        remaining = [e for e in root.iterdir() if e.is_dir()]
+        assert remaining == [path]
+
+    def test_orphan_folder_with_user_file_survives(self, tmp_path, monkeypatch, caplog):
+        root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
+        # Double-rename race leftover: title2 lost the rename-scan race to
+        # title3 and was created fresh by the second exporter.
+        loser = root / folder_name("Race loser", REC_ID, CREATED, UTC)
+        loser.mkdir()
+        (loser / "transcript.md").write_text("stale", encoding="utf-8")
+        # A second, older folder WITH user content: the rename-scan must pick
+        # THIS one (rename-first preserves user edits), leaving the app-only
+        # loser for the sweep.
+        edited = root / folder_name("Edited title", REC_ID, CREATED, UTC)
+        edited.mkdir()
+        (edited / "my-notes.md").write_text("mine", encoding="utf-8")
+
+        with caplog.at_level("WARNING", logger="transcripter.export"):
+            path = run(REC_ID)
+
+        assert path is not None and path.is_dir()
+        # The user-content folder was renamed in place — edits preserved.
+        assert (path / "my-notes.md").read_text(encoding="utf-8") == "mine"
+        # The app-only race loser was swept.
+        assert not loser.exists()

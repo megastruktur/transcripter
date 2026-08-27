@@ -524,7 +524,8 @@ _export_children = _ExportRegistry()
 
 @activity.defn
 async def export_transcript(rec_id: str) -> dict:
-    """Export the consolidated note; best-effort, fully process-isolated.
+    """Export the recording's note folder (per-artifact files); best-effort,
+    fully process-isolated.
 
     The actual I/O runs in `python -m worker.export_once` (start_new_session
     => own process group). On timeout the group gets SIGKILL and is ABANDONED

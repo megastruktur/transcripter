@@ -293,21 +293,27 @@ The worker reads config once — `docker compose restart worker` to apply.
 
 ### Transcript note export (Obsidian-friendly)
 
-Every finished recording is exported as ONE consolidated note — YAML
-frontmatter (`recording_id`, `title`, `created`, `date`, `tags`, optional
-`duration_sec`) + `## Summary` (when generated) + `## Transcript`
-(diarized preferred). The host directory is chosen in `.env`, not yaml:
+Every finished recording is exported as ONE folder
+`{YYYY-MM-DD_HH-MM} {title|call} {id8}/` containing the meta artifacts 1:1 —
+`transcript.md`, `diarized-transcript.md`, `summary.md` (only those that
+exist) — each with its own YAML frontmatter (`recording_id`, `title`,
+`created`, `date`, `tags`, optional `duration_sec`). The host directory is
+chosen in `.env`, not yaml:
 
 ```bash
 # .env next to docker-compose.yml — the dir MUST exist before `up`
 TRANSCRIPTS_DIR=/mnt/your-nas/vault/Transcripts
 ```
 
-Unset → `./storage/transcripts`. Notes are named
-`{YYYY-MM-DD_HH-MM} {title|call} {id8}.md` (UTC; `TRANSCRIPTER_TZ` env
-overrides) and are **overwritten on every regenerate** — the machine owns the
-note, personal annotations belong in linked notes. A hidden `.name.md.lock`
-sits next to each note (fencing); Obsidian hides dotfiles.
+Unset → `./storage/transcripts`. Folder names are UTC; `TRANSCRIPTER_TZ` env
+overrides. **Regenerate rewrites the artifact files in place** (atomic
+tmp+rename, one hidden `.{name}.lock` fence per file; Obsidian hides
+dotfiles), while **renaming a recording renames the folder in place** — your
+edits and extra files inside the folder survive both. Artifacts that
+disappear from meta (e.g. diarization disabled) are mirror-deleted from the
+folder; files the exporter doesn't own are never touched. Old flat
+`* {id8}.md` notes from the pre-folder scheme are migrated (deleted) on the
+next export of that recording.
 
 Optional boot-race guard in `config.yaml`:
 
@@ -332,12 +338,12 @@ transcripts:
   server — not worth it for a personal vault.
   Consider a systemd drop-in `RequiresMountsFor=/mnt/your-nas` on the docker
   unit so binds never capture an empty mountpoint.
-- Renaming a recording (`PATCH /recordings/{id}`) re-exports its note under
-  the new filename (the old note and its lockfile are swept) —
+- Renaming a recording (`PATCH /recordings/{id}`) renames its vault folder
+  in place (`os.rename`; folder contents and your edits survive) —
   fire-and-forget: the rename stands even if Temporal is down
   (`worker.backfill` is the recovery path).
-- Deleting a recording does NOT delete its note (the `recording_id` in
-  frontmatter is the hook for a future cleanup).
+- Deleting a recording does NOT delete its folder (the `recording_id` in
+  each file's frontmatter is the hook for a future cleanup).
 - Workflow deploy note: the export activity was added to the workflow
   `finally` — deploy when no `ProcessRecording` executions are open and the
   worker isn't restart-looping (in-flight workflows replay against the new

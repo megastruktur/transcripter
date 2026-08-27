@@ -14,6 +14,7 @@ import fcntl
 import logging
 import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -199,16 +200,24 @@ def export_recording(
     target = folder_path(root, rec, zone)
     if not target.is_dir():
         pattern = _folder_pattern(rec)
-        for entry in list(root.iterdir()):
-            if entry.is_dir() and pattern.match(entry.name):
-                try:
-                    os.rename(entry, target)
-                    log.info("export: renamed folder %s -> %s", entry.name, target.name)
-                except FileNotFoundError:
-                    # Concurrent export already renamed it — same deterministic
-                    # target, nothing left to do.
-                    pass
-                break
+        matches = [
+            entry
+            for entry in list(root.iterdir())
+            if entry.is_dir() and pattern.match(entry.name)
+        ]
+        # Multiple matches = a double-rename race leftover. Prefer the folder
+        # holding non-app (user-authored) files: edits are the only content
+        # that cannot be regenerated from meta; the app-only leftovers are
+        # swept after the export.
+        matches.sort(key=lambda e: not any(not _is_app_file(c.name) for c in e.iterdir()))
+        for entry in matches[:1]:
+            try:
+                os.rename(entry, target)
+                log.info("export: renamed folder %s -> %s", entry.name, target.name)
+            except FileNotFoundError:
+                # Concurrent export already renamed it — same deterministic
+                # target, nothing left to do.
+                pass
 
     written = False
     for name in ARTIFACTS:
@@ -222,33 +231,68 @@ def export_recording(
             stale = target / name
             if stale.exists():
                 stale.unlink()
-                stale.with_name(f".{name}.lock").unlink(missing_ok=True)
+                # The lockfile stays: unlinking it while a concurrent writer
+                # holds flock on that inode lets two writers lock different
+                # inodes (the permanence invariant write_note_atomic relies on).
     return target if written else None
 
 
 def sweep_stale_notes(root: Path, rec: Rec, keep: Path) -> None:
-    """Delete legacy flat notes for this recording (pre-folder scheme) and
-    their permanent lockfile siblings.
+    """Delete stale app-scheme vault entries for this recording, keeping `keep`:
 
-    Scoped to the app's own filename scheme — a `YYYY-MM-DD_HH-MM ` prefix
-    AND the ` {id8}.md` suffix — so user-authored notes are never touched.
-    Best-effort: an entry that can't be unlinked (NFS hiccup, permissions)
+    - legacy flat notes (pre-folder scheme) `* {id8}.md` + lockfiles — the
+      migration path;
+    - old-title folders orphaned by a double-rename race (export A renamed
+      title1→title2 while export B created title3) — removed recursively,
+      but ONLY when they contain no non-app files: a folder with anything
+      user-authored (a file without an app artifact/lock/tmp name) is left
+      alone and logged, never destroyed.
+
+    Scoped to the app's own naming scheme (`YYYY-MM-DD_HH-MM ` prefix AND
+    ` {id8}` suffix) — user-authored notes/folders are never matched.
+    Best-effort: an entry that can't be removed (NFS hiccup, permissions)
     is skipped, it never fails a successful export."""
-    pattern = re.compile(
+    flat = re.compile(
         rf"^\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}} .+ {re.escape(rec.id[:8].lower())}\.md$"
     )
     for entry in list(root.iterdir()):
-        if not entry.is_file() or not pattern.match(entry.name):
+        if entry == keep:
             continue
-        try:
-            entry.unlink()
-            # Lockfiles (.{name}.lock) are permanent per write_note_atomic
-            # and never match the sweep regex themselves.
-            entry.with_name(f".{entry.name}.lock").unlink(missing_ok=True)
-            log.info("export: migrated legacy flat note %s", entry.name)
-        except OSError as e:
-            log.warning("export sweep: could not remove legacy note %s: %s", entry, e)
+        if entry.is_file() and flat.match(entry.name):
+            try:
+                entry.unlink()
+                # Lockfiles (.{name}.lock) are permanent per write_note_atomic
+                # and never match the sweep regex themselves.
+                entry.with_name(f".{entry.name}.lock").unlink(missing_ok=True)
+                log.info("export: migrated legacy flat note %s", entry.name)
+            except OSError as e:
+                log.warning("export sweep: could not remove legacy note %s: %s", entry, e)
+        elif entry.is_dir() and _folder_pattern(rec).match(entry.name):
+            if any(
+                not _is_app_file(child.name)
+                for child in entry.iterdir()
+            ):
+                log.warning(
+                    "export sweep: stale folder %s contains non-app files; leaving for manual cleanup",
+                    entry,
+                )
+                continue
+            try:
+                shutil.rmtree(entry)
+                log.info("export: swept orphaned old-title folder %s", entry.name)
+            except OSError as e:
+                log.warning("export sweep: could not remove stale folder %s: %s", entry, e)
 
+
+def _is_app_file(name: str) -> bool:
+    """Names the exporter itself can create inside a recording folder:
+    artifacts, their `.{name}.lock` fences and `.{name}.{uuid8}.tmp` staging."""
+    if name in ARTIFACTS:
+        return True
+    return any(
+        name == f".{a}.lock" or (name.startswith(f".{a}.") and name.endswith(".tmp"))
+        for a in ARTIFACTS
+    )
 
 def run(rec_id: str) -> Path | None:
     """Load config + recording, no-op unless done, export.
