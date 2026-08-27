@@ -43,3 +43,12 @@
   system source that cannot start blocks recording; microphone-only capture is
   available only when System audio is explicitly Off.
 - Ports: api 8090, temporal-ui 8082, diarization 8070 (host port conflicts).
+- Tags & profiles (2026-08-27): recordings carry normalized tags (`TEXT[]` on
+  Postgres, trim+lowercase+dedupe) set at upload init or via
+  `PATCH /recordings/{id}`; `?q=` matches title and tags. Yaml profiles in
+  `server/profiles/` (bind-mounted at `/etc/transcripter/profiles`, re-scanned
+  per stage run — no restart) override the summarize prompt and rename the
+  exported summary artifact (`output_artifact`, default `summary.md`;
+  `meta/summary.md` stays canonical). Format contract:
+  `server/profiles/README.md`. Broken profiles warn+skip; the pipeline is
+  never affected. Tag edits apply on the next summarize regenerate.

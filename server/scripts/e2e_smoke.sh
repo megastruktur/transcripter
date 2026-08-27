@@ -117,10 +117,18 @@ SHA=$(sha256 "$WORK/test.flac")
 SIZE=$(fsize "$WORK/test.flac")
 echo "sha256=$SHA size=$SIZE"
 
-echo "== 3. create recording"
+echo "== 3. create recording (with tags)"
+# Deliberately messy tags to prove server-side normalization
+# (trim + lowercase + dedupe): expects ["pathfinder","e2e"].
 RID=$(curl -sf -X POST -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"title":"e2e-smoke"}' "$API/recordings" | jq -r .id)
+  -d '{"title":"e2e-smoke","tags":["Pathfinder"," E2E ","pathfinder"]}' "$API/recordings" | jq -r .id)
 echo "id=$RID"
+TAGS=$(authf "$API/recordings/$RID" | jq -c .tags)
+test "$TAGS" = '["pathfinder","e2e"]' && echo "tags normalized: $TAGS" || { echo "BAD tags: $TAGS"; exit 1; }
+
+echo "== 3b. profiles registry"
+authf "$API/profiles" | jq -e '.[] | select(.id=="pathfinder-party-log")' >/dev/null \
+  && echo "  ok: pathfinder-party-log listed" || { echo "MISSING pathfinder-party-log in GET /profiles"; exit 1; }
 
 echo "== 4. upload first half, simulate connection drop"
 HALF=$((SIZE / 2))
@@ -217,6 +225,16 @@ N=$(printf '%s\n' "$FOLDERS" | grep -c .)
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
 test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
 grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
+grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { echo "  BAD frontmatter: no tags"; exit 1; }
+# Profile-matched summarize names its artifact per profile.output_artifact and
+# carries `profile:` in frontmatter; asserted only when summarize actually ran.
+if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
+  test -s "$STORAGE_DIR/recordings/$RID/meta/summary.md" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
+  test -s "$FOLDER/session-log.md" && grep -q "profile: pathfinder-party-log" "$FOLDER/session-log.md" \
+    && echo "  ok: session-log.md (profile pathfinder-party-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
+else
+  echo "  skip: summarize not done — session-log.md not asserted"
+fi
 
 echo "== 10. regenerate diarize"
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \

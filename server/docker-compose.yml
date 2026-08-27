@@ -13,6 +13,7 @@ services:
     volumes:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
+      - ./profiles:/etc/transcripter/profiles:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -49,6 +50,7 @@ services:
       - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts
       - models:/models
       - ./config.yaml:/etc/transcripter/config.yaml:ro
+      - ./profiles:/etc/transcripter/profiles:ro
     depends_on:
       temporal:
         condition: service_started

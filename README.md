@@ -40,6 +40,10 @@ and a summary** — every stage re-runnable on demand.
   every record start; **Settings** runs a live RMS probe of both capture
   paths — no more silent empty first recordings.
 - **Single-user by design.** One bearer token, LAN-oriented, zero accounts.
+- **Tags & profiles.** Tag a recording (`pathfinder`, `meeting`…) and a yaml
+  profile can override the summary prompt and name the exported artifact —
+  RPG session logs, structured minutes, your own domain. Declarative only;
+  the core pipeline never breaks on a bad profile.
 
 ## Screenshots
 
@@ -161,6 +165,23 @@ chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
 
 Off by default (`chunk.enabled: false` → stage reports `skipped`, pipeline
 runs whole-file as before).
+
+## Tags & profiles
+
+Recordings carry flat lowercase **tags**: set them on the record page, edit
+them on the recording page, search them via the library search box
+(`GET /recordings?q=` matches title and tags).
+
+**Profiles** are yaml files in `server/profiles/` (bind-mounted read-only at
+`/etc/transcripter/profiles`, re-scanned on every stage run — no restart
+needed). A profile whose `tags` intersect the recording's tags overrides the
+summarize prompt and renames the exported summary artifact
+(`output_artifact`, default `summary.md`; the canonical `meta/summary.md` is
+unchanged). Tag edits on existing recordings apply on the next summarize
+regenerate. Two examples ship in the repo (`pathfinder-party-log`,
+`meeting-notes`); the format contract for writing your own is
+`server/profiles/README.md`. A broken profile logs a warning and is skipped —
+the pipeline is never affected.
 
 ## ML deployment matrix
 
