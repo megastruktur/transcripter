@@ -689,3 +689,46 @@ async def export_transcript(args: dict) -> dict:
         return {"transcript_note": f"error: export subprocess timed out after {_EXPORT_TIMEOUT_SEC}s (killed; possible stale mount)"}
     finally:
         _export_children.discard(proc.pid)
+
+
+@activity.defn
+async def tag_digest(args: dict) -> dict:
+    """Wave-C tag digest activity.
+
+    Single long-running step (Postgres pull + Neo4j read + LLM call + file
+    write). The activity reads ``cfg.graph`` upfront and short-circuits
+    with a clear error if the graph backend is not configured — the API
+    layer should have rejected with 409 already, but a missing compose
+    profile between request and execution is still possible and worth
+    failing loud.
+
+    The empty-selection path (no done recordings carry the tag) returns
+    ``{"written": False, "reason": "..."}`` rather than raising: the API
+    has already given the caller 202 with the workflow id, so failing
+    here would just strand a workflow with no actionable error for the
+    user. Empty is a legitimate outcome (a new tag, an archive churn, etc).
+
+    LLM failures propagate (httpx errors are caught by Temporal's retry
+    policy at the workflow level). Tag sanitization failures propagate as
+    ValueError so the worker surfaces a clear last_error rather than
+    silently dropping a note the user can't trace.
+    """
+    tag = args["tag"]
+    last_n = int(args["last_n"])
+    c = cfg()
+    if not c.graph.enabled:
+        # The API already returns 409 on this; if we got here the operator
+        # toggled the config off between request and execution. Surfacing
+        # it as a failure keeps the workflow query honest.
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — digest cannot run"
+        )
+    try:
+        from .digest import run_digest
+
+        return await _heartbeat_while(
+            asyncio.to_thread(run_digest, tag, last_n, c, c.transcripts.path)
+        )
+    except Exception:
+        log.exception("tag_digest failed for tag=%s", tag)
+        raise

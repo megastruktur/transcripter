@@ -145,7 +145,6 @@ def test_idempotent_stage_kind_migration_runs_twice() -> None:
     exception is raised. (Postgres-only path is exercised in CI.)"""
     from sqlalchemy import create_engine
 
-    from app.db import STAGE_KINDS
     from app.main import _migrate_stage_kind_enum
 
     engine = create_engine("sqlite:///:memory:")
@@ -154,3 +153,4 @@ def test_idempotent_stage_kind_migration_runs_twice() -> None:
     # The function guards on dialect, so SQLite no-ops; we just verify
     # the call shape accepts any number of repeats.
     for _ in range(2):
+        _migrate_stage_kind_enum()

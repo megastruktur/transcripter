@@ -38,6 +38,25 @@ class ProfilesConfig(BaseModel):
     path: Path = Path("/etc/transcripter/profiles")
 
 
+class GraphConfig(BaseModel):
+    """Optional Neo4j knowledge-graph backend (mirrors worker/config.py).
+
+    The graph is OFF whenever ``uri`` is empty: every caller short-circuits
+    to a clean error / skipped status, so the core pipeline stays alive when
+    the compose ``graph`` profile is disabled or the section is missing.
+    ``password_env`` names the env var holding the password (never the
+    secret in yaml)."""
+
+    uri: str = ""
+    user: str = "neo4j"
+    password_env: str = "NEO4J_PASSWORD"
+    database: str = "neo4j"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.uri)
+
+
 class ServerConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
@@ -45,6 +64,7 @@ class ServerConfig(BaseModel):
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    graph: GraphConfig = Field(default_factory=GraphConfig)
 
     @property
     def recordings_root(self) -> Path:
