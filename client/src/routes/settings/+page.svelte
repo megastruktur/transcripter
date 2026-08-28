@@ -80,7 +80,7 @@
 		<h1 class="page-title">Settings</h1>
 	</header>
 
-	<form class="connection-panel panel" onsubmit={(event) => { event.preventDefault(); onTest(); }}>
+	<form class="connection-panel" onsubmit={(event) => { event.preventDefault(); onTest(); }}>
 		<div class="panel-heading">
 			<div class="antenna" aria-hidden="true"><Icon name="link" size={17} /></div>
 			<div><span>SERVER</span><strong>Transcription server</strong></div>
@@ -119,7 +119,7 @@
 		<div><strong>Stored on this device</strong><p>Your connection details stay local. Use this client only on a network you trust.</p></div>
 	</aside>
 
-	<div class="device-panel panel">
+	<div class="device-panel">
 		<div class="panel-heading">
 			<div class="antenna" aria-hidden="true"><Icon name="microphone" size={17} /></div>
 			<div><span>AUDIO</span><strong>Capture devices</strong></div>
@@ -183,17 +183,16 @@
 
 <style>
 	.settings-page { display: flex; flex-direction: column; gap: 16px; }
-	.connection-panel { overflow: hidden; }
-	.panel-heading { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 12px; border-bottom: 1px solid var(--line); background: rgba(0,0,0,.16); }
+	.panel-heading { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
 	.panel-heading > div:nth-child(2) span, .panel-heading > div:nth-child(2) strong { display: block; }
 	.panel-heading > div:nth-child(2) span { color: var(--red); font-size: 10px; font-weight: 700; }
 	.panel-heading > div:nth-child(2) strong { margin-top: 4px; color: #d3c7b7; font-size: 13px; }
-	.antenna { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.3); border-radius: 50%; color: var(--brass); line-height: 0; }
+	.antenna { display: grid; place-items: center; color: var(--brass); line-height: 0; }
 	.link-state { display: flex; align-items: center; gap: 6px; color: #8b8379; font-size: 10px; font-weight: 650; }
 	.link-state i { width: 5px; height: 5px; border-radius: 50%; background: #655f58; }
 	.link-state.connected { color: var(--cyan); }
 	.link-state.connected i { background: var(--cyan); box-shadow: 0 0 7px var(--cyan); }
-	.form-body { display: grid; gap: 15px; padding: 15px; }
+	.form-body { display: grid; gap: 15px; padding: 15px 0 0; }
 	.secret-field { display: grid; grid-template-columns: 1fr 55px; }
 	.secret-field input { border-radius: 3px 0 0 3px; }
 	.secret-field button { border: 1px solid rgba(231,214,190,.18); border-left: 0; border-radius: 0 3px 3px 0; background: rgba(215,167,71,.06); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
@@ -220,7 +219,6 @@
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
 	.notice.error strong { color: var(--red); }
 	.notice span { color: #b5aa9c; font-size: 11px; }
-	.device-panel { overflow: hidden; }
 	.device-control { display: grid; gap: 6px; }
 	.device-heading { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 7px; min-width: 0; }
 	.device-heading label { color: #c9bdad; font-size: 11px; font-weight: 650; }

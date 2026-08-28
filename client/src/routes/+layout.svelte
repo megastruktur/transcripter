@@ -330,12 +330,12 @@
 	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 10px 7px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail a:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.rail a[aria-current='page'] { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); border-color: rgba(215, 167, 71, 0.28); box-shadow: inset 2px 0 var(--red); }
+	.rail a[aria-current='page'] { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); box-shadow: inset 2px 0 var(--red); }
 	.rail-divider { height: 1px; margin: 3px 4px; background: var(--line); }
 	.rail-tabs { display: flex; flex-direction: column; gap: 5px; }
 	.rail-tab { display: grid; place-items: center; gap: 5px; min-height: 56px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #8e857c; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; cursor: pointer; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail-tab:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.rail-tab.active { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); border-color: rgba(215, 167, 71, 0.28); box-shadow: inset 2px 0 var(--red); }
+	.rail-tab.active { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); box-shadow: inset 2px 0 var(--red); }
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }

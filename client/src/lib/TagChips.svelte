@@ -245,7 +245,6 @@
 		align-items: center;
 		gap: 4px;
 		padding: 3px 4px 3px 8px;
-		border: 1px solid rgba(215, 167, 71, 0.32);
 		border-radius: 2px;
 		background: rgba(215, 167, 71, 0.08);
 		color: var(--brass);

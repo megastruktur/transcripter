@@ -121,7 +121,7 @@
 	<div class="record-list" aria-live="polite">
 		{#if loading}
 			{#each [0, 1, 2] as skeletonIndex (skeletonIndex)}
-				<div class="record-card panel skeleton-card" aria-hidden="true">
+				<div class="record-card skeleton-card" aria-hidden="true">
 					<span class="skeleton-bar skeleton-mark"></span>
 					<span class="skeleton-lines">
 						<span class="skeleton-bar skeleton-title"></span>
@@ -132,7 +132,7 @@
 			{/each}
 		{:else}
 			{#each recordings as recording (recording.id)}
-				<article class="record-card panel">
+				<article class="record-card">
 					<button class="record-heading" type="button" onclick={() => goto(`/recordings/${recording.id}`)}>
 						<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
 						<span class="record-name"><strong>{recording.title || 'Untitled capture'}</strong><small>{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)}</small>{#if recording.tags.length > 0}<span class="record-tags">{#each recording.tags.slice(0, 3) as tag (tag)}<span class="record-tag">{tag}</span>{/each}{#if recording.tags.length > 3}<span class="record-tag-overflow">+{recording.tags.length - 3}</span>{/if}</span>{/if}</span>
@@ -141,7 +141,7 @@
 					</button>
 				</article>
 			{:else}
-				<div class="empty panel"><span class="empty-icon" aria-hidden="true"><Icon name="empty" size={30} /></span><strong>No matching captures</strong><small>New recordings appear here after upload begins.</small></div>
+				<div class="empty"><span class="empty-icon" aria-hidden="true"><Icon name="empty" size={30} /></span><strong>No matching captures</strong><small>New recordings appear here after upload begins.</small></div>
 			{/each}
 		{/if}
 	</div>
@@ -170,8 +170,9 @@
 	.archive-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.archive-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
 	.archive-error span { color: #c6baaa; }
-	.record-list { display: grid; gap: 8px; }
-	.record-card { overflow: hidden; transition: border-color 120ms ease, background 120ms ease; }
+	.record-list { display: grid; }
+	.record-card { transition: background 120ms ease; }
+	.record-card:not(:last-child) { border-bottom: 1px solid var(--line); }
 	.record-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 	.record-heading:hover { background: rgba(255,255,255,.02); }
 	.state-mark { width: 7px; height: 7px; border-radius: 50%; background: #706960; box-shadow: 0 0 0 3px rgba(112,105,96,.12); }
@@ -182,13 +183,13 @@
 	.record-name strong, .record-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.record-name strong { font-size: 13px; color: #ded3c4; }
 	.record-name small { margin-top: 4px; font-size: 10px; color: #8b8278; }
-	.state-label { padding: 5px 7px; border: 1px solid var(--line); border-radius: 2px; color: #968d83; font-size: 9px; font-weight: 700; text-transform: capitalize; }
-	.state-label.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
-	.state-label.processing, .state-label.uploading { color: var(--brass); border-color: rgba(215,167,71,.25); }
-	.state-label.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
+	.state-label { color: #968d83; font-size: 9px; font-weight: 700; text-transform: capitalize; }
+	.state-label.done { color: var(--cyan); }
+	.state-label.processing, .state-label.uploading { color: var(--brass); }
+	.state-label.failed { color: #f36b60; }
 	.record-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
-	.record-tag { padding: 1px 6px; border: 1px solid rgba(215,167,71,.32); border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
-	.record-tag-overflow { padding: 1px 6px; border: 1px solid var(--line); border-radius: 2px; color: #8b8278; font-size: 9px; font-weight: 650; line-height: 1.4; }
+	.record-tag { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
+	.record-tag-overflow { padding: 1px 6px; border-radius: 2px; background: rgba(255,255,255,.04); color: #8b8278; font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.record-heading:hover .record-chevron { color: var(--brass); }
 	@media (prefers-reduced-motion: reduce) { .record-chevron { transition: none; } }
 	.empty { display: grid; justify-items: center; gap: 5px; padding: 28px 16px; color: #746d64; text-align: center; }

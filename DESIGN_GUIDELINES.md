@@ -56,7 +56,7 @@ Use semantic tokens rather than introducing nearby one-off colors.
 ## Geometry and layout
 
 - Default panels are rectangular with `0–4px` corner radii. Larger radii are reserved for genuinely circular mechanisms such as lamps, recording marks, or the collapsed cog.
-- Build composition from plates, rails, seams, and bays. Prefer a border and subtle surface shift over a floating card shadow.
+- Build composition from seams and recesses first; reserve full-perimeter borders per the structure hierarchy. Never use a border where a seam or surface shift already separates the regions.
 - Keep edges aligned across neighboring controls. Inputs and selects in one tool row must share exact top and bottom edges.
 - Use compact spacing increments: `4`, `6`, `8`, `10`, `12`, `16`, `18`, and `24px`. Repeated groups should reveal a consistent rhythm.
 - The left rail is navigation machinery, not a sidebar card. Active state uses brass text, a restrained red inset marker, and an iron surface shift.
@@ -74,12 +74,15 @@ Use semantic tokens rather than introducing nearby one-off colors.
 
 ## Components
 
-### Panels
+### Structure hierarchy: plates, seams, recesses
 
-- One-pixel `--line` border over an iron surface.
-- At most a slight two-tone gradient to distinguish raised metal from a recess.
-- No floating white cards, glassmorphism, frosted blur, or large ambient shadow.
+The workspace surface is already a machine plate. Content inside it never gets its own perimeter; regions are built from seams and recesses. Reserve the full-perimeter border for things that are physically separate or interactive:
+
+- **Plate (perimeter border).** Only for physical edges and detachable surfaces: the window frame, the recorder instrument bay, overlays (nav drawer, popovers, suggestion lists), and controls (buttons, inputs) whose outline is the affordance.
+- **Seam (single-edge `--line`).** The default region divider: rail, context bar, status strip, section headings, and list rows. A list is a ruled manifest directly on the plate — rows separated by seams, never a stack of boxed cards.
+- **Recess (darker inset surface, no border).** Holds readable content: artifact viewers, code blocks. A recess reads as material cut into the plate, not a card laid on top. At most a tight inset shadow sells the depth.
 - A colored left edge may communicate a warning or active process.
+- No floating white cards, glassmorphism, frosted blur, or large ambient shadow.
 
 ### Inputs and selects
 
@@ -108,7 +111,7 @@ Use semantic tokens rather than introducing nearby one-off colors.
 
 ### Icons and sigils
 
-- Use the shared stroked SVG system. Icons sit in explicit square containers with grid centering and zero line-height.
+- Use the shared stroked SVG system. Icons sit in explicit square containers with grid centering and zero line-height. Inactive containers may be fill-only; reserve the stroked border for active or status-colored icons.
 - Cogs, the split skull/circuit sigil, archive boxes, waveform bars, antennae, and hazard marks are signature vocabulary.
 - Icons support recognition; accessible labels carry meaning. Never use a Unicode glyph as a production icon.
 - The primary sigil may be circular. Ordinary action icons and their containers remain square or nearly square.
@@ -158,6 +161,8 @@ Do not introduce:
 - unexplained lore, faux scripture, or ornamental Latin;
 - gratuitous glow, particle effects, animated noise, or spinning gears;
 - duplicate status tables when one state summary and an expanded detail are sufficient;
+- full-perimeter boxes around passive content (list rows, meta blocks, reading surfaces) that the workspace already bounds;
+- status shown as a lamp plus a bordered chip plus a label — one lamp plus one text is the maximum;
 - page descriptions that merely repeat the title and controls;
 - one-off colors, radii, shadows, or icon styles outside the shared system.
 
@@ -199,7 +204,7 @@ Before merging client UI work, verify:
 - Adjacent controls align exactly.
 - Status color matches its semantic role and is also expressed in text.
 - New colors come from the canonical palette.
-- Panels read as connected machine surfaces, not floating web cards.
+- Content regions use seams and recesses; full-perimeter borders appear only on controls, overlays, and physical edges.
 - Icons use the shared SVG system and have accessible names.
 - Focus is visible and reduced motion is respected.
 - Both presentations verified: desktop 440×720 and Android 411×914, with
