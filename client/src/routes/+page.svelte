@@ -10,7 +10,10 @@
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import { commands } from '$lib/tauri';
+	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import { isAndroidTauri, startMobileRecorder } from '$lib/mobile-recorder';
+	import type { MobileRecorder } from '$lib/mobile-recorder';
 
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
 	// session's written-frame count, so elapsed time survives window collapse.
@@ -19,6 +22,10 @@
 	let tagDraft = $state('');
 	let tags = $state<string[]>([]);
 	let starting = $state(false);
+	let android = $state(false);
+	let mobile: MobileRecorder | null = null;
+	let mobileFramesTimer: ReturnType<typeof setInterval> | null = null;
+	let mobileStartedAt = 0;
 
 	/** Client-side normalization mirrors the server's `_normalize_tags`
 	 * (server/api/app/routes/recordings.py): trim, lowercase, drop blanks,
@@ -76,10 +83,15 @@
 				() => {}
 			);
 		}
+		android = isAndroidTauri();
+		return () => {
+			if (mobileFramesTimer) {
+				clearInterval(mobileFramesTimer);
+				mobileFramesTimer = null;
+			}
+		};
 	});
-
 	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
-
 	function fmt(sec: number): string {
 		const h = Math.floor(sec / 3600);
 		const m = Math.floor((sec % 3600) / 60);
@@ -88,6 +100,10 @@
 	}
 
 	async function beginRecording(): Promise<void> {
+		if (android) {
+			await beginMobileRecording();
+			return;
+		}
 		if (!audioDevices.selectedMicrophone) {
 			recorder.warnings.push('no microphone available');
 			return;
@@ -111,6 +127,69 @@
 			starting = false;
 		}
 	}
+
+	async function beginMobileRecording(): Promise<void> {
+		if (mobile || recorder.recording || recorder.stopping) return;
+		starting = true;
+		clearWarnings();
+		commitTagDraft();
+		try {
+			mobile = startMobileRecorder({});
+		} catch (error) {
+			recorder.warnings.push(String(error));
+			mobile = null;
+			return;
+		}
+		recorder.recording = true;
+		recorder.frames = 0;
+		mobileStartedAt = Date.now();
+		// Mirror the desktop poller: tick `recorder.frames` at the same 500 ms cadence
+		// so `elapsed = floor(frames / CAPTURE_RATE)` drives the visible timer without
+		// a second source of truth. CAPTURE_RATE mirrors src-tauri/src/capture.rs.
+		mobileFramesTimer = setInterval(() => {
+			if (!recorder.recording) return;
+			const elapsedSec = (Date.now() - mobileStartedAt) / 1000;
+			recorder.frames = Math.floor(elapsedSec * CAPTURE_RATE);
+		}, 500);
+		starting = false;
+	}
+
+	async function stopMobileRecording(): Promise<void> {
+		if (!mobile || recorder.stopping) return;
+		recorder.stopping = true;
+		if (mobileFramesTimer) {
+			clearInterval(mobileFramesTimer);
+			mobileFramesTimer = null;
+		}
+		const handle = mobile;
+		mobile = null;
+		let blob: Blob;
+		try {
+			blob = await handle.stop();
+		} catch (error) {
+			recorder.stopping = false;
+			recorder.recording = false;
+			recorder.warnings.push(`stop failed: ${String(error)}`);
+			return;
+		}
+		const durationSec = Math.max(0, (Date.now() - mobileStartedAt) / 1000);
+		recorder.recording = false;
+		const cfg = loadApiConfig();
+		if (!cfg.baseUrl || !cfg.token) {
+			recorder.warnings.push('no server configured — recording not uploaded');
+			recorder.stopping = false;
+			return;
+		}
+		try {
+			const result = await uploadDirect(cfg, blob, title, tags, durationSec);
+			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+		} catch (error) {
+			recorder.warnings.push(`upload failed: ${String(error)}`);
+		} finally {
+			recorder.stopping = false;
+		}
+	}
+
 </script>
 
 <svelte:head><title>Capture · Transcriptor Maximus</title></svelte:head>
@@ -132,8 +211,8 @@
 		</div>
 		<div class="timer" aria-live="polite">{fmt(elapsed)}</div>
 		<div class="capture-meta">
-			<span>{recorder.recording ? 'Recording in FLAC' : 'Ready to record'}</span>
-			<span>{recorder.recording ? `${recorder.frames} frames captured` : 'Processed after you stop'}</span>
+			<span>{recorder.recording ? (android ? 'Recording in WebM' : 'Recording in FLAC') : 'Ready to record'}</span>
+			<span>{recorder.recording ? `${fmt(elapsed)} captured` : 'Processed after you stop'}</span>
 		</div>
 
 		<label class="title-field">
@@ -172,7 +251,7 @@
 		</label>
 
 		{#if recorder.recording}
-			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => stopRecording()}>
+			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => android ? stopMobileRecording() : stopRecording()}>
 				<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
 				<span><strong>{recorder.stopping ? 'Sealing archive…' : 'Stop recording'}</strong><small>Finish and send for processing</small></span>
 			</button>
