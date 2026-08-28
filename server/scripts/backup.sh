@@ -117,7 +117,9 @@ run_neo4j_dump() {
   local image
   image="$(docker inspect -f '{{.Config.Image}}' "$container")"
   log "neo4j: stopping container for offline dump (image $image)"
-  if ! docker compose --profile graph stop neo4j; then
+  # -t 60: give neo4j time for a clean shutdown — a SIGKILLed store leaves
+  # a dirty transaction log the offline dump can then choke on.
+  if ! docker compose --profile graph stop -t 60 neo4j; then
     log "neo4j: stop failed — aborting dump (container left as-is)"
     return 1
   fi
@@ -130,6 +132,10 @@ run_neo4j_dump() {
     'mkdir -p /data/.backup-tmp && /var/lib/neo4j/bin/neo4j-admin database dump neo4j --to-path=/data/.backup-tmp' || dump_rc=1
   if ! docker compose --profile graph start neo4j; then
     log "neo4j: START FAILED — graph layer is DOWN; recover: docker compose --profile graph start neo4j"
+    # Still scrub the staging dir — reachable via a throwaway container
+    # even with the service container down.
+    docker run --rm --volumes-from "$container" --entrypoint sh "$image" \
+      -c 'rm -rf /data/.backup-tmp' >/dev/null 2>&1 || true
     return 1
   fi
   local cp_rc=0

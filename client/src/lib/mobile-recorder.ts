@@ -100,6 +100,10 @@ export function startMobileRecorder(opts: {
 
 	let recorder: MediaRecorder | null = null;
 	let stream: MediaStream | null = null;
+	// cancel() during a PENDING getUserMedia must win over a late grant:
+	// without this flag the .then below would construct and start a
+	// MediaRecorder on a handle the caller already abandoned.
+	let cancelled = false;
 	const chunks: Blob[] = [];
 	let resolveStop!: (blob: Blob) => void;
 	let rejectStop!: (error: unknown) => void;
@@ -118,6 +122,10 @@ export function startMobileRecorder(opts: {
 
 	streamReady
 		.then((s) => {
+			if (cancelled) {
+				for (const track of s.getTracks()) track.stop();
+				throw new Error('cancelled');
+			}
 			stream = s;
 			const r = new MediaRecorder(s, recorderOptions);
 			recorder = r;
@@ -169,6 +177,7 @@ export function startMobileRecorder(opts: {
 			});
 		},
 		cancel(): void {
+			cancelled = true;
 			try {
 				if (recorder && recorder.state !== 'inactive') {
 					recorder.stop();

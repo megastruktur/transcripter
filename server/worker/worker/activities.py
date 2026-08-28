@@ -511,6 +511,11 @@ async def enrich(rec_id: str) -> dict:
     if profile is None or profile.enrich is None:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
         return {"skipped": "no profile with enrich"}
+    # The graph tag is the tag that MATCHED the profile, not blindly
+    # tags[0]: a recording tagged ["game", "pathfinder"] matched via
+    # "pathfinder" must write tag="pathfinder" or digests for it find an
+    # empty slice. Deterministic: first matching tag in recording order.
+    graph_tag = next((t for t in tags if t in profile.tags), tags[0] if tags else "")
     try:
         from .enrich import (
             extract_from_transcript,
@@ -537,7 +542,7 @@ async def enrich(rec_id: str) -> dict:
             c.graph.user,
             os.environ.get(c.graph.password_env, ""),
             c.graph.database,
-            tag=tags[0] if tags else "",
+            tag=graph_tag,
             exclude_rec=rec_id,
         )
         try:
@@ -548,7 +553,7 @@ async def enrich(rec_id: str) -> dict:
                 # strand the stage row in running).
                 resolved = await _heartbeat_while(
                     asyncio.to_thread(
-                        resolve_slugs, extracted, c, tags[0] if tags else "", lookup
+                        resolve_slugs, extracted, c, graph_tag, lookup
                     )
                 )
             except Exception:
@@ -566,7 +571,7 @@ async def enrich(rec_id: str) -> dict:
             asyncio.to_thread(
                 write_to_graph,
                 rec_id,
-                tags[0] if tags else "",
+                graph_tag,
                 resolved,
                 profile.enrich.node_labels,
                 c.graph.uri,

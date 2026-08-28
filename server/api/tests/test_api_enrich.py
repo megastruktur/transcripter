@@ -95,7 +95,7 @@ summarize:
     assert rows[0]["has_enrich"] is False
 
 
-def test_get_profiles_has_enrich_false_when_prompt_lacks_transcript(
+def test_get_profiles_skips_profile_when_enrich_prompt_invalid(
     client: TestClient, tmp_path: Path
 ) -> None:
     _write_profile(
@@ -112,8 +112,11 @@ enrich:
   prompt: 'no placeholder'
 """,
     )
+    # Worker contract: a malformed enrich block fails the WHOLE profile
+    # (Profile.model_validate rejects it), so the listing must skip the
+    # file entirely rather than advertise a profile that can never run.
     rows = client.get("/profiles").json()
-    assert rows[0]["has_enrich"] is False
+    assert rows == []
 
 
 def test_regenerate_enrich_accepted(client: TestClient, tmp_path: Path) -> None:

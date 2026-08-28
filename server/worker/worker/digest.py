@@ -45,8 +45,10 @@ log = logging.getLogger("transcripter.digest")
 # Tag name on disk: only the file-system-safe subset that survives every
 # Obsidian / Vault / Windows-share combination. Anything outside is rejected
 # at the API boundary (regex in routes/tags.py) so we can return 400 cleanly.
-# Same set the slugify helper in enrich.py uses — kept in sync by hand.
-_SAFE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+# IDENTICAL to the API's _TAG_RE (routes/tags.py): the tag becomes the
+# digest filename verbatim, so the API must never 202 a tag the worker
+# would reject here. Length-capped to fit a filename segment.
+_SAFE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 # HTTP budget kept 30 s UNDER the Temporal start_to_close (2400 s) so a
 # httpx.ReadTimeout fires (a plain Exception → activity raised) before
@@ -57,17 +59,25 @@ _HTTP_TIMEOUT_SEC = 2370.0
 # Reuse the per-tag Cypher query: collect entities (deduped across the
 # selection, so we know what's been mentioned over the last N sessions)
 # and events (one row per recording so the digest can be per-session).
+# Label-agnostic: profiles may override node labels (EnrichNodeLabels),
+# so we select on PROPERTIES present on every node (tag + provenance)
+# instead of `:Entity OR :Event`. Window membership: events are
+# per-recording (origin only); shared entities qualify via their
+# recording_ids list. MENTIONS edges are excluded — the per-session event
+# text already conveys mentions; emitting them dilutes the prompt.
 _DIGEST_CYPHER = """
 MATCH (n)
-WHERE (n:Entity OR n:Event)
-  AND n.tag = $tag
-  AND n.origin_recording_id IN $rec_ids
+WHERE n.tag = $tag
+  AND (n.origin_recording_id IN $rec_ids
+       OR any(x IN coalesce(n.recording_ids, []) WHERE x IN $rec_ids))
 OPTIONAL MATCH (n)-[r]->(m)
-WHERE (m:Entity OR m:Event) AND m.tag = $tag AND m.origin_recording_id IN $rec_ids
+WHERE m.tag = $tag AND type(r) <> 'MENTIONS'
+  AND (m.origin_recording_id IN $rec_ids
+       OR any(x IN coalesce(m.recording_ids, []) WHERE x IN $rec_ids))
 RETURN
-  labels(n) AS labels,
   n.tag AS tag,
   n.origin_recording_id AS origin,
+  coalesce(n.recording_ids, []) AS rec_ids_all,
   n.slug AS slug,
   n.label AS label,
   n.type AS type,
@@ -245,12 +255,18 @@ def _fetch_graph_slice(
             entities: dict[tuple[str | None, str | None], dict[str, object]] = {}
             events: list[dict[str, object]] = []
             relations: list[dict[str, object]] = []
+            rec_id_set = set(rec_ids)
             for row in result:
-                labels = set(row["labels"] or [])
-                kind = "entity" if "Entity" in labels else "event"
+                # Entities always carry `label`; events never do — that
+                # property (not the node label, which profiles can
+                # override) is the discriminator.
+                kind = "entity" if row["label"] is not None else "event"
                 origin = row["origin"]
                 if kind == "entity":
-                    key = (row["label"], row["type"])
+                    # Key by slug (the graph MERGE key): two DISAMBIGUATED
+                    # entities can share (label, type) and must not fold
+                    # into one digest bucket.
+                    key = row["slug"]
                     bucket = entities.setdefault(
                         key,
                         {
@@ -260,8 +276,11 @@ def _fetch_graph_slice(
                             "sessions": set(),
                         },
                     )
-                    if origin is not None:
-                        bucket["sessions"].add(origin)  # type: ignore[union-attr]
+                    # Sessions = this window's recordings that touched the
+                    # entity (its own origin, plus the provenance list
+                    # accumulated across MERGEs).
+                    touched = {origin, *row["rec_ids_all"]} & rec_id_set
+                    bucket["sessions"].update(touched)  # type: ignore[union-attr]
                 else:
                     events.append(
                         {

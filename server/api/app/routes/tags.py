@@ -26,12 +26,13 @@ router = APIRouter(prefix="/tags")
 
 _LOG = logging.getLogger("transcripter.api.tags")
 
-# After trim+lowercase: must start with an alphanumeric, then any mix of
-# lowercase alphanumerics, dots, underscores, dashes, and spaces (spaces
-# are allowed — they survive every Obsidian / Linux / Windows file system
-# that touches the transcripts dir, and the activity sanitizes the
-# on-disk name to ``[a-z0-9._-]`` only).
-_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9 ._-]*$")
+# After trim+lowercase: must start with an alphanumeric, then lowercase
+# alphanumerics, dots, underscores, dashes — NO spaces: the tag becomes
+# the digest filename verbatim (worker digest._SAFE_TAG_RE), so the two
+# regexes must stay IDENTICAL or the API would 202 a workflow that then
+# fails deterministically. Length-capped so the tag always fits a
+# filename segment.
+_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
 class DigestRequest(BaseModel):

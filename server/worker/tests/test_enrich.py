@@ -56,11 +56,12 @@ class TestSlugify:
         assert slugify("") == "unknown"
         assert slugify("!!!") == "unknown"
 
-    def test_unicode_handled_as_alnum(self):
-        # Non-ASCII is NOT alnum → dash, but CJK is dropped (matches the
-        # contract: slug keys must be ASCII slug-safe). Documents the
-        # behavior rather than failing on it.
-        assert slugify("Галах") == "unknown" or "-" in slugify("Галах")
+    def test_unicode_labels_survive(self):
+        # The slug is the MERGE key and Cyrillic must survive: an
+        # ASCII-only mapping collapses every non-ASCII label to "unknown",
+        # folding distinct entities into one node (roborev 2022 HIGH).
+        assert slugify("Галах") == "галах"
+        assert slugify("Сэр Галах!") == "сэр-галах"
 
 
 # --- _parse_extraction -------------------------------------------------------
@@ -544,12 +545,14 @@ class TestExistingEntityLookup:
         lookup = ExistingEntityLookup(driver, "neo4j", "pathfinder")
         out = lookup("galahad")
         assert out == {"label": "Galahad", "type": "character", "slug": "galahad"}
-        # The query filters by both tag AND slug — origin_recording_id is
-        # not part of dedup (different recordings legitimately create
-        # the same entity).
+        # The query filters by tag AND slug, and EXCLUDES the current
+        # recording's own nodes (origin_recording_id <> rec) so a
+        # regenerate reclaims its own slugs instead of drifting -2/-3.
+        # Default exclude_rec="" keeps every node in play.
         params = session.run.call_args.kwargs
         assert params["tag"] == "pathfinder"
         assert params["slug"] == "galahad"
+        assert params["rec"] == ""
 
     def test_returns_none_when_missing(self):
         session = MagicMock()

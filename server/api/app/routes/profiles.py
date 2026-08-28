@@ -54,12 +54,37 @@ def _version_at_least(host: str, minimum: str) -> bool:
 
 class _SummarizeSpec(BaseModel):
     prompt: str = Field(min_length=1)
+    # Same sanitize rule as the worker: the artifact name lands in the
+    # Obsidian vault verbatim, so anything outside [a-z0-9._-] must be
+    # rejected here too, or we'd list a profile the worker skips.
+    output_artifact: str = "summary.md"
 
     @field_validator("prompt")
     @classmethod
     def _must_contain_transcript(cls, v: str) -> str:
         if "{transcript}" not in v:
             raise ValueError("summarize.prompt must contain {transcript}")
+        return v
+
+    @field_validator("output_artifact")
+    @classmethod
+    def _sanitize_artifact(cls, v: str) -> str:
+        if not _SAFE_SLUG.match(v):
+            raise ValueError(f"summarize.output_artifact {v!r} must match [a-z0-9._-]")
+        return v
+
+
+class _EnrichSpec(BaseModel):
+    """Worker EnrichSpec mirror: a malformed enrich block makes the worker
+    skip the WHOLE profile, so it must fail validation here too."""
+
+    prompt: str = Field(min_length=1)
+
+    @field_validator("prompt")
+    @classmethod
+    def _must_contain_transcript(cls, v: str) -> str:
+        if "{transcript}" not in v:
+            raise ValueError("enrich.prompt must contain {transcript}")
         return v
 
 
@@ -73,6 +98,7 @@ class _ProfileSpec(BaseModel):
     description: str = ""
     tags: list[str]
     summarize: _SummarizeSpec
+    enrich: _EnrichSpec | None = None
 
     @field_validator("id")
     @classmethod
@@ -147,19 +173,6 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
             )
             continue
 
-        # Wave B: surface whether the profile declares a usable enrich
-        # section. The host doesn't fully validate here (worker's
-        # profiles.py is the authority on what counts as usable), but
-        # the rough shape — a mapping with a string ``prompt`` that
-        # mentions ``{transcript}`` — is enough for the UI to advertise
-        # the capability. Unknown shapes don't break the listing.
-        enrich_raw = raw.get("enrich")
-        has_enrich = bool(
-            isinstance(enrich_raw, dict)
-            and isinstance(enrich_raw.get("prompt"), str)
-            and "{transcript}" in enrich_raw["prompt"]
-        )
-
         out.append(
             {
                 "id": profile.id,
@@ -167,7 +180,9 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
                 "display_name": profile.display_name,
                 "description": profile.description,
                 "tags": profile.tags,
-                "has_enrich": has_enrich,
+                # Validated model: enrich survived _EnrichSpec (prompt with
+                # {transcript}), so the worker would honor it too.
+                "has_enrich": profile.enrich is not None,
             }
         )
     return out

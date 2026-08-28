@@ -62,8 +62,12 @@ _TEMPORAL_START_TO_CLOSE_SEC = 2400
 # third failure → stage failed (best-effort, recording stays done).
 _MAX_LLM_ATTEMPTS = 3
 
-# Slug-normalization regex: keep a-z, 0-9 and dashes; collapse runs.
-_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+# Slug-normalization regex: collapse runs of non-word chars to dashes.
+# Unicode-aware: \w keeps Cyrillic and other letters — the shipped
+# pathfinder profile is Russian, and ASCII-only slugification collapsed
+# every Cyrillic label to "unknown", folding distinct entities into one
+# MERGE key. \w also keeps "_" (harmless in a slug).
+_NON_ALNUM = re.compile(r"[^\w]+", re.UNICODE)
 _MULTI_DASH = re.compile(r"-{2,}")
 
 # A model that says "same" sometimes fences the answer with quotes or
@@ -102,13 +106,15 @@ class ExtractedGraph:
 
 
 def slugify(label: str) -> str:
-    """Lowercase + non-alnum → ``-`` + collapse + strip.
+    """Casefold + non-word chars → ``-`` + collapse + strip.
 
-    The slug is the MERGE key: same label, same slug. Empty strings
-    (after stripping) collapse to ``"unknown"`` so we never hand a
-    blank key to Cypher.
+    Unicode-aware: Cyrillic (and other scripts) survive — the slug is the
+    MERGE key, and an ASCII-only mapping collapses every non-ASCII label
+    to ``"unknown"``, folding distinct entities into one node. Truly
+    empty results (punctuation-only labels) still collapse to
+    ``"unknown"`` so we never hand a blank key to Cypher.
     """
-    s = _NON_ALNUM.sub("-", label.lower()).strip("-")
+    s = _NON_ALNUM.sub("-", label.casefold()).strip("-")
     s = _MULTI_DASH.sub("-", s)
     return s or "unknown"
 
@@ -356,8 +362,14 @@ def write_to_graph(
                 (
                     f"MERGE (e:`{safe_entity_label}` {{tag: $tag, slug: $slug}}) "
                     "ON CREATE SET e.label = $label, e.type = $type, "
-                    "e.origin_recording_id = $rec, e.first_seen_recording = $rec "
-                    "ON MATCH SET e.label = $label, e.type = $type "
+                    "e.origin_recording_id = $rec, e.first_seen_recording = $rec, "
+                    "e.recording_ids = [$rec] "
+                    # Multi-recording provenance: a shared entity MERGEs onto
+                    # one node, so origin_recording_id alone can never show
+                    # recurrence — digests read recording_ids instead.
+                    "ON MATCH SET e.label = $label, e.type = $type, "
+                    "e.recording_ids = CASE WHEN $rec IN coalesce(e.recording_ids, []) "
+                    "THEN e.recording_ids ELSE e.recording_ids + $rec END "
                     "RETURN elementId(e)"
                 ),
             )
@@ -425,7 +437,11 @@ def write_to_graph(
                         (e.label for e in graph.entities if e.slug == slug),
                         "",
                     ).lower()
-                    if ent_label and ent_label in summary_lower:
+                    # Word-boundary match: bare substring containment links
+                    # "Orc" to summaries mentioning "Orcus"/"orchestra".
+                    if ent_label and re.search(
+                        r"\b" + re.escape(ent_label) + r"\b", summary_lower
+                    ):
                         tx.run(
                             mentions_query,
                             a=ev_id,
@@ -602,7 +618,10 @@ class ExistingEntityLookup:
         with self._driver.session(database=self._database) as session:
             row = session.run(
                 "MATCH (e {tag: $tag, slug: $slug}) "
-                "WHERE e.origin_recording_id <> $rec "
+                # $rec = '' (tests/legacy callers) keeps every node in play;
+                # a null origin_recording_id (foreign/manually created node)
+                # must not silently opt out of dedup either.
+                "WHERE $rec = '' OR coalesce(e.origin_recording_id, '') <> $rec "
                 "RETURN e.label AS label, e.type AS type, e.slug AS slug LIMIT 1",
                 tag=self._tag,
                 slug=slug,

@@ -129,6 +129,10 @@
 			starting = false;
 			return;
 		}
+		// The page may have unmounted (cleanup cancelled the handle) while
+		// the permission prompt was open — a late grant must NOT flip the
+		// shared store or start a ticker nobody will clear.
+		if (mobile !== handle) return;
 		recorder.recording = true;
 		recorder.frames = 0;
 		mobileStartedAt = Date.now();
