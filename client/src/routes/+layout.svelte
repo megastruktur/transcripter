@@ -14,6 +14,9 @@
 	// window sizing — the WebView is fullscreen and the OS owns the window.
 	const android = isAndroidTauri();
 	let collapsed = $state(browser && localStorage.getItem('transcripter.window-collapsed') === 'true');
+	// Android-only navigation drawer: the rail is too wide for a phone screen,
+	// so it slides in over the workspace instead of pinning a column.
+	let navOpen = $state(false);
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
 
@@ -135,7 +138,13 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Escape' && !collapsed) toggleCollapsed();
+		if (event.key !== 'Escape') return;
+		// Drawer swallows Escape before the desktop collapse toggle sees it.
+		if (android && navOpen) {
+			navOpen = false;
+			return;
+		}
+		if (!collapsed) toggleCollapsed();
 	}
 
 	function beginCollapsedDrag(event: PointerEvent): void {
@@ -188,8 +197,11 @@
 		<span class="collapsed-state"></span>
 	</button>
 {:else}
-	<div class="app-shell">
+	<div class="app-shell" class:shell--android={android}>
 		<header class="titlebar" data-tauri-drag-region>
+			{#if android}
+				<button class="menu-button" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><Icon name="menu" size={16} /></button>
+			{/if}
 			<div class="identity" data-tauri-drag-region>
 				<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
 				<div data-tauri-drag-region>
@@ -208,10 +220,13 @@
 
 		<div class="hazard-rule" aria-hidden="true"></div>
 		<div class="shell-body">
-			<nav class="rail" aria-label="Primary navigation">
+			{#if android}
+				<button class="nav-scrim" class:open={navOpen} type="button" tabindex={navOpen ? 0 : -1} aria-label="Close navigation" onclick={() => (navOpen = false)}></button>
+			{/if}
+			<nav id="primary-nav" class="rail" class:open={navOpen} aria-label="Primary navigation">
 				{#each navItems as item (item.href)}
 
-					<a href={item.href} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
+					<a href={item.href} onclick={() => (navOpen = false)} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
 						<span class="nav-icon" aria-hidden="true"><Icon name={item.icon} size={20} /></span>
 						<span>{item.label}</span>
 					</a>
@@ -227,7 +242,7 @@
 								aria-selected={artifactTab.active === tab.key}
 								class:active={artifactTab.active === tab.key}
 								title={tab.label}
-								onclick={() => (artifactTab.active = tab.key)}
+								onclick={() => { artifactTab.active = tab.key; navOpen = false; }}
 							>
 								<span class="nav-icon" aria-hidden="true"><Icon name={tab.icon} size={20} /></span>
 								<span>{tab.label}</span>
@@ -347,6 +362,21 @@
 	.page-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
+	.menu-button { width: 30px; height: 30px; display: grid; place-items: center; margin-right: 9px; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
+	.menu-button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.55); background: rgba(215, 167, 71, 0.08); }
+
+	/* Android: the WebView draws edge-to-edge under the system status bar, so
+	   the titlebar/footer absorb the safe-area insets (env() = 0 on desktop and
+	   these rules never apply there anyway - desktop keeps the pinned 80px rail
+	   and fixed 54px/28px chrome). The rail becomes an overlay drawer. */
+	.shell--android { grid-template-rows: auto 4px minmax(0, 1fr) auto; }
+	.shell--android .titlebar { min-height: 54px; padding-top: env(safe-area-inset-top, 0px); }
+	.shell--android .shell-body { grid-template-columns: minmax(0, 1fr); }
+	.nav-scrim { position: absolute; inset: 0; z-index: 5; padding: 0; border: 0; border-radius: 0; background: rgba(5, 4, 3, 0.55); opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
+	.nav-scrim.open { opacity: 1; pointer-events: auto; }
+	.shell--android .rail { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 192px; background: #14100e; border-right: 1px solid rgba(215, 167, 71, 0.28); box-shadow: 14px 0 34px rgba(0, 0, 0, 0.5); transform: translateX(-105%); transition: transform 160ms ease; }
+	.shell--android .rail.open { transform: translateX(0); }
+	.shell--android .status-strip { min-height: 28px; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; transition: transform 180ms ease; touch-action: none; }
 	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }

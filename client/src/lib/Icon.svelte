@@ -5,6 +5,7 @@
 		| 'library'
 		| 'settings'
 		| 'collapse'
+		| 'menu'
 		| 'minimize'
 		| 'close'
 		| 'microphone'
@@ -62,6 +63,8 @@
 		<path d="m6.5 9 5.5 5.5L17.5 9" />
 	{:else if name === 'minimize'}
 		<path d="M6 12h12" />
+	{:else if name === 'menu'}
+		<path d="M4.5 6.5h15M4.5 12h15M4.5 17.5h15" />
 	{:else if name === 'close'}
 		<path d="m7 7 10 10M17 7 7 17" />
 	{:else if name === 'microphone'}
