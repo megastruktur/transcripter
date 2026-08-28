@@ -22,6 +22,7 @@ class PipelineResult(TypedDict, total=False):
     diarize: dict
     merge_speakers: dict
     summarize: dict
+    enrich: dict
     export: dict
 
 
@@ -76,7 +77,7 @@ class ProcessRecording:
         duration: float | None = args.get("duration_sec")
         result: PipelineResult = {}
 
-        order = ["chunk", "transcribe", "diarize", "merge_speakers", "summarize"]
+        order = ["chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"]
         assert start in order, f"unknown stage {start}"
         idx = order.index(start)
 
@@ -172,6 +173,23 @@ class ProcessRecording:
                 retry_policy=_no_retry(),
                 heartbeat_timeout=timedelta(seconds=120),
             )
+        # Wave B: enrich is best-effort like diarize/merge — a failure
+        # must not abort the recording. The activity catches its own
+        # errors and marks `failed`; we only escalate infra errors.
+        if idx <= 5:
+            try:
+                result["enrich"] = await workflow.execute_activity(
+                    "enrich",
+                    rec_id,
+                    # Same envelope as summarize: the LiteLLM proxy
+                    # timeout is the binding constraint, and the HTTP
+                    # budget inside the activity is 30 s under.
+                    start_to_close_timeout=timedelta(seconds=2400),
+                    retry_policy=_no_retry(),
+                    heartbeat_timeout=timedelta(seconds=120),
+                )
+            except ActivityError:
+                workflow.logger.warning("enrich failed for %s; recording still done", rec_id)
 
 @workflow.defn
 class ExportRecording:
@@ -192,4 +210,34 @@ class ExportRecording:
             # let the activity run to completion even if the workflow is
             # cancelled mid-flight.
             cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+        )
+
+
+@workflow.defn
+class TagDigest:
+    """Wave-C: build a per-tag digest note from the last N done recordings.
+
+    One activity (Postgres + Neo4j + LLM + atomic file write). The same
+    budget envelope as summarize / enrich (LiteLLM proxy 2400 s ceiling,
+    HTTP client 30 s under via the activity's own timeout): an LLM call
+    on a contended llama-server can eat the whole budget, and a slow
+    failure must NOT trigger Temporal's automatic retry — the digest is
+    read-only w.r.t. the recording pipeline, so a retry doubles load on
+    the shared LLM without giving the user a better answer. The user
+    regenerates from the UI.
+
+    No finalize / export: the digest writes its own file atomically and
+    there is no per-recording state to keep in sync.
+    """
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "tag_digest",
+            args,
+            start_to_close_timeout=timedelta(seconds=2400),
+            # Same shape as summarize / enrich: LLM-bound, no automatic retry
+            # on long failures. The user regenerates from the UI.
+            retry_policy=_no_retry(),
+            heartbeat_timeout=timedelta(seconds=120),
         )

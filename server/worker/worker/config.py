@@ -54,6 +54,32 @@ class TranscriptsConfig(BaseModel):
     sentinel: str = ""
 
 
+class ProfilesConfig(BaseModel):
+    """Profile loader root (wave A — yaml knowledge-graph profiles)."""
+
+    path: Path = Path("/etc/transcripter/profiles")
+
+
+class GraphConfig(BaseModel):
+    """Optional Neo4j knowledge-graph backend (wave B).
+
+    The graph is OFF whenever ``uri`` is empty: every caller short-circuits
+    to a clean ``skipped`` status, so the core pipeline stays alive when
+    the compose ``graph`` profile is disabled or the section is missing.
+    ``password_env`` names the environment variable holding the password —
+    we never put the secret in config.yaml (it would land in the git
+    history and the container's environment dump).
+    """
+
+    uri: str = ""
+    user: str = "neo4j"
+    password_env: str = "NEO4J_PASSWORD"
+    database: str = "neo4j"
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.uri)
+
 class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
@@ -62,6 +88,8 @@ class WorkerConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
+    graph: GraphConfig = Field(default_factory=GraphConfig)
 
     @property
     def recordings_root(self) -> Path:
@@ -81,4 +109,7 @@ def load_config() -> WorkerConfig:
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):
         cfg.diarization.endpoint = env_diar
+    if env_profiles := os.environ.get("PROFILES_DIR"):
+        cfg.profiles.path = Path(env_profiles)
     return cfg
+

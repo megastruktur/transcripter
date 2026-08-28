@@ -60,3 +60,11 @@ diarization:
 database:
   # Inside containers; postgres compose service
   url: postgresql+psycopg://transcripter:transcripter@postgres/transcripter
+
+graph:
+  # Optional Neo4j knowledge-graph backend (compose --profile graph).
+  # Empty uri (or missing section) = enrich stage reports skipped.
+  uri: ""
+  user: neo4j
+  password_env: NEO4J_PASSWORD
+  database: neo4j

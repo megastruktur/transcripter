@@ -43,3 +43,38 @@
   system source that cannot start blocks recording; microphone-only capture is
   available only when System audio is explicitly Off.
 - Ports: api 8090, temporal-ui 8082, diarization 8070 (host port conflicts).
+- Tags & profiles (2026-08-27): recordings carry normalized tags (`TEXT[]` on
+  Postgres, trim+lowercase+dedupe) set at upload init or via
+  `PATCH /recordings/{id}`; `?q=` matches title and tags. Yaml profiles in
+  `server/profiles/` (bind-mounted at `/etc/transcripter/profiles`, re-scanned
+  per stage run — no restart) override the summarize prompt and rename the
+  exported summary artifact (`output_artifact`, default `summary.md`;
+  `meta/summary.md` stays canonical). Format contract:
+  `server/profiles/README.md`. Broken profiles warn+skip; the pipeline is
+  never affected. Tag edits apply on the next summarize regenerate.
+- Knowledge graph (2026-08-28): optional `enrich` stage after summarize —
+  profiles with an `enrich:` section extract {events, entities, relations}
+  via the summarize LLM (json_object, in-activity retries) into Neo4j CE
+  (compose profile `graph`, no published ports, mem_limit 1.5g). Writes are
+  idempotent: DETACH DELETE by origin_recording_id → MERGE by (tag, slug);
+  dedup is slug-normalization + a best-effort LLM same-entity question.
+  enrich is best-effort (skipped without graph/profile, failed never fails
+  the recording). Profile prompts substitute ONLY {title}/{transcript}
+  literally — JSON schema braces in prompts are safe.
+  `server/scripts/e2e_smoke.sh` GRAPH=1 verifies the write path through a
+  deterministic in-container probe (scripts/graph_probe.py) plus a live
+  enrich regenerate cycle.
+- Tag digests (2026-08-28): `POST /tags/{tag}/digest {last_n}` → 202 +
+  workflow_id; Temporal TagDigest workflow picks the last N done recordings
+  with the tag (Postgres `@>`), pulls their subgraph (Neo4j), renders an
+  Obsidian note to `<transcripts>/digests/<tag>.md` (tmp+rename, frontmatter
+  with recording ids). 409 when the graph layer is off; 400 on
+  non-filesystem-safe tags.
+- Android client PoC (2026-08-28, verdict GO): Tauri v2 Android builds
+  user-local (no sudo): Temurin 21 + SDK/NDK 26.1.10909125, repro in
+  `client/ANDROID_POC.md`. Desktop-only Rust is cfg-gated; capture on Android
+  is JS: getUserMedia → MediaRecorder (webm/opus) → one-shot
+  `POST /recordings/direct` (multipart; server transcodes to canonical FLAC
+  unless the bytes already are FLAC). Runtime mic check on a physical device
+  is pending; backgrounding tears down the MediaStream (foreground service
+  is the known future fix).

@@ -44,6 +44,7 @@ pub fn pre_flight_check(
 pub fn start(
     spool: &Spool,
     title: &str,
+    tags: &[String],
     microphone: Option<&str>,
     system_output: Option<&str>,
     with_system: bool,
@@ -67,6 +68,7 @@ pub fn start(
     let session = SpoolSession {
         id: id.clone(),
         title: title.to_string(),
+        tags: tags.to_vec(),
         started_at: unix_now_iso(),
         duration_sec: 0.0,
         sample_rate: CAPTURE_RATE,

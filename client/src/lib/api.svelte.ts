@@ -16,12 +16,22 @@ export type Stage = {
 export type Recording = {
 	id: string;
 	title: string;
+	tags: string[];
 	state: 'uploading' | 'processing' | 'done' | 'failed';
 	committed_bytes: number;
 	total_bytes: number | null;
 	duration_sec: number | null;
 	created_at: string;
 	stages: Stage[];
+};
+
+export type ProfileInfo = {
+	id: string;
+	version: number;
+	display_name: string;
+	description: string;
+	tags: string[];
+	has_enrich: boolean;
 };
 
 export type RecordingPage = {
@@ -36,6 +46,11 @@ export type ListParams = {
 	offset: number;
 	q?: string;
 	state?: Recording['state'] | 'all';
+};
+
+export type UpdateRecordingPatch = {
+	title?: string;
+	tags?: string[];
 };
 
 const STORAGE_KEY = 'transcripter.apiConfig';
@@ -75,7 +90,6 @@ export async function testConnection(cfg: ApiConfig): Promise<string> {
 	const base = cfg.baseUrl.replace(/\/$/, '');
 	const health = await fetch(`${base}/health`);
 	if (!health.ok) throw new Error(`health ${health.status}`);
-	// Token check: /health is public, so probe an authed endpoint too.
 	const authed = await fetch(`${base}/recordings`, {
 		headers: { authorization: `Bearer ${cfg.token}` }
 	});
@@ -94,20 +108,30 @@ export async function listRecordings(cfg: ApiConfig, params: ListParams): Promis
 	return resp.json();
 }
 
+export async function listProfiles(cfg: ApiConfig): Promise<ProfileInfo[]> {
+	const resp = await req(cfg, '/profiles');
+	if (!resp.ok) throw new Error(`profiles ${resp.status}`);
+	return resp.json();
+}
+
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
 	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });
 	return resp.json();
 }
 
-export async function renameRecording(cfg: ApiConfig, id: string, title: string): Promise<Recording> {
+export async function updateRecording(
+	cfg: ApiConfig,
+	id: string,
+	patch: UpdateRecordingPatch
+): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`, {
 		method: 'PATCH',
-		body: JSON.stringify({ title })
+		body: JSON.stringify(patch)
 	});
 	if (!resp.ok) {
 		const detail = await resp.json().catch(() => ({ detail: resp.status }));
-		throw new Error(detail.detail ?? `rename ${resp.status}`);
+		throw new Error(detail.detail ?? `update ${resp.status}`);
 	}
 	return resp.json();
 }
@@ -142,10 +166,81 @@ export async function fetchArtifact(
 	if (!resp.ok) throw Object.assign(new Error(`artifact ${resp.status}`), { status: resp.status });
 	return resp.text();
 }
+
 export async function deleteRecording(cfg: ApiConfig, id: string): Promise<void> {
 	const resp = await req(cfg, `/recordings/${id}`, { method: 'DELETE' });
 	if (!resp.ok) {
 		const detail = await resp.json().catch(() => ({ detail: resp.status }));
 		throw Object.assign(new Error(detail.detail ?? `delete ${resp.status}`), { status: resp.status });
 	}
+}
+
+/**
+ * Upload a single captured audio blob directly through the REST multipart
+ * endpoint used by the Android capture path (mobile webview -> WebM/Opus ->
+ * POST /recordings/direct). The server handles transcoding to canonical
+ * FLAC and seeds the standard pipeline (same as a desktop recording finalize).
+ *
+ * `onProgress` is optional: a single indeterminate tick after the body is
+ * sent is enough for the PoC UI; per-byte progress on a single multipart
+ * POST would need the fetch-stream ReadableStream tee trick and is out of
+ * scope for this gate. The hook exists so callers can wire richer progress
+ * later without another signature break.
+ *
+ * Tags and duration_sec mirror the desktop JSON create path (server
+ * normalizes tags the same way); title and duration_sec are optional in the
+ * multipart body but the server treats absent title as empty and absent
+ * duration_sec as null (both are tolerated).
+ */
+export async function uploadDirect(
+	cfg: ApiConfig,
+	file: Blob,
+	title: string | null,
+	tags: string[] = [],
+	durationSec: number | null = null,
+	onProgress?: (deltaBytes: number) => void
+): Promise<{ id: string }> {
+	const form = new FormData();
+	form.append('file', file, filenameForBlob(file));
+	if (title && title.trim().length > 0) form.append('title', title.trim());
+	if (tags.length > 0) form.append('tags', JSON.stringify(tags));
+	if (durationSec !== null && Number.isFinite(durationSec)) {
+		form.append('duration_sec', durationSec.toFixed(3));
+	}
+
+	const url = `${cfg.baseUrl.replace(/\/$/, '')}/recordings/direct`;
+	const resp = await fetch(url, {
+		method: 'POST',
+		headers: {
+			authorization: `Bearer ${cfg.token}`
+			// Intentionally NO content-type: the browser sets
+			// multipart/form-data; boundary=... when the body is a FormData.
+		},
+		body: form
+	});
+	// Indeterminate progress tick after the body has been sent. Real per-byte
+	// progress is out of scope for the PoC (see docstring above).
+	onProgress?.(file.size);
+
+	if (resp.status === 401) {
+		throw Object.assign(new Error('unauthorized: check token in Settings'), { status: 401 });
+	}
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw new Error(detail.detail ?? `direct upload ${resp.status}`);
+	}
+	return resp.json();
+}
+
+/** Pick a sensible filename for the multipart "file" part. Server-side
+ * debug logs are easier to read with a real extension, and any content-type
+ * sniffer (FFmpeg auto-detect, magic-byte scan) prefers named files. */
+function filenameForBlob(blob: Blob): string {
+	const mime = blob.type.toLowerCase();
+	if (mime.includes('webm')) return 'recording.webm';
+	if (mime.includes('ogg')) return 'recording.ogg';
+	if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return 'recording.m4a';
+	if (mime.includes('flac')) return 'recording.flac';
+	if (mime.includes('wav')) return 'recording.wav';
+	return 'recording.bin';
 }

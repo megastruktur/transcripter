@@ -10,18 +10,39 @@
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import { commands } from '$lib/tauri';
+	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import TagChips from '$lib/TagChips.svelte';
+	import { mergeDraftTags, buildTagSuggestions } from '$lib/tags';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
+	import { isAndroidTauri, startMobileRecorder } from '$lib/mobile-recorder';
+	import type { MobileRecorder } from '$lib/mobile-recorder';
 
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
 	// session's written-frame count, so elapsed time survives window collapse.
 	const CAPTURE_RATE = 48_000;
 	let title = $state('');
+	let tagDraft = $state('');
+	let tags = $state<string[]>([]);
 	let starting = $state(false);
+	let android = $state(false);
+	let mobile: MobileRecorder | null = null;
+	let mobileFramesTimer: ReturnType<typeof setInterval> | null = null;
+	let mobileStartedAt = 0;
+	/** Failed mobile upload kept in memory for a manual retry — unlike the
+	 * desktop spool there is no on-disk persistence yet (PoC), so leaving
+	 * the page still loses it; the notice copy says as much. */
+	let failedUpload: { blob: Blob; title: string; tags: string[]; durationSec: number } | null =
+		$state(null);
+	let retrying = $state(false);
+	let tagSuggestions = $derived(buildTagSuggestions(profilesCache.items));
 
 	onMount(() => {
 		// Instant from the shared cache on remounts; enumerates and checks in
 		// the background only when there is no report for this selection yet.
 		void ensureAudioDevices();
+		// Profile tags for the picker; failure leaves free-form entry working.
+		void ensureProfiles(loadApiConfig());
 		// A remount (window re-expanded mid-recording) must not restart the
 		// clock: seed frames immediately instead of waiting for the poller.
 		if (recorder.recording) {
@@ -30,10 +51,25 @@
 				() => {}
 			);
 		}
+		android = isAndroidTauri();
+		return () => {
+			if (mobileFramesTimer) {
+				clearInterval(mobileFramesTimer);
+				mobileFramesTimer = null;
+			}
+			// Mobile capture lives in THIS component (unlike the desktop
+			// Rust-side session that survives remounts): leaving the page
+			// mid-recording must tear the MediaRecorder down, or the store
+			// keeps saying "recording" with no reachable handle to stop it.
+			if (mobile) {
+				mobile.cancel();
+				mobile = null;
+				recorder.recording = false;
+				recorder.warnings.push('capture cancelled — left the page mid-recording');
+			}
+		};
 	});
-
 	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
-
 	function fmt(sec: number): string {
 		const h = Math.floor(sec / 3600);
 		const m = Math.floor((sec % 3600) / 60);
@@ -42,15 +78,24 @@
 	}
 
 	async function beginRecording(): Promise<void> {
+		if (android) {
+			await beginMobileRecording();
+			return;
+		}
 		if (!audioDevices.selectedMicrophone) {
 			recorder.warnings.push('no microphone available');
 			return;
 		}
 		starting = true;
 		clearWarnings();
+		// Flush the draft before the recording starts so any in-progress
+		// chip the user did not press Enter for is not silently dropped.
+		tags = mergeDraftTags(tags, tagDraft);
+		tagDraft = '';
 		try {
 			await startRecording(
 				title,
+				tags,
 				audioDevices.selectedMicrophone,
 				audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF
@@ -61,6 +106,113 @@
 			starting = false;
 		}
 	}
+
+	async function beginMobileRecording(): Promise<void> {
+		if (mobile || recorder.recording || recorder.stopping) return;
+		starting = true;
+		clearWarnings();
+		tags = mergeDraftTags(tags, tagDraft);
+		tagDraft = '';
+		let handle: MobileRecorder;
+		try {
+			handle = startMobileRecorder({});
+		} catch (error) {
+			recorder.warnings.push(String(error));
+			starting = false;
+			return;
+		}
+		mobile = handle;
+		// Gate the "recording" UI on the mic ACTUALLY streaming: a denied
+		// system prompt must surface as a warning immediately, not as a
+		// running clock that dies on Stop.
+		try {
+			await handle.ready;
+		} catch (error) {
+			if (mobile === handle) mobile = null;
+			recorder.warnings.push(String(error));
+			starting = false;
+			return;
+		}
+		// The page may have unmounted (cleanup cancelled the handle) while
+		// the permission prompt was open — a late grant must NOT flip the
+		// shared store or start a ticker nobody will clear.
+		if (mobile !== handle) return;
+		recorder.recording = true;
+		recorder.frames = 0;
+		mobileStartedAt = Date.now();
+		// Mirror the desktop poller: tick `recorder.frames` at the same 500 ms cadence
+		// so `elapsed = floor(frames / CAPTURE_RATE)` drives the visible timer without
+		// a second source of truth. CAPTURE_RATE mirrors src-tauri/src/capture.rs.
+		mobileFramesTimer = setInterval(() => {
+			if (!recorder.recording) return;
+			const elapsedSec = (Date.now() - mobileStartedAt) / 1000;
+			recorder.frames = Math.floor(elapsedSec * CAPTURE_RATE);
+		}, 500);
+		starting = false;
+	}
+
+	async function stopMobileRecording(): Promise<void> {
+		if (!mobile || recorder.stopping) return;
+		recorder.stopping = true;
+		if (mobileFramesTimer) {
+			clearInterval(mobileFramesTimer);
+			mobileFramesTimer = null;
+		}
+		const handle = mobile;
+		mobile = null;
+		let blob: Blob;
+		try {
+			blob = await handle.stop();
+		} catch (error) {
+			recorder.stopping = false;
+			recorder.recording = false;
+			recorder.warnings.push(`stop failed: ${String(error)}`);
+			return;
+		}
+		const durationSec = Math.max(0, (Date.now() - mobileStartedAt) / 1000);
+		recorder.recording = false;
+		const cfg = loadApiConfig();
+		if (!cfg.baseUrl || !cfg.token) {
+			recorder.warnings.push('no server configured — recording not uploaded');
+			recorder.stopping = false;
+			return;
+		}
+		try {
+			const result = await uploadDirect(cfg, blob, title, tags, durationSec);
+			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+		} catch (error) {
+			// Do NOT discard the audio: the desktop path survives via the
+			// on-disk spool; the mobile PoC keeps the blob in memory and
+			// offers a manual retry instead of silently losing the take.
+			failedUpload = { blob, title, tags: [...tags], durationSec };
+			recorder.warnings.push(`upload failed: ${String(error)}`);
+		} finally {
+			recorder.stopping = false;
+		}
+	}
+
+	async function retryFailedUpload(): Promise<void> {
+		const pending = failedUpload;
+		if (!pending || retrying) return;
+		retrying = true;
+		try {
+			const result = await uploadDirect(
+				loadApiConfig(),
+				pending.blob,
+				pending.title,
+				pending.tags,
+				pending.durationSec
+			);
+			failedUpload = null;
+			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+		} catch {
+			// Block stays; the user can retry again. No stacked warnings —
+			// the persistent notice already carries the failure state.
+		} finally {
+			retrying = false;
+		}
+	}
+
 </script>
 
 <svelte:head><title>Capture · Transcriptor Maximus</title></svelte:head>
@@ -74,6 +226,19 @@
 		<div class="notice warning" role="status"><strong>Signal warning</strong><span>{warning}</span></div>
 	{/each}
 
+	{#if failedUpload}
+		<div class="notice warning upload-pending" role="status">
+			<strong>Upload pending</strong>
+			<span
+				>the take is kept in memory only — retry when the network is back; leaving this page
+				discards it</span
+			>
+			<button type="button" class="retry-upload" onclick={retryFailedUpload} disabled={retrying}>
+				{retrying ? 'Retrying…' : 'Retry upload'}
+			</button>
+		</div>
+	{/if}
+
 	<div class:active={recorder.recording} class="recorder-core panel">
 		<div class="meter" aria-hidden="true">
 			{#each [12, 22, 34, 18, 42, 28, 48, 20, 38, 16, 30, 10] as height, index (index)}
@@ -82,8 +247,8 @@
 		</div>
 		<div class="timer" aria-live="polite">{fmt(elapsed)}</div>
 		<div class="capture-meta">
-			<span>{recorder.recording ? 'Recording in FLAC' : 'Ready to record'}</span>
-			<span>{recorder.recording ? `${recorder.frames} frames captured` : 'Processed after you stop'}</span>
+			<span>{recorder.recording ? (android ? 'Recording in WebM' : 'Recording in FLAC') : 'Ready to record'}</span>
+			<span>{recorder.recording ? `${fmt(elapsed)} captured` : 'Processed after you stop'}</span>
 		</div>
 
 		<label class="title-field">
@@ -91,8 +256,20 @@
 			<input type="text" placeholder="e.g. Product sync — August 22" bind:value={title} disabled={recorder.recording} />
 		</label>
 
+		<label class="tags-field" class:disabled={recorder.recording}>
+			<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
+			<TagChips
+				{tags}
+				bind:draft={tagDraft}
+				disabled={recorder.recording}
+				suggestions={tagSuggestions}
+				placeholder="e.g. meeting, planning"
+				onChange={(next) => (tags = next)}
+			/>
+		</label>
+
 		{#if recorder.recording}
-			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => stopRecording()}>
+			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => android ? stopMobileRecording() : stopRecording()}>
 				<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
 				<span><strong>{recorder.stopping ? 'Sealing archive…' : 'Stop recording'}</strong><small>Finish and send for processing</small></span>
 			</button>
@@ -107,8 +284,21 @@
 
 <style>
 	.capture-page { display: flex; flex-direction: column; gap: 10px; }
+	/* Android: the record page is single-purpose, so the panel chrome around
+	   the recorder is dissolved (display:contents drops the panel box but
+	   keeps child order) and the record button pins to the bottom of the
+	   viewport for thumb reach. Desktop keeps the framed instrument panel. */
+	:global(.shell--android) .capture-page { min-height: 100%; }
+	:global(.shell--android) .recorder-core { display: contents; }
+	:global(.shell--android) .recorder-core::before { display: none; }
+	:global(.shell--android) .record-control { margin-top: auto; position: sticky; bottom: 10px; z-index: 2; }
 	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
+	.upload-pending { grid-template-columns: 1fr auto; align-items: center; }
+	.upload-pending strong { grid-column: 1 / -1; }
+	.retry-upload { padding: 6px 10px; border: 1px solid var(--brass); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.retry-upload:hover:not(:disabled) { background: rgba(215, 167, 71, 0.12); }
+	.retry-upload:disabled { opacity: 0.6; cursor: default; }
 	.recorder-core { padding: 12px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
 	.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
 	.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
@@ -118,6 +308,9 @@
 	.timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
 	.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin: 5px 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 10px; color: #8d847a; }
 	.title-field { display: block; margin-bottom: 10px; }
+	.tags-field { display: block; margin-bottom: 10px; }
+	.tags-field.disabled { opacity: 0.55; }
+	.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 	.record-control { width: 100%; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
 	.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
 	.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }

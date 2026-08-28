@@ -40,6 +40,10 @@ and a summary** — every stage re-runnable on demand.
   every record start; **Settings** runs a live RMS probe of both capture
   paths — no more silent empty first recordings.
 - **Single-user by design.** One bearer token, LAN-oriented, zero accounts.
+- **Tags & profiles.** Tag a recording (`pathfinder`, `meeting`…) and a yaml
+  profile can override the summary prompt and name the exported artifact —
+  RPG session logs, structured minutes, your own domain. Declarative only;
+  the core pipeline never breaks on a bad profile.
 
 ## Screenshots
 
@@ -162,6 +166,34 @@ chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
 Off by default (`chunk.enabled: false` → stage reports `skipped`, pipeline
 runs whole-file as before).
 
+## Tags & profiles
+
+Recordings carry flat lowercase **tags**: set them on the record page, edit
+them on the recording page, search them via the library search box
+(`GET /recordings?q=` matches title and tags).
+
+**Profiles** are yaml files in `server/profiles/` (bind-mounted read-only at
+`/etc/transcripter/profiles`, re-scanned on every stage run — no restart
+needed). A profile whose `tags` intersect the recording's tags overrides the
+summarize prompt and renames the exported summary artifact
+(`output_artifact`, default `summary.md`; the canonical `meta/summary.md` is
+unchanged). Tag edits on existing recordings apply on the next summarize
+regenerate. Two examples ship in the repo (`pathfinder-party-log`,
+`meeting-notes`); the format contract for writing your own is
+`server/profiles/README.md`. A broken profile logs a warning and is skipped —
+the pipeline is never affected.
+
+With the graph layer on (`--profile graph`), profiles with an `enrich:`
+section additionally extract events/entities/relations into Neo4j after
+summarize (best-effort — failures never hurt the recording), and
+`POST /tags/{tag}/digest {last_n}` renders a digest note of the last N
+tagged sessions to `<transcripts>/digests/<tag>.md`.
+
+Mobile/one-shot uploads: `POST /recordings/direct` accepts a single
+multipart request (audio + title + tags) and transcodes to FLAC
+server-side — used by the Android client (PoC state and build repro:
+`client/ANDROID_POC.md`).
+
 ## ML deployment matrix
 
 ML services are compose **profiles**: the base stack needs none of them.
@@ -180,6 +212,7 @@ ML services are compose **profiles**: the base stack needs none of them.
 | No ML containers              | faster-whisper in worker       | disabled — stages `skipped`          | `docker compose up -d` + `diarization.enabled: false`      |
 | Bundled Speaches              | Speaches behind profile `stt`  | LinTO behind profile                 | `docker compose --profile stt --profile diarization up -d` + config below |
 | External / voice stack        | any OpenAI-compatible STT      | any LinTO endpoint                   | point config/env at `http://<host>:<port>` — see below     |
+| Knowledge graph (Neo4j)       | any of the above               | any of the above                     | `docker compose --profile graph up -d` + `NEO4J_PASSWORD` in `.env` — see below |
 
 ### Routing transcription to Speaches (bundled)
 
@@ -200,6 +233,58 @@ Then `docker compose restart worker` (config is read once at startup).
 Speaches preloads `Systran/faster-whisper-small` at startup — the first
 start downloads weights from huggingface.co into the `speaches-hf-cache`
 volume (later starts work offline).
+
+### Knowledge graph (Neo4j, behind `graph` profile)
+
+The `enrich` pipeline stage extracts entities/events from the transcript
+and writes them into a Neo4j Community Edition graph so cross-recording
+digest queries (by tag) are possible. The stage is **best-effort**: when
+the graph layer is off, `enrich` reports `skipped` and the recording
+completes normally — the core pipeline is unaffected (same opt-in
+pattern as `diarization`).
+
+Enable the bundled Neo4j container with the `graph` profile:
+
+```bash
+# 1. Set a strong password in .env (generate: openssl rand -hex 24).
+echo 'NEO4J_PASSWORD=<your-password>' >> .env
+
+# 2. Start the neo4j service alongside whatever else you already run.
+docker compose --profile graph up -d         # add this profile to existing flags
+# e.g. with bundled diarization:
+docker compose --profile diarization --profile graph up -d
+```
+
+Then point the worker at the graph in `config.yaml`:
+
+```yaml
+# server/config.yaml
+graph:
+  uri: bolt://neo4j:7687      # compose-internal DNS; never publish bolt
+  user: neo4j
+  password_env: NEO4J_PASSWORD
+  database: neo4j
+```
+
+`docker compose restart worker` to apply. The image is `neo4j:5.26-community`
+(LTS, internal 5.26.30, pinned per [SECURITY.md](./SECURITY.md) pre-update
+checklist — pulled 2026-08-27), `mem_limit: 1.5g`, no published ports
+(bolt driver reaches it on the compose network only). Auth is mandatory
+(`NEO4J_AUTH=neo4j/<password>`); compose refuses to render the service
+without `NEO4J_PASSWORD` set in `.env`. The worker never `depends_on`
+neo4j, so toggling the profile doesn't restart the worker.
+
+**Without the profile**, recordings still complete end-to-end:
+`diarize` and `enrich` both report `skipped` if their backend is
+unavailable — the recording is `done` and the client shows the existing
+transcript + summary tabs as before. To use a different Neo4j
+deployment (LAN host, embedded, Neo4j AuraDB free tier), leave the
+profile off, set `graph.uri` in config.yaml to its bolt endpoint, and
+provide the password via the env var named in `graph.password_env`.
+
+Backups live next to the postgres dump in `server/backups/` — see
+[`server/backups/README.md`](./server/backups/README.md) for the
+[`scripts/backup.sh`](./server/backups/README.md) invocation and the neo4j-admin restore runbook.
 
 ### External voice stack (separate compose / host)
 

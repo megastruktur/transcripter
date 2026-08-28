@@ -8,6 +8,8 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text, create_engine
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.dialects.postgresql import TEXT
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -40,7 +42,7 @@ class StageStatus(enum.Enum):
     skipped = "skipped"
 
 
-STAGE_KINDS = ("chunk", "transcribe", "diarize", "merge_speakers", "summarize")
+STAGE_KINDS = ("chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich")
 
 
 class Recording(Base):
@@ -48,6 +50,16 @@ class Recording(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     title: Mapped[str] = mapped_column(Text, default="")
+    # Normalized knowledge-graph tags (trim + lowercase + dedupe, order preserved).
+    # Postgres stores TEXT[]; SQLite (tests, local dev) gets a JSON variant so
+    # the same python-side `list[str]` default works in both dialects.
+    tags: Mapped[list[str]] = mapped_column(
+        # Dialect-specific postgresql ARRAY: the generic sqlalchemy.ARRAY
+        # lacks .contains() (@>) — keep both packages on the same type.
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
     state: Mapped[RecordingState] = mapped_column(
         Enum(RecordingState, name="recording_state"), default=RecordingState.uploading
     )

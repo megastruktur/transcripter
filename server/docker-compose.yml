@@ -13,6 +13,7 @@ services:
     volumes:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
+      - ./profiles:/etc/transcripter/profiles:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,6 +43,10 @@ services:
       SPEACHES_API_KEY: ${SPEACHES_API_KEY:-}
       # LiteLLM virtual key for the summarize stage (summarize.api_key_env).
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # Neo4j password for the optional graph profile (graph.password_env
+      # in config.yaml). Empty default = graph layer disabled; the enrich
+      # stage will report `skipped` without it (best-effort, like diarize).
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
     volumes:
       - ./storage:/storage
       # Host-side transcripts dir (Obsidian vault); empty default keeps the
@@ -49,6 +54,11 @@ services:
       - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts
       - models:/models
       - ./config.yaml:/etc/transcripter/config.yaml:ro
+      - ./profiles:/etc/transcripter/profiles:ro
+    # Note: NO `depends_on: neo4j` — the graph profile is opt-in (like
+    # diarization). When `--profile graph` is OFF, the enrich stage checks
+    # cfg.graph.enabled at runtime and reports `skipped`; the worker starts
+    # fine without the neo4j container.
     depends_on:
       temporal:
         condition: service_started
@@ -133,6 +143,42 @@ services:
       start_period: 5m  # first start downloads weights (~minutes) — see e2e preload budget
     restart: unless-stopped
 
+  # Optional knowledge-graph backend (Neo4j CE 5.26, LTS 5.26.30).
+  # Start with: docker compose --profile graph up -d
+  # Backs the `enrich` stage when a profile carries an `enrich:` section;
+  # without this profile (or without NEO4J_PASSWORD set) the enrich stage
+  # reports `skipped` and the recording completes normally. The worker
+  # never depends_on neo4j — same opt-in pattern as `diarization`.
+  # Security: image pinned per SECURITY.md pre-update checklist
+  # (amd64 manifest digest sha256:b7deccb0181b9ad9cbeaf1728d099066fe30210e42bf1e1295da1c587eee4012;
+  # internal version Neo4j 5.26.30, pulled 2026-08-27). Pulled: 2026-08-27.
+  # Ports are NOT published — the bolt driver reaches it on the compose
+  # network at bolt://neo4j:7687 (config.yaml graph.uri). AUTH is mandatory
+  # (NEO4J_AUTH=neo4j/<password>) — the worker passes NEO4J_PASSWORD env.
+  # mem_limit caps the JVM heap + page cache; the bundled Neo4j image
+  # defaults to 512m heap which is fine for the enrich workload (small
+  # batches of MERGE per recording).
+  neo4j:
+    image: neo4j:5.26-community
+    profiles: ["graph"]
+    environment:
+      # NEO4J_AUTH format is neo4j/<password>; compose substitutes the
+      # .env value and refuses to start if NEO4J_PASSWORD is empty/unset.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env to enable --profile graph}
+    volumes:
+      - neo4jdata:/data
+    mem_limit: 1.5g
+    healthcheck:
+      # Causal-cluster read endpoint returns 200 once the DB is accepting
+      # bolt writes. Cheaper than driving the bolt port from a shell with
+      # no curl/cypher-shell available.
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
   # Separate voice stack on this host? Uncomment to share a docker network
   # across stacks (create first: docker network create voice), then add
   # `networks: [default, voice]` to worker and the ML services.
@@ -148,3 +194,4 @@ volumes:
   pgdata:
   models:
   speaches-hf-cache:
+  neo4jdata:

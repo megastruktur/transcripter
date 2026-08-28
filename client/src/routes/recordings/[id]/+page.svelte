@@ -4,9 +4,10 @@
 	import { page } from '$app/state';
 	import Icon, { type IconName } from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
+	import TagChips from '$lib/TagChips.svelte';
 	import {
 		getRecording,
-		renameRecording,
+		updateRecording,
 		deleteRecording,
 		audioUrl,
 		fetchArtifact,
@@ -16,16 +17,18 @@
 		type Stage
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
+	import { buildTagSuggestions } from '$lib/tags';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
 	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
-	const id = page.params.id ?? ''; // undefined → 400 → not-found panel
-	/** Stage → shared icon glyph. Names/status stay in tooltips and accessible labels. */
+	const id = page.params.id ?? '';
 	const stageIcons: Record<StageKind, IconName> = {
 		chunk: 'chunk',
 		transcribe: 'transcript',
 		diarize: 'diarize',
 		merge_speakers: 'speakers',
-		summarize: 'summary'
+		summarize: 'summary',
+		enrich: 'enrich'
 	};
 
 	let recording = $state<Recording | null>(null);
@@ -42,6 +45,9 @@
 	let deleteError = $state('');
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 	let audioEl = $state<HTMLAudioElement>();
+	let tagError = $state('');
+	let tagSaving = $state(false);
+	let tagSuggestions = $derived(buildTagSuggestions(profilesCache.items));
 
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
 	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
@@ -57,7 +63,6 @@
 	const activeTab = $derived(artifactTab.active);
 	const currentTab = $derived(tabData[activeTab]);
 
-	// Default artifact view by availability: Summary → Speakers → Transcript → JSON.
 	function defaultTab(rec: Recording): ArtifactTabKey {
 		const done = (kind: Stage['kind']) => rec.stages.some((s) => s.kind === kind && s.status === 'done');
 		if (done('summarize')) return 'summary';
@@ -89,8 +94,6 @@
 		stageRetry.stages = next.stages;
 		stageRetry.enabled = next.state === 'done' || next.state === 'failed';
 		if (previous?.state === 'processing' && next.state !== 'processing') {
-			// A re-run finished: artifacts are rewritten only at stage completion,
-			// so a tab opened mid-rerun would otherwise cache the pre-rerun file.
 			invalidateArtifacts();
 			void loadTab(activeTab, true);
 		}
@@ -108,12 +111,12 @@
 			if (status === 404 || status === 400) {
 				notFound = true;
 				error = '';
-				stopPoll(); // recording gone / bad id — stop issuing doomed requests
+				stopPoll();
 				stageRetry.stages = [];
 				stageRetry.enabled = false;
 			} else {
 				error = String(caught);
-				if (status === 401) stopPoll(); // token changed in Settings
+				if (status === 401) stopPoll();
 			}
 		} finally {
 			loading = false;
@@ -136,12 +139,15 @@
 		};
 	});
 
-	// The rail tab buttons (layout) write artifactTab.active; loading happens
-	// here so the artifact panel reacts no matter which side changed the tab.
 	$effect(() => {
 		const tab = artifactTab.active;
 		if (!recording) return;
 		void loadTab(tab);
+	});
+
+	$effect(() => {
+		// Profile tags for the picker; failure leaves free-form entry working.
+		void ensureProfiles(loadApiConfig());
 	});
 
 	function autofocus(node: HTMLElement): void {
@@ -169,12 +175,35 @@
 		recording = { ...recording, title };
 		pendingTitle = title;
 		try {
-			applyRecording(await renameRecording(loadApiConfig(), recording.id, title));
+			applyRecording(await updateRecording(loadApiConfig(), recording.id, { title }));
 		} catch (caught) {
 			recording = { ...recording, title: previous };
 			renameError = `Rename failed: ${caught instanceof Error ? caught.message : String(caught)}`;
 		} finally {
 			pendingTitle = null;
+		}
+	}
+
+	function sameTags(a: string[], b: string[]): boolean {
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+		return true;
+	}
+
+	async function saveTags(next: string[]): Promise<void> {
+		if (!recording) return;
+		const previous = recording.tags;
+		if (sameTags(previous, next)) return;
+		recording = { ...recording, tags: next };
+		tagSaving = true;
+		tagError = '';
+		try {
+			applyRecording(await updateRecording(loadApiConfig(), recording.id, { tags: next }));
+		} catch (caught) {
+			recording = { ...recording, tags: previous };
+			tagError = `Tag update failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+		} finally {
+			tagSaving = false;
 		}
 	}
 
@@ -229,7 +258,6 @@
 
 	function handleDeleteKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape') return;
-		// The window-level layout Escape handler collapses the app; keep it local.
 		event.stopPropagation();
 		deleteArmed = false;
 	}
@@ -240,7 +268,6 @@
 		deleteError = '';
 		try {
 			if (audioEl) {
-				// Release the audio file before the server removes recordings_root/{id}.
 				audioEl.pause();
 				audioEl.removeAttribute('src');
 				audioEl.load();
@@ -336,6 +363,21 @@
 				{/each}
 			</span>
 		</div>
+		<div class="tags-row" class:saving={tagSaving}>
+			<span class="tags-label">Tags</span>
+			<TagChips
+				tags={recording.tags}
+				dense
+				placeholder="Add a tag and press Enter"
+				suggestions={tagSuggestions}
+				onChange={(next) => void saveTags(next)}
+			/>
+		</div>
+		{#if tagError}
+			<p class="inline-error" role="alert">{tagError}</p>
+		{:else if recording.tags.length > 0}
+			<p class="tags-hint">New tags apply to the summarize profile on the next regenerate.</p>
+		{/if}
 		{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
 			<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
 		{/each}
@@ -405,6 +447,10 @@
 	.stage-icon.running { color: var(--brass); border-color: rgba(215,167,71,.25); }
 	.stage-icon.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
+	.tags-row { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
+	.tags-row.saving { opacity: 0.65; }
+	.tags-label { padding-top: 5px; font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
+	.tags-hint { margin: 0; color: var(--ash); font-size: 10px; }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
 	.artifact-panel { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; }

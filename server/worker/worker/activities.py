@@ -436,22 +436,162 @@ async def summarize(rec_id: str) -> dict:
     if not (c.summarize.enabled and c.summarize.model):
         set_stage(rec_id, "summarize", StageStatus.skipped)
         return {"skipped": True}
+    profile = None
+    title = ""
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        title = rec.title or ""
+        # Re-scan profiles per D11: editing a yaml in PROFILES_DIR is meant
+        # to take effect on the next stage run, no worker restart needed.
+        from .profiles import match_profile
+
+        profile = match_profile(rec.tags or [], c.profiles.path)
+    prompt_template = profile.summarize.prompt if profile is not None else None
     try:
         from .summarize import summarize_transcript
 
-        text = await _heartbeat_while(asyncio.to_thread(summarize_transcript, meta_dir(rec_id), c))
+        text = await _heartbeat_while(
+            asyncio.to_thread(
+                summarize_transcript,
+                meta_dir(rec_id),
+                c,
+                prompt_template,
+                title,
+            )
+        )
+        # Meta path is canonical (see §1 in wave-A impl plan): export.py
+        # renames the artifact in the note folder to profile.output_artifact
+        # when a profile matched; meta/summary.md stays the canonical name.
         (meta_dir(rec_id) / "summary.md").write_text(text, encoding="utf-8")
         set_stage(rec_id, "summarize", StageStatus.done)
-        return {"chars": len(text)}
+        return {"chars": len(text), "profile_id": profile.id if profile else None}
     except Exception as e:
         log.exception("summarize failed for %s", rec_id)
         set_stage(rec_id, "summarize", StageStatus.failed, error=str(e))
         raise
 
+# Diarization, merge_speakers, and enrich (wave B) are best-effort: the
+# transcript is the load-bearing artifact; if knowledge-graph
+# extraction can't happen (no graph backend, no profile with an
+# enrich section, or just a flakey llama-server), the recording is
+# still useful with just transcript + summary.
+BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers", "enrich"})
 
-# Diarization (and the merge that depends on it) is best-effort: a recording
-# with a good transcript is still useful, so these stages do not fail it.
-BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers"})
+
+@activity.defn
+async def enrich(rec_id: str) -> dict:
+    """Wave-B knowledge-graph extraction stage (best-effort).
+
+    Skipped when EITHER (a) no profile with an ``enrich`` section
+    matched the recording, OR (b) the graph backend is not configured
+    (empty ``graph.uri``). The same shape as ``diarize``/``merge_speakers``
+    so the activity is honest about WHY it did nothing.
+
+    Otherwise: extract (json_object, ×3 attempts), dedup with slug+LLM,
+    write one transaction (DETACH DELETE by ``origin_recording_id``
+    then MERGE/CREATE), and report the entity count.
+    """
+    set_stage(rec_id, "enrich", StageStatus.running, inc_attempts=True)
+    c = cfg()
+    if not c.graph.enabled:
+        set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "graph disabled"})
+        return {"skipped": "graph disabled"}
+    profile = None
+    title = ""
+    tags: list[str] = []
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        title = rec.title or ""
+        tags = list(rec.tags or [])
+        from .profiles import match_profile
+
+        profile = match_profile(tags, c.profiles.path)
+    if profile is None or profile.enrich is None:
+        set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
+        return {"skipped": "no profile with enrich"}
+    # The graph tag is the tag that MATCHED the profile, not blindly
+    # tags[0]: a recording tagged ["game", "pathfinder"] matched via
+    # "pathfinder" must write tag="pathfinder" or digests for it find an
+    # empty slice. Deterministic: first matching tag in recording order.
+    graph_tag = next((t for t in tags if t in profile.tags), tags[0] if tags else "")
+    try:
+        from .enrich import (
+            extract_from_transcript,
+            pre_existing_lookup,
+            resolve_slugs,
+            write_to_graph,
+        )
+
+        # Extract (json_object + ×3 attempts) — synchronous LLM call.
+        extracted = await _heartbeat_while(
+            asyncio.to_thread(
+                extract_from_transcript,
+                meta_dir(rec_id) / "transcript.md",
+                title,
+                profile.enrich.prompt,
+                c,
+            )
+        )
+        # Two-level dedup: slug collisions across the local extraction
+        # (already-present in `extracted`) AND against the live graph
+        # (pre-existing entities on the same tag).
+        lookup = pre_existing_lookup(
+            c.graph.uri,
+            c.graph.user,
+            os.environ.get(c.graph.password_env, ""),
+            c.graph.database,
+            tag=graph_tag,
+            exclude_rec=rec_id,
+        )
+        try:
+            try:
+                # Heartbeat-wrapped like the extraction: N collisions ×
+                # 30 s LLM calls can otherwise outrun heartbeat_timeout
+                # (CancelledError bypasses the except below and would
+                # strand the stage row in running).
+                resolved = await _heartbeat_while(
+                    asyncio.to_thread(
+                        resolve_slugs, extracted, c, graph_tag, lookup
+                    )
+                )
+            except Exception:
+                # Dedup is best-effort: a flakey LLM (or neo4j) must
+                # never kill the stage. Fall back to the raw extraction
+                # — slug collisions inside the extraction itself are
+                # already handled by ``slugify``.
+                log.exception("enrich: dedup failed; falling back to raw extraction")
+                resolved = extracted
+        finally:
+            lookup.close()
+        # Write to graph (sync neo4j driver via to_thread); heartbeat-
+        # wrapped for the same reason as resolve_slugs above.
+        _count = await _heartbeat_while(
+            asyncio.to_thread(
+                write_to_graph,
+                rec_id,
+                graph_tag,
+                resolved,
+                profile.enrich.node_labels,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+            )
+        )
+        details = {
+            "events": len(resolved.events),
+            "entities": len(resolved.entities),
+            "relations": len(resolved.relations),
+            "profile_id": profile.id,
+        }
+        set_stage(rec_id, "enrich", StageStatus.done, details=details)
+        return details
+    except Exception as e:
+        log.exception("enrich failed for %s", rec_id)
+        set_stage(rec_id, "enrich", StageStatus.failed, error=str(e))
+        raise
 
 
 @activity.defn
@@ -564,3 +704,46 @@ async def export_transcript(args: dict) -> dict:
         return {"transcript_note": f"error: export subprocess timed out after {_EXPORT_TIMEOUT_SEC}s (killed; possible stale mount)"}
     finally:
         _export_children.discard(proc.pid)
+
+
+@activity.defn
+async def tag_digest(args: dict) -> dict:
+    """Wave-C tag digest activity.
+
+    Single long-running step (Postgres pull + Neo4j read + LLM call + file
+    write). The activity reads ``cfg.graph`` upfront and short-circuits
+    with a clear error if the graph backend is not configured — the API
+    layer should have rejected with 409 already, but a missing compose
+    profile between request and execution is still possible and worth
+    failing loud.
+
+    The empty-selection path (no done recordings carry the tag) returns
+    ``{"written": False, "reason": "..."}`` rather than raising: the API
+    has already given the caller 202 with the workflow id, so failing
+    here would just strand a workflow with no actionable error for the
+    user. Empty is a legitimate outcome (a new tag, an archive churn, etc).
+
+    LLM failures propagate (httpx errors are caught by Temporal's retry
+    policy at the workflow level). Tag sanitization failures propagate as
+    ValueError so the worker surfaces a clear last_error rather than
+    silently dropping a note the user can't trace.
+    """
+    tag = args["tag"]
+    last_n = int(args["last_n"])
+    c = cfg()
+    if not c.graph.enabled:
+        # The API already returns 409 on this; if we got here the operator
+        # toggled the config off between request and execution. Surfacing
+        # it as a failure keeps the workflow query honest.
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — digest cannot run"
+        )
+    try:
+        from .digest import run_digest
+
+        return await _heartbeat_while(
+            asyncio.to_thread(run_digest, tag, last_n, c, c.transcripts.path)
+        )
+    except Exception:
+        log.exception("tag_digest failed for tag=%s", tag)
+        raise

@@ -3,24 +3,42 @@
 POST   /recordings                → create recording (uuid) + dir + stage rows
 PUT    /recordings/{id}/audio     → append chunk at ?offset=N (returns committed)
 POST   /recordings/{id}/finalize  → verify sha256, size → state=processing
+POST   /recordings/direct         → one-shot multipart upload (FLAC passthrough,
+                                    other formats → ffmpeg transcode)
 GET    /recordings                → paginated list {items,total,limit,offset}; ?limit=&offset=&q=&state= filter server-side
 GET    /recordings/{id}           → detail with stages
-PATCH  /recordings/{id}           → rename (trimmed title, empty allowed) + re-export note
+PATCH  /recordings/{id}           → update title and/or tags; triggers re-export
 DELETE /recordings/{id}           → catalog row + files
 """
 
+import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
+import subprocess
 import uuid as uuid_mod
+from collections.abc import Iterable
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import cast, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.types import Text
 
 from app import temporal_client
 from app.config import ServerConfig
@@ -42,6 +60,7 @@ MIN_FREE_BYTES = 2 * MAX_CHUNK
 class CreateRecording(BaseModel):
     title: str = ""
     total_bytes: int | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class ChunkAck(BaseModel):
@@ -52,8 +71,36 @@ class FinalizeRequest(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
     duration_sec: float | None = None
 
-class RenameRequest(BaseModel):
-    title: str = ""
+
+class UpdateRequest(BaseModel):
+    # Both fields optional: PATCH updates only what is supplied. The vault
+    # folder embeds the title in its name and the summarize profile matches
+    # on normalized tags: a title change triggers a rename-only export, a
+    # tags change triggers a full export (artifact filename + frontmatter
+    # profile/tags must be re-emitted under the new match).
+    title: str | None = None
+    tags: list[str] | None = None
+
+
+def _normalize_tags(raw: Iterable[str] | None) -> list[str]:
+    """Trim, lower-case, drop blanks; preserve first-seen order, drop dupes.
+
+    Empty strings and whitespace-only tags are silently discarded — they
+    are user-input garbage rather than meaningful labels.
+    """
+    if raw is None:
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        norm = item.strip().lower()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    return out
 
 
 def audio_path(cfg: ServerConfig, rec_id: str) -> Path:
@@ -110,6 +157,211 @@ def has_audio_frames(path: Path) -> bool:
             if last:
                 return f.tell() < size
 
+# ---------------------------------------------------------------------------
+# Direct (one-shot) upload — POST /recordings/direct
+# ---------------------------------------------------------------------------
+# Mobile clients (Android WebView) don't have a reason to share the resumable
+# protocol that desktop needs for large captures: a single multipart POST with
+# the captured audio blob is enough. The server still owns canonicalisation:
+# FLAC is stored as-is (recordings are canonical 48 kHz mono FLAC), anything
+# else is decoded to WAV/whatever ffmpeg understands, downsampled to 48 kHz
+# mono, and re-encoded as FLAC. The result lands at the same path as the
+# resumable flow (recordings_root/<id>/audio.flac) so the worker pipeline is
+# unchanged.
+
+# 600 s — ffmpeg re-encode of a 90-min mobile capture takes ~10–30 s on
+# modest hardware; the headroom here absorbs contention on a slow host and
+# leaves room for unusually long captures without holding the request open
+# indefinitely.
+FFMPEG_TIMEOUT_SEC = 600.0
+# Keep the ffmpeg stderr tail small: full ffmpeg output can be tens of KB
+# of decoder probing, the actionable error is always in the last few lines.
+FFMPEG_STDERR_TAIL = 2048
+
+
+def _ffmpeg_transcode(src: Path, dst: Path) -> str:
+    """Run ffmpeg synchronously; raise HTTPException(422) on failure.
+
+    Returns the trimmed stderr tail for the success path so callers can log
+    it (mostly empty — ffmpeg is chatty on -v error and quiet on success).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(src),
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                str(dst),
+            ],
+            capture_output=True,
+            timeout=FFMPEG_TIMEOUT_SEC,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # A hung ffmpeg is a client-side problem (corrupt/pathological
+        # input): translate to 422 instead of a bare 500 traceback.
+        raise HTTPException(
+            status_code=422,
+            detail=f"ffmpeg timed out after {int(FFMPEG_TIMEOUT_SEC)}s",
+        ) from None
+    if proc.returncode != 0:
+        tail = (proc.stderr or b"").decode("utf-8", errors="replace")
+        if len(tail) > FFMPEG_STDERR_TAIL:
+            tail = tail[-FFMPEG_STDERR_TAIL:]
+        raise HTTPException(
+            status_code=422,
+            detail=f"ffmpeg failed (exit {proc.returncode}): {tail or 'no stderr'}",
+        )
+    return (proc.stderr or b"").decode("utf-8", errors="replace")[-FFMPEG_STDERR_TAIL:]
+
+
+@router.post("/direct", status_code=201)
+async def create_recording_direct(
+    request: Request,
+    file: UploadFile = File(...),
+    title: str = Form(default=""),
+    tags: str = Form(default="[]"),
+    duration_sec: float | None = Form(default=None),
+    session: Session = Depends(get_session),
+) -> dict:
+    """One-shot multipart upload. See module docstring for the contract.
+
+    Validation runs before any DB / FS side effects: an empty file rejects
+    with 400, malformed `tags` JSON rejects with 400. After the recording
+    row is committed, any transcode failure (or silent FLAC) tears down the
+    directory + row so the client can retry from a clean slate.
+    """
+    cfg = _cfg(request)
+
+    # Tags come in as a JSON-encoded string — multipart form fields can't
+    # carry typed list[str] cleanly, and we want the client to be able to
+    # submit an empty array (Form(default="[]") above) without a separate
+    # "no tags" path.
+    try:
+        raw_tags = json.loads(tags) if tags else []
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid tags JSON: {exc.msg}") from exc
+    if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
+        raise HTTPException(status_code=400, detail="tags must be a JSON array of strings")
+
+    # Probe the first 4 bytes without consuming the underlying stream.
+    head = await file.read(4)
+    if len(head) == 0:
+        raise HTTPException(status_code=400, detail="empty audio file")
+    await file.seek(0)
+    is_flac = head == FLAC_MAGIC
+
+    # Pre-allocate the id + directory + stage rows so the transcode can write
+    # straight into the canonical path. On any post-commit failure we roll
+    # back the row and rmtree the dir.
+    rec_id = str(uuid_mod.uuid4())
+    rec_dir = cfg.recordings_root / rec_id
+    target = audio_path(cfg, rec_id)
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    (rec_dir / "meta").mkdir(parents=True, exist_ok=True)
+
+    # Same disk guard as the resumable flow: one-shot uploads are unbounded
+    # in size, so reject before writing when storage is nearly full. Runs
+    # AFTER the mkdir above so statvfs never sees a missing path.
+    if free_bytes(cfg.storage.path) < MIN_FREE_BYTES:
+        shutil.rmtree(rec_dir, ignore_errors=True)
+        raise HTTPException(status_code=507, detail="storage almost full")
+
+    rec = Recording(
+        id=rec_id,
+        title=title,
+        tags=_normalize_tags(raw_tags),
+        duration_sec=duration_sec,
+    )
+    session.add(rec)
+    for kind in STAGE_KINDS:
+        session.add(Stage(recording_id=rec.id, kind=kind))
+
+    def _cleanup_on_failure() -> None:
+        # The Recording/Stage rows were added but NEVER flushed (all failure
+        # paths fire before the first commit): Session.delete() on a pending
+        # instance raises InvalidRequestError. rollback() expunges them.
+        try:
+            session.rollback()
+        except Exception:
+            logging.getLogger("transcripter.api").exception(
+                "cleanup: rollback failed for %s", rec_id
+            )
+        shutil.rmtree(rec_dir, ignore_errors=True)
+
+    try:
+        if is_flac:
+            # Stream the upload straight to the canonical FLAC path; no
+            # intermediate copy.
+            with open(target, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+        else:
+            tmp_in = rec_dir / "_input.bin"
+            with open(tmp_in, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+            try:
+                await asyncio.to_thread(_ffmpeg_transcode, tmp_in, target)
+            finally:
+                tmp_in.unlink(missing_ok=True)
+    except HTTPException:
+        # transcode failure / future validation 422s: tear down before
+        # re-raising so no orphan dir / row survives a 4xx response.
+        _cleanup_on_failure()
+        raise
+    except Exception:
+        _cleanup_on_failure()
+        raise
+
+    # Empty (size==0) catch — protects against a race where the upload sent
+    # only the probed 4 bytes and EOF landed right after.
+    if target.stat().st_size == 0:
+        _cleanup_on_failure()
+        raise HTTPException(status_code=400, detail="empty audio file")
+
+    # Re-use the silent-capture gate from the resumable flow: a header-only
+    # FLAC is valid container-wise but Whisper will return an empty
+    # transcript and diarization will 500 downstream.
+    if not has_audio_frames(target):
+        _cleanup_on_failure()
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "recording contains no audio frames — the capture produced "
+                "silence; check microphone permissions and input device"
+            ),
+        )
+
+    h = hashlib.sha256()
+    size = 0
+    with open(target, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            h.update(chunk)
+            size += len(chunk)
+    rec.committed_bytes = size
+    rec.sha256 = h.hexdigest()
+    rec.state = RecordingState.processing
+    session.commit()
+
+    request.app.state.on_finalize(rec.id, duration_sec)  # → Temporal
+    return {"id": rec.id}
+
 
 @router.post("", status_code=201)
 def create_recording(
@@ -122,6 +374,7 @@ def create_recording(
         id=str(uuid_mod.uuid4()),
         title=body.title,
         total_bytes=body.total_bytes,
+        tags=_normalize_tags(body.tags),
     )
     session.add(rec)
     for kind in STAGE_KINDS:
@@ -248,9 +501,15 @@ def list_recordings(
     needle = q.strip()
     if needle:
         escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        # tags is TEXT[] on Postgres / JSON on sqlite; casting to Text gives
+        # both dialects a common ilike surface — Postgres renders
+        # `tags::text` (a "{a,b,c}" string the substring matches), sqlite
+        # json_extract makes JSON usable as text for ilike.
+        tags_as_text = cast(Recording.tags, Text)
         condition = or_(
             Recording.title.ilike(f"%{escaped}%", escape="\\"),
             Recording.id.ilike(f"%{escaped}%", escape="\\"),
+            tags_as_text.ilike(f"%{escaped}%", escape="\\"),
         )
         stmt = stmt.where(condition)
         count_stmt = count_stmt.where(condition)
@@ -278,22 +537,33 @@ def get_recording(
     rec = _get(recording_id, session)
     return serialize_recording(rec)
 
+
 @router.patch("/{recording_id}")
-async def rename_recording(
+async def update_recording(
     recording_id: str,
-    body: RenameRequest,
+    body: UpdateRequest,
     session: Session = Depends(get_session),
 ) -> dict:
     rec = _get(recording_id, session)
-    rec.title = body.title.strip()
+    # PATCH semantics: only the supplied fields are touched. At least one
+    # field must be set or the call is a no-op that would still trigger an
+    # export cycle.
+    if body.title is None and body.tags is None:
+        raise HTTPException(status_code=400, detail="no fields to update")
+    if body.title is not None:
+        rec.title = body.title.strip()
+    if body.tags is not None:
+        rec.tags = _normalize_tags(body.tags)
     session.commit()
-    # The vault folder embeds the title in its name, so rename it.
-    # rename_only=True: files inside are NOT rewritten — Obsidian edits are
-    # sacred; the frontmatter title goes stale until the next regenerate.
-    # Fire-and-forget: the rename stands even if Temporal is down
-    # (worker.backfill is the recovery path).
+    # A title-only change is rename_only: the folder moves and NOTHING
+    # inside is rewritten (Obsidian edits are sacred). A tags change needs
+    # the FULL export: the summarize profile match may have shifted, so the
+    # artifact filename (profile's output_artifact) and the frontmatter
+    # tags:/profile: fields must be re-emitted — rename_only would leave
+    # them stale. Fire-and-forget; the DB change stands even if Temporal
+    # is down (worker.backfill is the recovery path).
     try:
-        await temporal_client.start_export(rec.id, rename_only=True)
+        await temporal_client.start_export(rec.id, rename_only=body.tags is None)
     except Exception:
         logging.getLogger("transcripter.api").exception("start_export failed for %s", rec.id)
     return serialize_recording(rec)
@@ -303,6 +573,7 @@ def serialize_recording(rec: Recording) -> dict:
     return {
         "id": rec.id,
         "title": rec.title,
+        "tags": list(rec.tags or []),
         "state": rec.state.value,
         "committed_bytes": rec.committed_bytes,
         "total_bytes": rec.total_bytes,

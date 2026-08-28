@@ -73,6 +73,7 @@ impl Uploader {
             .json(&serde_json::json!({
                 "title": s.title,
                 "total_bytes": total,
+                "tags": s.tags,
             }))
             .send()
             .await

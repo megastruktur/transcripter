@@ -7,9 +7,16 @@
 	import { commands } from '$lib/tauri';
 	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, stageNames, stageRetry, stageShortNames, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import { isAndroidTauri } from '$lib/mobile-recorder';
 
 	let { children } = $props();
+	// Android: no desktop window chrome (collapse/minimize/close), no native
+	// window sizing — the WebView is fullscreen and the OS owns the window.
+	const android = isAndroidTauri();
 	let collapsed = $state(browser && localStorage.getItem('transcripter.window-collapsed') === 'true');
+	// Android-only navigation drawer: the rail is too wide for a phone screen,
+	// so it slides in over the workspace instead of pinning a column.
+	let navOpen = $state(false);
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
 
@@ -78,6 +85,7 @@
 		void checkServerConnection();
 		void initUploadTracking();
 		if (!isTauri()) return;
+		if (android) return;
 		try {
 			const appWindow = getCurrentWindow();
 			const [physicalSize, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
@@ -115,6 +123,7 @@
 	}
 
 	function toggleCollapsed(): void {
+		if (android) return;
 		collapsed = !collapsed;
 		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
 		applyWindowMode(collapsed).catch((error) => console.warn('applyWindowMode failed', error));
@@ -129,7 +138,13 @@
 	}
 
 	function handleKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Escape' && !collapsed) toggleCollapsed();
+		if (event.key !== 'Escape') return;
+		// Drawer swallows Escape before the desktop collapse toggle sees it.
+		if (android && navOpen) {
+			navOpen = false;
+			return;
+		}
+		if (!collapsed) toggleCollapsed();
 	}
 
 	function beginCollapsedDrag(event: PointerEvent): void {
@@ -182,28 +197,26 @@
 		<span class="collapsed-state"></span>
 	</button>
 {:else}
-	<div class="app-shell">
+	<div class="app-shell" class:shell--android={android}>
+		{#if !android}
 		<header class="titlebar" data-tauri-drag-region>
-			<div class="identity" data-tauri-drag-region>
-				<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
-				<div data-tauri-drag-region>
-					<strong data-tauri-drag-region>TRANSCRIPTOR MAXIMUS</strong>
-					<small data-tauri-drag-region>Audio capture console</small>
-				</div>
-			</div>
 			<div class="window-actions">
 				<button type="button" onclick={toggleCollapsed} aria-label="Collapse to symbol" title="Collapse to symbol"><Icon name="collapse" size={16} /></button>
 				<button type="button" onclick={minimizeWindow} aria-label="Minimize window" title="Minimize"><Icon name="minimize" size={16} /></button>
 				<button class="close" type="button" onclick={closeWindow} aria-label="Close window" title="Close"><Icon name="close" size={16} /></button>
 			</div>
 		</header>
+		{/if}
 
 		<div class="hazard-rule" aria-hidden="true"></div>
 		<div class="shell-body">
-			<nav class="rail" aria-label="Primary navigation">
+			{#if android}
+				<button class="nav-scrim" class:open={navOpen} type="button" tabindex={navOpen ? 0 : -1} aria-label="Close navigation" onclick={() => (navOpen = false)}></button>
+			{/if}
+			<nav id="primary-nav" class="rail" class:open={navOpen} aria-label="Primary navigation">
 				{#each navItems as item (item.href)}
 
-					<a href={item.href} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
+					<a href={item.href} onclick={() => (navOpen = false)} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
 						<span class="nav-icon" aria-hidden="true"><Icon name={item.icon} size={20} /></span>
 						<span>{item.label}</span>
 					</a>
@@ -219,7 +232,7 @@
 								aria-selected={artifactTab.active === tab.key}
 								class:active={artifactTab.active === tab.key}
 								title={tab.label}
-								onclick={() => (artifactTab.active = tab.key)}
+								onclick={() => { artifactTab.active = tab.key; navOpen = false; }}
 							>
 								<span class="nav-icon" aria-hidden="true"><Icon name={tab.icon} size={20} /></span>
 								<span>{tab.label}</span>
@@ -232,6 +245,9 @@
 
 			<main class="workspace">
 				<div class="context-bar">
+					{#if android}
+						<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={20} /></span></button>
+					{/if}
 					<span class="context-name">{routeName}</span>
 					{#if onRecordingDetail && stageRetry.rerun && stageRetry.enabled && stageRetry.stages.length}
 						<div class="stage-retry" role="group" aria-label="Re-run pipeline stages">
@@ -300,10 +316,10 @@
 		overflow: hidden;
 	}
 	.app-shell::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.22; background-image: repeating-linear-gradient(0deg, transparent 0 3px, rgba(255, 255, 255, 0.018) 3px 4px); mix-blend-mode: screen; }
-	.titlebar { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 14px; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
-	.identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
-	.identity strong { display: block; font-size: 15px; font-weight: 750; letter-spacing: 0.1em; line-height: 1.05; }
-	.identity small { display: block; margin-top: 3px; font-size: 10px; color: var(--ash); }
+	/* Desktop titlebar is only a drag strip plus the window buttons; the
+	   identity wordmark was removed to save vertical space (the context bar
+	   below already names the current page). */
+	.titlebar { display: flex; align-items: center; justify-content: flex-end; padding: 3px 6px; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
 	.mini-cog { width: 29px; height: 29px; display: grid; place-items: center; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .45)); line-height: 0; }
 	.window-actions { display: flex; gap: 3px; }
 	.window-actions button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
@@ -339,6 +355,32 @@
 	.page-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
+	/* On Android the app sigil lives in the context bar and doubles as the
+	   drawer toggle; negative margin keeps the visual footprint identical
+	   while the hit area grows. */
+	.cog-toggle { display: grid; place-items: center; margin: -6px; padding: 6px; border: 0; background: transparent; cursor: pointer; line-height: 0; }
+	.cog-toggle:active .mini-cog { transform: scale(0.94); transition: transform 100ms ease; }
+
+	/* Android: the WebView draws edge-to-edge under the system status bar, so
+	   the shell absorbs the top inset (env() = 0 on desktop, where these rules
+	   never apply anyway) and the footer absorbs the bottom one. There is no
+	   titlebar at all; the rail becomes an overlay drawer. */
+	.shell--android { grid-template-rows: 4px minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top, 0px); }
+	/* The context bar becomes the top chrome: sigil toggle + page title +
+	   stage re-runs + connection lamp. */
+	.shell--android .context-bar { grid-template-columns: auto 1fr auto auto; gap: 8px; padding: 0 10px; }
+
+	/* Android is edge-to-edge fullscreen: the desktop window frame (brass
+	   border + drop shadow) has no window to frame and reads as a stray
+	   outline around the whole screen. */
+	.shell--android { border: 0; box-shadow: none; }
+
+	.shell--android .shell-body { grid-template-columns: minmax(0, 1fr); }
+	.nav-scrim { position: absolute; inset: 0; z-index: 5; padding: 0; border: 0; border-radius: 0; background: rgba(5, 4, 3, 0.55); opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
+	.nav-scrim.open { opacity: 1; pointer-events: auto; }
+	.shell--android .rail { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 192px; background: #14100e; border-right: 1px solid rgba(215, 167, 71, 0.28); box-shadow: 14px 0 34px rgba(0, 0, 0, 0.5); transform: translateX(-105%); transition: transform 160ms ease; }
+	.shell--android .rail.open { transform: translateX(0); }
+	.shell--android .status-strip { min-height: 28px; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; transition: transform 180ms ease; touch-action: none; }
 	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }

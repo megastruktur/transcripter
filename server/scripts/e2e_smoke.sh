@@ -117,10 +117,18 @@ SHA=$(sha256 "$WORK/test.flac")
 SIZE=$(fsize "$WORK/test.flac")
 echo "sha256=$SHA size=$SIZE"
 
-echo "== 3. create recording"
+echo "== 3. create recording (with tags)"
+# Deliberately messy tags to prove server-side normalization
+# (trim + lowercase + dedupe): expects ["pathfinder","e2e"].
 RID=$(curl -sf -X POST -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"title":"e2e-smoke"}' "$API/recordings" | jq -r .id)
+  -d '{"title":"e2e-smoke","tags":["Pathfinder"," E2E ","pathfinder"]}' "$API/recordings" | jq -r .id)
 echo "id=$RID"
+TAGS=$(authf "$API/recordings/$RID" | jq -c .tags)
+test "$TAGS" = '["pathfinder","e2e"]' && echo "tags normalized: $TAGS" || { echo "BAD tags: $TAGS"; exit 1; }
+
+echo "== 3b. profiles registry"
+authf "$API/profiles" | jq -e '.[] | select(.id=="pathfinder-party-log")' >/dev/null \
+  && echo "  ok: pathfinder-party-log listed" || { echo "MISSING pathfinder-party-log in GET /profiles"; exit 1; }
 
 echo "== 4. upload first half, simulate connection drop"
 HALF=$((SIZE / 2))
@@ -217,6 +225,51 @@ N=$(printf '%s\n' "$FOLDERS" | grep -c .)
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
 test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
 grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
+grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { echo "  BAD frontmatter: no tags"; exit 1; }
+# Profile-matched summarize names its artifact per profile.output_artifact and
+# carries `profile:` in frontmatter; asserted only when summarize actually ran.
+if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
+  test -s "$STORAGE_DIR/recordings/$RID/meta/summary.md" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
+  test -s "$FOLDER/session-log.md" && grep -q "profile: pathfinder-party-log" "$FOLDER/session-log.md" \
+    && echo "  ok: session-log.md (profile pathfinder-party-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
+else
+  echo "  skip: summarize not done — session-log.md not asserted"
+fi
+
+if [ "${GRAPH:-0}" = "1" ]; then
+  echo "== 9c. knowledge graph (enrich stage)"
+  echo "$RESP" | jq -e '.stages[] | select(.kind=="enrich").status=="done"' >/dev/null \
+    && echo "  ok: enrich done" || { echo "  enrich NOT done:"; echo "$RESP" | jq -r '.stages[] | select(.kind=="enrich")'; exit 1; }
+  # The LLM extraction on the speech fixture legitimately returns EMPTY
+  # (the pathfinder profile demands RPG facts), so node counts from the
+  # model are informational only; the deterministic write-path probe
+  # (write -> rewrite -> cleanup through worker.enrich.write_to_graph,
+  # run inside the worker container because bolt is NOT published) is
+  # what asserts graph correctness.
+  CYPHER() { docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T neo4j \
+    cypher-shell -u neo4j -p "$NEO4J_PASSWORD" --format plain "$1" 2>/dev/null; }
+  NODES=$(CYPHER "MATCH (n {origin_recording_id: '$RID'}) RETURN count(n) AS c" | grep -oE '[0-9]+' | head -1)
+  echo "  info: $((${NODES:-0} + 0)) LLM-extracted graph nodes for recording"
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" cp "$(dirname "$0")/graph_probe.py" worker:/tmp/graph_probe.py
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T -w /app/worker \
+    -e PYTHONPATH=/app/worker worker \
+    .venv/bin/python /tmp/graph_probe.py || { echo "  graph probe FAILED"; exit 1; }
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T worker rm -f /tmp/graph_probe.py
+
+  echo "== 9d. enrich regenerate returns to done"
+  HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d '{"stage":"enrich"}' "$API/recordings/$RID/regenerate")
+  test "$HTTP" = "200" || { echo "  regenerate enrich rc=$HTTP"; exit 1; }
+  DEADLINE=$((SECONDS + WAIT))
+  while [ $SECONDS -lt $DEADLINE ]; do
+    ST=$(auth "$API/recordings/$RID" | jq -r '.stages[] | select(.kind=="enrich").status')
+    [ "$ST" = "done" ] && break
+    [ "$ST" = "failed" ] && { echo "  enrich regenerate FAILED"; exit 1; }
+    sleep 10
+  done
+  test "$ST" = "done" && echo "  ok: enrich re-ran to done" || { echo "  TIMEOUT waiting for enrich regenerate"; exit 1; }
+fi
 
 echo "== 10. regenerate diarize"
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \

@@ -12,6 +12,10 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "httpx>=0.27",
+    # Runtime, NOT dev: FastAPI checks for it at app import time when any
+    # route declares Form/File params (POST /recordings/direct) and raises
+    # RuntimeError without it; the image installs --no-dev.
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]

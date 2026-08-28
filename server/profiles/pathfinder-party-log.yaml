@@ -1,0 +1,47 @@
+# Example profile: Pathfinder (or any tabletop RPG) session logging.
+# Copy and adapt for your own domain. Contract: see README.md in this directory.
+id: pathfinder-party-log
+version: 1.0.0
+min_host_version: 0.9.0
+display_name: Pathfinder Party Log
+description: "Chronicle of a tabletop RPG session: events, loot, NPCs, plot hooks"
+tags:
+  - pathfinder
+  - pathfinder party log
+summarize:
+  # The prompt MUST contain {transcript}; {title} is optional.
+  prompt: |
+    Ты — летописец настольной RPG-сессии. Ниже — транскрипт записи сессии
+    «{title}». Составь летопись на русском языке:
+
+    ## Ход сессии
+    Хронология ключевых событий: сцены, броски, повороты сюжета (список).
+
+    ## Лут и ресурсы
+    Полученные/потраченные предметы, золото, артефакты — с владельцами.
+
+    ## NPC и фракции
+    Встреченные персонажи: имя, роль, отношение к партии.
+
+    ## Сюжетные крючки
+    Незакрытые линии, обещания, угрозы — что важно к следующей сессии.
+
+    Пиши по фактам транскрипта, без выдумок. Если раздел пуст — так и скажи.
+
+    ТРАНСКРИПТ:
+    {transcript}
+  output_artifact: session-log.md
+# Wave B: extract campaign entities/events into the knowledge graph.
+enrich:
+  prompt: |
+    Ты извлекаешь структурированные данные из транскрипта настольной
+    RPG-сессии «{title}». Верни JSON-объект:
+    {"events": [{"ts": "…", "kind": "…", "summary": "…"}],
+     "entities": [{"slug": "…", "label": "…", "type": "character|npc|item|location|faction"}],
+     "relations": [{"from_slug": "…", "to_slug": "…", "type": "…"}]}
+    Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
+    имя; events — ключевые игровые события в хронологическом порядке;
+    relations — связи между сущностями (owns, met, located_in, member_of…).
+    Пустые разделы — пустые списки.
+    ТРАНСКРИПТ:
+    {transcript}
