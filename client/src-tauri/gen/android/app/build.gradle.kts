@@ -15,6 +15,19 @@ val tauriProperties = Properties().apply {
 
 android {
     compileSdk = 36
+    // Release signing comes from the environment: CI injects these from GitHub
+    // secrets; a local release build without them simply stays unsigned.
+    val releaseKeystore = System.getenv("ANDROID_KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
     namespace = "com.megastruktur.transcripter"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
@@ -43,6 +56,9 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
     kotlinOptions {

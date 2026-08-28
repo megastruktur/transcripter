@@ -66,3 +66,63 @@ jobs:
         with:
           name: checksums
           path: client/src-tauri/target/release/bundle/checksums.txt
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client/src-tauri
+          # Desktop matrix jobs share this workspace cache; key the Android
+          # job separately so the NDK targets don't evict host artifacts.
+          key: android
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Install frontend deps
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+      - name: Decode signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 secret is missing. Release APKs must be signed with a STABLE key or Android will refuse updates. Generate a keystore and set the ANDROID_KEYSTORE_* secrets (see README release section)."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
+      - name: Build signed APK
+        working-directory: client
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export NDK_HOME="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          pnpm tauri android build --apk
+      - name: Upload APK to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          APK=$(find client/src-tauri/gen/android/app/build/outputs/apk -name 'app-release.apk' | head -1)
+          test -n "$APK" || { echo "::error::signed APK not found under outputs/apk"; exit 1; }
+          VERSION=$(jq -r .version client/src-tauri/tauri.conf.json)
+          TAG="v$VERSION"
+          OUT="Transcriptor.Maximus_${VERSION}_universal.apk"
+          cp "$APK" "$OUT"
+          # Desktop jobs and this job race to create the release; whoever is
+          # first creates it, the tauri-action jobs normalize name/body.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Transcriptor Maximus v$VERSION"
+          gh release upload "$TAG" "$OUT" --clobber
