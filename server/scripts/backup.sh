@@ -68,23 +68,25 @@ run_pg_dump() {
       pg_dump -U transcripter -d transcripter --format=custom \
       > "$out"; then
     log "postgres: pg_dump FAILED — see docker compose output above"
+    # The redirection above already created an empty/partial file — never
+    # leave a zero-byte archive that a later pg_restore could pick up.
+    rm -f "$out"
     return 1
   fi
   log "postgres: $(wc -c < "$out") bytes written"
 }
 # --- Neo4j ------------------------------------------------------------------
 neo4j_running() {
-  # `docker compose ps --status running` filters at the source; service-name
-  # argument is honored even when the service is behind an unselected profile.
-  # Exit 0 iff the container is listed and running.
+  # `-q --status running` prints the container id iff the service is up;
+  # the service-name argument is honored even behind an unselected profile.
+  # Exit 0 iff a running container exists.
   #
   # We swallow compose's interpolation error (NEO4J_PASSWORD unset when the
   # user never enabled --profile graph) and just treat the service as not
   # running — the script falls through to the "skip" branch.
-  if ! docker compose --profile graph ps --status running neo4j 2>/dev/null; then
-    return 1
-  fi
-  grep -qE '^\S+\s+neo4j\s'
+  local id
+  id="$(docker compose --profile graph ps -q --status running neo4j 2>/dev/null)" || return 1
+  [ -n "$id" ]
 }
 
 run_neo4j_dump() {
@@ -103,20 +105,48 @@ run_neo4j_dump() {
     log "neo4j: container not found (profile graph not running); skipping"
     return 1
   fi
-  # neo4j-admin refuses to run while the DB is open for writes; the
-  # `database dump` subcommand itself is online-safe (it uses a consistent
-  # snapshot) but the binary still asks for confirmation via --yes.
-  if ! docker compose --profile graph exec -T neo4j \
-      /var/lib/neo4j/bin/neo4j-admin database dump neo4j \
-        --to-path=/tmp --yes; then
-    log "neo4j: neo4j-admin database dump FAILED — see docker compose output above"
+  # neo4j-admin `database dump` is OFFLINE-only, and Community Edition has
+  # no multi-database admin commands either (verified live on 5.26:
+  # "Unsupported administration command: STOP DATABASE"). The only CE path
+  # is: stop the container, dump from a throwaway container that inherits
+  # the data volume (--volumes-from works on stopped containers; the image
+  # is taken from the inspected container so the pinned digest stays), then
+  # start again. The graph layer is DOWN for the dump window (seconds for
+  # our DB sizes) — enrich/digest are best-effort and degrade; nothing
+  # else talks to neo4j. The container is STARTed on every failure path.
+  local image
+  image="$(docker inspect -f '{{.Config.Image}}' "$container")"
+  log "neo4j: stopping container for offline dump (image $image)"
+  if ! docker compose --profile graph stop neo4j; then
+    log "neo4j: stop failed — aborting dump (container left as-is)"
     return 1
   fi
-  if ! docker cp "$container:/tmp/neo4j.dump" "$out"; then
+  local dump_rc=0
+  # Dump into /data (the named data volume shared via --volumes-from) —
+  # NOT /tmp: containerfs is per-container and would vanish with --rm.
+  # neo4j-admin also requires --to-path to EXIST, so mkdir comes first.
+  docker run --rm --volumes-from "$container" \
+    --entrypoint sh "$image" -c \
+    'mkdir -p /data/.backup-tmp && /var/lib/neo4j/bin/neo4j-admin database dump neo4j --to-path=/data/.backup-tmp' || dump_rc=1
+  if ! docker compose --profile graph start neo4j; then
+    log "neo4j: START FAILED — graph layer is DOWN; recover: docker compose --profile graph start neo4j"
+    return 1
+  fi
+  local cp_rc=0
+  if [ "$dump_rc" -eq 0 ]; then
+    docker cp "$container:/data/.backup-tmp/neo4j.dump" "$out" || cp_rc=1
+  fi
+  # Unconditional cleanup of the staging dir inside the data volume.
+  docker compose --profile graph exec -T neo4j rm -rf /data/.backup-tmp >/dev/null 2>&1 || true
+  if [ "$dump_rc" -ne 0 ]; then
+    log "neo4j: neo4j-admin database dump FAILED — see output above"
+    return 1
+  fi
+  if [ "$cp_rc" -ne 0 ]; then
     log "neo4j: docker cp to $out FAILED"
+    rm -f "$out"
     return 1
   fi
-  docker compose --profile graph exec -T neo4j rm -f /tmp/neo4j.dump >/dev/null 2>&1 || true
   log "neo4j: $(wc -c < "$out") bytes written"
 }
 

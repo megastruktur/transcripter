@@ -47,9 +47,11 @@ thiserror = "2"
 tauri = { version = "2", default-features = false, features = ["wry", "compression", "x11", "tray-icon", "macos-private-api", "image-png", "custom-protocol"] }
 cpal = "=0.18.2"
 
-# Windows gets its own minimal tauri line so it doesn't accidentally pull in
-# tray-icon backends that don't compile under windows-msvc stable.
+# Windows: same tauri surface as the other desktop targets — lib.rs compiles
+# tray/menu code under cfg(windows) too, and pre-Android main had tray-icon
+# enabled for every desktop target (release CI builds .msi with it).
 [target.'cfg(target_os = "windows")'.dependencies]
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "tray-icon", "image-png", "custom-protocol"] }
 cpal = "=0.18.2"
 windows-registry = "0.6"
 

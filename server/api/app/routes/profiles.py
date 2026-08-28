@@ -9,10 +9,12 @@ profiles as "no summaries match", not an error.
 """
 
 import logging
+import re
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, Request
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from app.config import ServerConfig
 
@@ -20,12 +22,84 @@ router = APIRouter(prefix="/profiles")
 
 _LOG = logging.getLogger("transcripter.api.profiles")
 
-_REQUIRED_PROFILE_KEYS: tuple[str, ...] = (
-    "id",
-    "display_name",
-    "description",
-    "tags",
-)
+# Mirrors of worker/profiles.py rules — the two packages ship in separate
+# images, so the contract is duplicated here deliberately: a profile the
+# worker would warn+skip must NOT appear in GET /profiles (the client would
+# offer a profile that can never match). Keep these in sync with
+# worker.profiles (HOST_VERSION, slug class, tags rules, summarize prompt).
+_HOST_VERSION = "0.9.0"
+_SAFE_SLUG = re.compile(r"^[a-z0-9._-]+$")
+
+
+def _vparts(v: str) -> tuple[int, ...]:
+    out: list[int] = []
+    for chunk in v.split("."):
+        try:
+            out.append(int(chunk))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def _version_at_least(host: str, minimum: str) -> bool:
+    h = _vparts(host)
+    m = _vparts(minimum)
+    for hi, mi in zip(h, m, strict=False):
+        if hi > mi:
+            return True
+        if hi < mi:
+            return False
+    return len(h) >= len(m) or h == m
+
+
+class _SummarizeSpec(BaseModel):
+    prompt: str = Field(min_length=1)
+
+    @field_validator("prompt")
+    @classmethod
+    def _must_contain_transcript(cls, v: str) -> str:
+        if "{transcript}" not in v:
+            raise ValueError("summarize.prompt must contain {transcript}")
+        return v
+
+
+class _ProfileSpec(BaseModel):
+    """The worker's Profile contract, listing-surface subset."""
+
+    id: str = Field(min_length=1)
+    version: str = Field(min_length=1)
+    min_host_version: str = "0.0.0"
+    display_name: str = Field(min_length=1)
+    description: str = ""
+    tags: list[str]
+    summarize: _SummarizeSpec
+
+    @field_validator("id")
+    @classmethod
+    def _id_safe(cls, v: str) -> str:
+        if not _SAFE_SLUG.match(v):
+            raise ValueError(f"id {v!r} must match [a-z0-9._-]")
+        return v
+
+    @field_validator("tags")
+    @classmethod
+    def _tags_nonempty_str(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("tags must be a non-empty list[str]")
+        cleaned = [t.strip().lower() for t in v if isinstance(t, str) and t.strip()]
+        if not cleaned:
+            raise ValueError("tags must contain at least one non-empty string")
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("tags must be unique (case-insensitive)")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _host_version_ok(self) -> "_ProfileSpec":
+        if not _version_at_least(_HOST_VERSION, self.min_host_version):
+            raise ValueError(
+                f"profile requires host >= {self.min_host_version}, host is {_HOST_VERSION}"
+            )
+        return self
 
 
 def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
@@ -61,20 +135,15 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
             )
             continue
 
-        missing = [k for k in _REQUIRED_PROFILE_KEYS if k not in raw]
-        if missing:
+        try:
+            profile = _ProfileSpec.model_validate(raw)
+        except ValidationError as exc:
+            # Same skip semantics as the worker loader: warn + skip, keep
+            # scanning. First error line is enough context for the author.
             _LOG.warning(
-                "profiles: skipping %s (missing required keys: %s)",
+                "profiles: skipping %s (%s)",
                 path.name,
-                ", ".join(missing),
-            )
-            continue
-
-        tags_raw = raw["tags"]
-        if not isinstance(tags_raw, list) or not all(isinstance(t, str) for t in tags_raw):
-            _LOG.warning(
-                "profiles: skipping %s (`tags` must be a list of strings)",
-                path.name,
+                exc.errors()[0].get("msg", "invalid profile"),
             )
             continue
 
@@ -93,11 +162,11 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
 
         out.append(
             {
-                "id": raw["id"],
-                "version": raw.get("version", ""),
-                "display_name": raw["display_name"],
-                "description": raw["description"],
-                "tags": tags_raw,
+                "id": profile.id,
+                "version": profile.version,
+                "display_name": profile.display_name,
+                "description": profile.description,
+                "tags": profile.tags,
                 "has_enrich": has_enrich,
             }
         )

@@ -134,6 +134,7 @@ mod tests {
             id: id.into(),
             title: "t".into(),
             tags: vec![],
+            duration_sec: 1.5,
             started_at: "0".into(),
             sample_rate: 48000,
             channels: 2,

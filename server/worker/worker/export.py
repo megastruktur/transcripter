@@ -12,10 +12,12 @@ stat can't fork duplicates or race two workers (see
 Wave A (knowledge-graph profiles): the summary artifact is renamed to
 ``profile.summarize.output_artifact`` in the note folder when a profile
 matches the recording's tags. Meta stays canonical (``meta/summary.md``).
-Mirror-delete whitelist = static 3 + every known profile's output_artifact,
-so removing a profile from disk still cleans up its notes on the next
-export. Re-match happens on every run (D11): profile edits between runs
-take effect immediately.
+Mirror-delete whitelist = static 3 + every known profile's output_artifact.
+A profile REMOVED from disk drops out of the whitelist: its renamed note
+(e.g. ``session-log.md``) is then classified as user-authored content and
+deliberately left in place — orphan cleanup is manual (impl plan §1).
+Re-match happens on every run (D11): profile edits between runs take
+effect immediately.
 """
 
 import fcntl
@@ -247,19 +249,19 @@ def _whitelist(profiles_dir: Path | str | None) -> frozenset[str]:
     return artifacts_for_export(profiles_dir)
 
 
-def _is_app_file(name: str, profiles_dir: Path | str | None = None) -> bool:
+def _is_app_file(name: str, whitelist: frozenset[str]) -> bool:
     """Names the exporter itself can create inside a recording folder:
     artifacts, their `.{name}.lock` fences and `.{name}.{uuid8}.tmp` staging.
 
-    ``profiles_dir`` extends the whitelist with profile-renamed artifacts so
-    an old-title folder containing ``session-log.md`` is still swept cleanly.
+    Takes the run's resolved whitelist (``_whitelist``) — callers compute it
+    ONCE per export run; resolving per call would re-read and re-validate
+    every profile yaml for every folder child.
     """
-    wl = _whitelist(profiles_dir)
-    if name in wl:
+    if name in whitelist:
         return True
     return any(
         name == f".{a}.lock" or (name.startswith(f".{a}.") and name.endswith(".tmp"))
-        for a in wl
+        for a in whitelist
     )
 
 
@@ -285,9 +287,10 @@ def export_recording(
       ``profile.summarize.output_artifact`` in the note folder when a profile
       matches the recording's tags. Meta stays canonical
       (``meta/summary.md``). Whitelist = static 3 + every known profile's
-      output_artifact, so removing a profile from disk still cleans up its
-      notes on the next export. Re-match happens here too (D11): profile
-      edits between runs take effect on the next export.
+      output_artifact; a removed profile's note falls out of the whitelist
+      and is deliberately kept as user content (manual cleanup). Re-match
+      happens here too (D11): profile edits between runs take effect on
+      the next export.
     """
     check_sentinel(root, sentinel)
     if not (meta / "transcript.md").is_file() and not (meta / "diarized-transcript.md").is_file():
@@ -297,7 +300,8 @@ def export_recording(
     # ./storage/transcripts, first export ever). The rename-scan below must
     # not crash on it — write_note_atomic creates parents for the files.
     root.mkdir(parents=True, exist_ok=True)
-    target = _rename_to_target(root, rec, zone, profiles_dir)
+    whitelist = _whitelist(profiles_dir)
+    target = _rename_to_target(root, rec, zone, whitelist)
     if target is None:
         target = folder_path(root, rec, zone)
 
@@ -313,8 +317,6 @@ def export_recording(
         profile = match_profile(rec.tags, profiles_dir)
         if profile is not None:
             summary_target = profile.summarize.output_artifact
-
-    whitelist = _whitelist(profiles_dir)
 
     # Static pair: meta name → target name (same for transcript/diarized).
     # Summary row is dynamic (profile renaming).
@@ -374,11 +376,11 @@ def rename_folder(root: Path, rec: Rec, zone: ZoneInfo, sentinel: str = "") -> P
     check_sentinel(root, sentinel)
     if not root.is_dir():
         return None
-    return _rename_to_target(root, rec, zone)
+    return _rename_to_target(root, rec, zone, _whitelist(None))
 
 
 def _rename_to_target(
-    root: Path, rec: Rec, zone: ZoneInfo, profiles_dir: Path | str | None = None
+    root: Path, rec: Rec, zone: ZoneInfo, whitelist: frozenset[str]
 ) -> Path | None:
     """Rename an existing old-title folder to the current deterministic name.
 
@@ -395,7 +397,7 @@ def _rename_to_target(
         entry for entry in list(root.iterdir()) if entry.is_dir() and pattern.match(entry.name)
     ]
     matches.sort(
-        key=lambda e: not any(not _is_app_file(c.name, profiles_dir) for c in e.iterdir())
+        key=lambda e: not any(not _is_app_file(c.name, whitelist) for c in e.iterdir())
     )
     for entry in matches[:1]:
         try:
@@ -408,7 +410,7 @@ def _rename_to_target(
     return target if target.is_dir() else None
 
 def sweep_stale_notes(
-    root: Path, rec: Rec, keep: Path, profiles_dir: Path | str | None = None
+    root: Path, rec: Rec, keep: Path, whitelist: frozenset[str]
 ) -> None:
     """Delete stale app-scheme vault entries for this recording, keeping `keep`:
 
@@ -441,7 +443,7 @@ def sweep_stale_notes(
                 log.warning("export sweep: could not remove legacy note %s: %s", entry, e)
         elif entry.is_dir() and _folder_pattern(rec).match(entry.name):
             if any(
-                not _is_app_file(child.name, profiles_dir)
+                not _is_app_file(child.name, whitelist)
                 for child in entry.iterdir()
             ):
                 log.warning(
@@ -494,5 +496,5 @@ def run(rec_id: str, rename_only: bool = False) -> Path | None:
         profiles_dir=profiles_dir,
     )
     if path is not None:
-        sweep_stale_notes(cfg.transcripts.path, rec, path, profiles_dir)
+        sweep_stale_notes(cfg.transcripts.path, rec, path, _whitelist(profiles_dir))
     return path

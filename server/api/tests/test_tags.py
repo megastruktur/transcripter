@@ -82,6 +82,19 @@ def test_patch_tags_triggers_export(client: TestClient) -> None:
     rid = client.post("/recordings", json={"tags": []}).json()["id"]
     r = client.patch(f"/recordings/{rid}", json={"tags": ["foo"]})
     assert r.status_code == 200
+    # Tags shift the summarize profile match: the artifact filename and
+    # frontmatter must be re-emitted — a rename_only export cannot do that.
+    temporal_client.start_export.assert_awaited_once_with(rid, rename_only=False)
+
+
+def test_patch_title_only_triggers_rename_only_export(client: TestClient) -> None:
+    from app import temporal_client
+
+    temporal_client.start_export.reset_mock()
+    rid = client.post("/recordings", json={"tags": []}).json()["id"]
+    r = client.patch(f"/recordings/{rid}", json={"title": "renamed"})
+    assert r.status_code == 200
+    # Title-only: rename the folder, keep user-edited notes untouched.
     temporal_client.start_export.assert_awaited_once_with(rid, rename_only=True)
 
 
@@ -159,6 +172,7 @@ def test_profiles_lists_valid_yaml(
         "display_name: Standup\n"
         "description: Daily sync\n"
         "tags: [standup, sync]\n"
+        "summarize: {prompt: 'Sum {transcript}'}\n"
     )
     cfg = client.app.state.config
     monkeypatch.setattr(cfg.profiles, "path", profiles_dir)
@@ -187,6 +201,7 @@ def test_profiles_skips_broken_yaml(
     # good one
     (profiles_dir / "good.yaml").write_text(
         "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntags: [t]\n"
+        "summarize: {prompt: 'Sum {transcript}'}\n"
     )
 
     cfg = client.app.state.config
@@ -208,6 +223,7 @@ def test_profiles_skips_non_list_tags(
     )
     (profiles_dir / "good.yaml").write_text(
         "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntags: [t]\n"
+        "summarize: {prompt: 'Sum {transcript}'}\n"
     )
     cfg = client.app.state.config
     monkeypatch.setattr(cfg.profiles, "path", profiles_dir)
@@ -230,6 +246,7 @@ def test_profiles_re_scan_returns_new_file(
 
     (profiles_dir / "late.yaml").write_text(
         "id: late\nversion: '1'\ndisplay_name: Late\ndescription: d\ntags: [t]\n"
+        "summarize: {prompt: 'Sum {transcript}'}\n"
     )
 
     body = client.get("/profiles").json()

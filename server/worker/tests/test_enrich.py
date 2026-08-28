@@ -394,6 +394,29 @@ class TestResolveSlugs:
             out = resolve_slugs(graph, cfg, tag="pathfinder", existing_lookup=lookup)
         assert out.entities[0].slug == "galahad-3"
 
+    def test_relations_follow_canonical_slug_after_disambiguation(self):
+        # Regression: re-anchoring used to key the map by LABEL (last
+        # duplicate wins), so a relation authored against the pre-resolution
+        # slug landed on the DISAMBIGUATED copy (galahad-2) instead of the
+        # canonical first entity (galahad).
+        graph = ExtractedGraph(
+            events=[],
+            entities=[
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="galahad", type="npc"),
+            ],
+            relations=[ExtractedRelation(from_slug="galahad", to_slug="galahad", type="fought")],
+        )
+        cfg = _ok_cfg()
+        with patch(
+            "worker.enrich.httpx.post",
+            return_value=_mock_post_text("N"),
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        assert sorted(e.slug for e in out.entities) == ["galahad", "galahad-2"]
+        # First mapping wins: the raw slug refers to the canonical entity.
+        assert out.relations[0].from_slug == "galahad"
+        assert out.relations[0].to_slug == "galahad"
 
 # --- write_to_graph ----------------------------------------------------------
 

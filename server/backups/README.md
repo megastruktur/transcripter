@@ -35,10 +35,14 @@ Behavior:
 - Neo4j dump runs only when the neo4j container is running under
   `--profile graph`. If the profile is off, the script skips with a
   one-line note and exits 0 (use `--pg-only` to suppress the message).
-- Any service-level failure aborts the run with exit 1. Empty output
-  files are never produced on success — `pg_dump` writes a 0-byte file
-  only when compose interpolation fails (a clear sign the env var is
-  missing from `.env`).
+- The neo4j dump is an OFFLINE operation on Community Edition (CE has no
+  online backup and no `STOP DATABASE`): the script stops the neo4j
+  container, dumps via a throwaway `--volumes-from` container, and starts
+  it again on every exit path. The graph layer is down for a few seconds;
+  `enrich`/digests are best-effort and degrade, the core pipeline is
+  unaffected.
+- Any service-level failure aborts the run with exit 1 and removes the
+  partial artifact — empty output files are never left behind.
 
 ## Restore runbook
 

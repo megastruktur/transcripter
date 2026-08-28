@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import Icon, { type IconName } from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
+	import TagChips from '$lib/TagChips.svelte';
 	import {
 		getRecording,
 		updateRecording,
@@ -41,7 +42,6 @@
 	let deleteError = $state('');
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
 	let audioEl = $state<HTMLAudioElement>();
-	let tagDraft = $state('');
 	let tagError = $state('');
 	let tagSaving = $state(false);
 
@@ -172,50 +172,6 @@
 			renameError = `Rename failed: ${caught instanceof Error ? caught.message : String(caught)}`;
 		} finally {
 			pendingTitle = null;
-		}
-	}
-
-	/** Server-side `_normalize_tags` contract (trim + lowercase + dedupe +
-	 * preserve first-seen order). The UI mirrors it so chips render in
-	 * their canonical form and the round-trip is stable. */
-	function normalizeTag(raw: string): string | null {
-		const norm = raw.trim().toLowerCase();
-		return norm.length > 0 ? norm : null;
-	}
-
-	function currentTags(): string[] {
-		return recording?.tags ?? [];
-	}
-
-	function commitTagDraft(): void {
-		const draft = tagDraft;
-		if (draft.trim().length === 0) return;
-		const parts = draft.split(',');
-		const additions: string[] = [];
-		for (const part of parts) {
-			const norm = normalizeTag(part);
-			if (norm === null) continue;
-			if (currentTags().includes(norm)) continue;
-			additions.push(norm);
-		}
-		tagDraft = '';
-		if (additions.length > 0) void saveTags([...currentTags(), ...additions]);
-	}
-
-	function removeTagAt(index: number): void {
-		const next = currentTags().filter((_, i) => i !== index);
-		void saveTags(next);
-	}
-
-	function onTagKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Enter' || event.key === ',') {
-			event.preventDefault();
-			commitTagDraft();
-			return;
-		}
-		if (event.key === 'Backspace' && tagDraft === '' && currentTags().length > 0) {
-			event.preventDefault();
-			removeTagAt(currentTags().length - 1);
 		}
 	}
 
@@ -400,30 +356,12 @@
 		</div>
 		<div class="tags-row" class:saving={tagSaving}>
 			<span class="tags-label">Tags</span>
-			<div class="tags-input" role="group" aria-label="Recording tags">
-				{#each recording.tags as tag, index (tag)}
-					<span class="tag-chip">
-						<span class="tag-chip-text">{tag}</span>
-						<button
-							type="button"
-							class="tag-chip-remove"
-							aria-label={`Remove tag ${tag}`}
-							onclick={() => removeTagAt(index)}
-						>
-							<Icon name="close" size={10} />
-						</button>
-					</span>
-				{/each}
-				<input
-					type="text"
-					class="tags-draft"
-					placeholder={recording.tags.length === 0 ? 'Add a tag and press Enter' : 'Add tag'}
-					bind:value={tagDraft}
-					onkeydown={onTagKeydown}
-					onblur={commitTagDraft}
-					aria-label="Add tag"
-				/>
-			</div>
+			<TagChips
+				tags={recording.tags}
+				dense
+				placeholder="Add a tag and press Enter"
+				onChange={(next) => void saveTags(next)}
+			/>
 		</div>
 		{#if tagError}
 			<p class="inline-error" role="alert">{tagError}</p>
@@ -502,60 +440,6 @@
 	.tags-row { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
 	.tags-row.saving { opacity: 0.65; }
 	.tags-label { padding-top: 5px; font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
-	.tags-input {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 5px;
-		min-height: 32px;
-		padding: 4px 6px;
-		border: 1px solid rgba(231, 214, 190, 0.18);
-		border-radius: 2px;
-		background: rgba(7, 6, 5, 0.58);
-		transition: border-color 120ms ease, background 120ms ease;
-	}
-	.tags-input:focus-within { border-color: var(--brass); background: rgba(7, 6, 5, 0.82); }
-	.tag-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 3px;
-		padding: 2px 3px 2px 7px;
-		border: 1px solid rgba(215, 167, 71, 0.32);
-		border-radius: 2px;
-		background: rgba(215, 167, 71, 0.08);
-		color: var(--brass);
-		font-size: 10px;
-		font-weight: 650;
-		line-height: 1;
-	}
-	.tag-chip-text { white-space: nowrap; }
-	.tag-chip-remove {
-		display: grid;
-		place-items: center;
-		width: 14px;
-		height: 14px;
-		padding: 0;
-		border: 0;
-		border-radius: 1px;
-		background: transparent;
-		color: var(--brass);
-		cursor: pointer;
-		line-height: 0;
-		opacity: 0.7;
-	}
-	.tag-chip-remove:hover { opacity: 1; background: rgba(213, 45, 36, 0.18); color: #ff8b7c; }
-	.tags-draft {
-		flex: 1 1 60px;
-		min-width: 60px;
-		min-height: 22px;
-		padding: 2px 4px;
-		border: 0;
-		background: transparent;
-		color: var(--bone);
-		font-size: 11px;
-	}
-	.tags-draft::placeholder { color: #665f58; }
-	.tags-draft:focus { outline: none; }
 	.tags-hint { margin: 0; color: var(--ash); font-size: 10px; }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }

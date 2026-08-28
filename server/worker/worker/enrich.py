@@ -478,10 +478,16 @@ def resolve_slugs(
     """
     seen: dict[str, ExtractedEntity] = {}
     out: list[ExtractedEntity] = []
+    # Pre-resolution slug → resolved slug, so relations (authored against
+    # the raw extraction) can be re-anchored after dedup/re-slugging.
+    # Keyed by SLUG, not label: labels are not slug-safe (case, punct,
+    # spaces) and two entities may share one label.
+    remap: dict[str, str] = {}
     for ent in graph.entities:
         # Re-slug up front so labels differing only in case/punct join
         # the same group cheaply.
         slug = ent.slug
+        orig_slug = ent.slug
         same = None
         if slug in seen:
             existing = seen[slug]
@@ -507,6 +513,7 @@ def resolve_slugs(
                         slug=existing["slug"], label=existing["label"], type=existing["type"]
                     )
                     out.append(seen[slug])
+                    remap.setdefault(orig_slug, existing["slug"])
                     continue
                 # Step past every existing collision in the live graph
                 # AND every reserved slug inside this extraction. Both
@@ -514,6 +521,9 @@ def resolve_slugs(
                 # by the time we MERGE.
                 slug = _next_free_slug(slug, seen, existing_lookup)
         if same is True:
+            # Merged into the canonical/existing entity: relations pointing
+            # at this duplicate must land on the surviving slug.
+            remap.setdefault(orig_slug, seen[orig_slug].slug if orig_slug in seen else slug)
             continue
         if same is False and slug in seen:
             slug = _disambiguate(slug, seen)
@@ -521,12 +531,14 @@ def resolve_slugs(
         ent = ExtractedEntity(slug=slug, label=ent.label, type=ent.type)
         seen[slug] = ent
         out.append(ent)
-    # Re-anchor relations to the resolved slugs.
-    slug_for_label: dict[str, str] = {e.label.lower(): e.slug for e in out}
+        remap.setdefault(orig_slug, slug)
+    # Re-anchor relations to the resolved slugs (pre-resolution slug ->
+    # resolved slug); relations referencing dropped/renamed duplicates
+    # follow their entity's final slug, unknown slugs pass through.
     out_relations: list[ExtractedRelation] = []
     for rel in graph.relations:
-        f = slug_for_label.get(rel.from_slug) or rel.from_slug
-        t = slug_for_label.get(rel.to_slug) or rel.to_slug
+        f = remap.get(rel.from_slug, rel.from_slug)
+        t = remap.get(rel.to_slug, rel.to_slug)
         out_relations.append(ExtractedRelation(from_slug=f, to_slug=t, type=rel.type))
     return ExtractedGraph(events=graph.events, entities=out, relations=out_relations)
 
@@ -538,10 +550,11 @@ def _next_free_slug(
     """First slug not in ``taken`` AND not present in the live graph.
 
     Re-runs on the same recording must produce identical graph state:
-    after a previous extraction already claimed ``galahad-2``, a new
-    attempt must step past it rather than colliding again. The local
-    ``taken`` dict catches collisions inside this extraction; ``lookup``
-    catches collisions with whatever is already in the database."""
+    ``lookup`` excludes the current recording's own nodes (they are about
+    to be DETACH DELETEd and rewritten), so a re-run RECLAIMS its own
+    previously-disambiguated slugs instead of drifting ``-2`` → ``-3``.
+    The local ``taken`` dict catches collisions inside this extraction;
+    ``lookup`` catches collisions with OTHER recordings' nodes."""
     n = 2
     while True:
         candidate = f"{slug}-{n}"
@@ -570,10 +583,14 @@ class ExistingEntityLookup:
     detect collisions with nodes from earlier recordings on the same
     tag."""
 
-    def __init__(self, driver: Any, database: str, tag: str) -> None:
+    def __init__(self, driver: Any, database: str, tag: str, exclude_rec: str = "") -> None:
         self._driver = driver
         self._database = database
         self._tag = tag
+        # Nodes written by THIS recording are excluded: they are deleted
+        # and rewritten by the same run, so they must not count as taken
+        # (a regenerate would otherwise drift disambiguated slugs).
+        self._exclude_rec = exclude_rec
 
     def close(self) -> None:
         """Release the underlying driver. The OWNING side (whoever built
@@ -584,10 +601,12 @@ class ExistingEntityLookup:
     def __call__(self, slug: str) -> dict[str, str] | None:
         with self._driver.session(database=self._database) as session:
             row = session.run(
-                "MATCH (e {tag: $tag, slug: $slug}) RETURN e.label AS label, "
-                "e.type AS type, e.slug AS slug LIMIT 1",
+                "MATCH (e {tag: $tag, slug: $slug}) "
+                "WHERE e.origin_recording_id <> $rec "
+                "RETURN e.label AS label, e.type AS type, e.slug AS slug LIMIT 1",
                 tag=self._tag,
                 slug=slug,
+                rec=self._exclude_rec,
             ).single()
         if row is None:
             return None
@@ -600,8 +619,9 @@ def pre_existing_lookup(
     graph_password: str,
     graph_database: str,
     tag: str,
+    exclude_rec: str = "",
 ) -> ExistingEntityLookup:
     """Build an ``ExistingEntityLookup`` bound to the configured graph."""
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
 
-    return ExistingEntityLookup(driver, graph_database, tag)
+    return ExistingEntityLookup(driver, graph_database, tag, exclude_rec)

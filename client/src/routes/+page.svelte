@@ -12,6 +12,8 @@
 	import { commands } from '$lib/tauri';
 	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import TagChips from '$lib/TagChips.svelte';
+	import { mergeDraftTags } from '$lib/tags';
 	import { isAndroidTauri, startMobileRecorder } from '$lib/mobile-recorder';
 	import type { MobileRecorder } from '$lib/mobile-recorder';
 
@@ -26,50 +28,12 @@
 	let mobile: MobileRecorder | null = null;
 	let mobileFramesTimer: ReturnType<typeof setInterval> | null = null;
 	let mobileStartedAt = 0;
-
-	/** Client-side normalization mirrors the server's `_normalize_tags`
-	 * (server/api/app/routes/recordings.py): trim, lowercase, drop blanks,
-	 * preserve first-seen order, dedupe. Doing it here too means the chips
-	 * render in their final canonical form and the POST body never carries
-	 * whitespace variants the server would silently drop. */
-	function normalizeTag(raw: string): string | null {
-		const norm = raw.trim().toLowerCase();
-		return norm.length > 0 ? norm : null;
-	}
-
-	function addTag(raw: string): void {
-		const norm = normalizeTag(raw);
-		if (norm === null) return;
-		if (tags.includes(norm)) return;
-		tags = [...tags, norm];
-	}
-
-	function removeTagAt(index: number): void {
-		tags = tags.filter((_, i) => i !== index);
-	}
-
-	function commitTagDraft(): void {
-		const draft = tagDraft;
-		if (draft.trim().length === 0) return;
-		// Comma splits allow paste-friendly multi-tag entry ("a, b, c").
-		const parts = draft.split(',');
-		for (const part of parts) addTag(part);
-		tagDraft = '';
-	}
-
-	function onTagKeydown(event: KeyboardEvent): void {
-		if (event.key === 'Enter' || event.key === ',') {
-			event.preventDefault();
-			commitTagDraft();
-			return;
-		}
-		// Backspace on an empty draft pops the last chip — the standard
-		// chips-input ergonomics so the user is not trapped behind a chip.
-		if (event.key === 'Backspace' && tagDraft === '' && tags.length > 0) {
-			event.preventDefault();
-			removeTagAt(tags.length - 1);
-		}
-	}
+	/** Failed mobile upload kept in memory for a manual retry — unlike the
+	 * desktop spool there is no on-disk persistence yet (PoC), so leaving
+	 * the page still loses it; the notice copy says as much. */
+	let failedUpload: { blob: Blob; title: string; tags: string[]; durationSec: number } | null =
+		$state(null);
+	let retrying = $state(false);
 
 	onMount(() => {
 		// Instant from the shared cache on remounts; enumerates and checks in
@@ -88,6 +52,16 @@
 			if (mobileFramesTimer) {
 				clearInterval(mobileFramesTimer);
 				mobileFramesTimer = null;
+			}
+			// Mobile capture lives in THIS component (unlike the desktop
+			// Rust-side session that survives remounts): leaving the page
+			// mid-recording must tear the MediaRecorder down, or the store
+			// keeps saying "recording" with no reachable handle to stop it.
+			if (mobile) {
+				mobile.cancel();
+				mobile = null;
+				recorder.recording = false;
+				recorder.warnings.push('capture cancelled — left the page mid-recording');
 			}
 		};
 	});
@@ -112,7 +86,8 @@
 		clearWarnings();
 		// Flush the draft before the recording starts so any in-progress
 		// chip the user did not press Enter for is not silently dropped.
-		commitTagDraft();
+		tags = mergeDraftTags(tags, tagDraft);
+		tagDraft = '';
 		try {
 			await startRecording(
 				title,
@@ -132,12 +107,26 @@
 		if (mobile || recorder.recording || recorder.stopping) return;
 		starting = true;
 		clearWarnings();
-		commitTagDraft();
+		tags = mergeDraftTags(tags, tagDraft);
+		tagDraft = '';
+		let handle: MobileRecorder;
 		try {
-			mobile = startMobileRecorder({});
+			handle = startMobileRecorder({});
 		} catch (error) {
 			recorder.warnings.push(String(error));
-			mobile = null;
+			starting = false;
+			return;
+		}
+		mobile = handle;
+		// Gate the "recording" UI on the mic ACTUALLY streaming: a denied
+		// system prompt must surface as a warning immediately, not as a
+		// running clock that dies on Stop.
+		try {
+			await handle.ready;
+		} catch (error) {
+			if (mobile === handle) mobile = null;
+			recorder.warnings.push(String(error));
+			starting = false;
 			return;
 		}
 		recorder.recording = true;
@@ -184,9 +173,35 @@
 			const result = await uploadDirect(cfg, blob, title, tags, durationSec);
 			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
 		} catch (error) {
+			// Do NOT discard the audio: the desktop path survives via the
+			// on-disk spool; the mobile PoC keeps the blob in memory and
+			// offers a manual retry instead of silently losing the take.
+			failedUpload = { blob, title, tags: [...tags], durationSec };
 			recorder.warnings.push(`upload failed: ${String(error)}`);
 		} finally {
 			recorder.stopping = false;
+		}
+	}
+
+	async function retryFailedUpload(): Promise<void> {
+		const pending = failedUpload;
+		if (!pending || retrying) return;
+		retrying = true;
+		try {
+			const result = await uploadDirect(
+				loadApiConfig(),
+				pending.blob,
+				pending.title,
+				pending.tags,
+				pending.durationSec
+			);
+			failedUpload = null;
+			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+		} catch {
+			// Block stays; the user can retry again. No stacked warnings —
+			// the persistent notice already carries the failure state.
+		} finally {
+			retrying = false;
 		}
 	}
 
@@ -202,6 +217,19 @@
 	{#each recorder.warnings as warning (warning)}
 		<div class="notice warning" role="status"><strong>Signal warning</strong><span>{warning}</span></div>
 	{/each}
+
+	{#if failedUpload}
+		<div class="notice warning upload-pending" role="status">
+			<strong>Upload pending</strong>
+			<span
+				>the take is kept in memory only — retry when the network is back; leaving this page
+				discards it</span
+			>
+			<button type="button" class="retry-upload" onclick={retryFailedUpload} disabled={retrying}>
+				{retrying ? 'Retrying…' : 'Retry upload'}
+			</button>
+		</div>
+	{/if}
 
 	<div class:active={recorder.recording} class="recorder-core panel">
 		<div class="meter" aria-hidden="true">
@@ -222,32 +250,13 @@
 
 		<label class="tags-field" class:disabled={recorder.recording}>
 			<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
-			<div class="tags-input" role="group" aria-label="Recording tags">
-				{#each tags as tag, index (tag)}
-					<span class="tag-chip">
-						<span class="tag-chip-text">{tag}</span>
-						<button
-							type="button"
-							class="tag-chip-remove"
-							aria-label={`Remove tag ${tag}`}
-							disabled={recorder.recording}
-							onclick={() => removeTagAt(index)}
-						>
-							<Icon name="close" size={10} />
-						</button>
-					</span>
-				{/each}
-				<input
-					type="text"
-					class="tags-draft"
-					placeholder={tags.length === 0 ? 'e.g. meeting, planning' : ''}
-					bind:value={tagDraft}
-					onkeydown={onTagKeydown}
-					onblur={commitTagDraft}
-					disabled={recorder.recording}
-					aria-label="Add tag"
-				/>
-			</div>
+			<TagChips
+				{tags}
+				bind:draft={tagDraft}
+				disabled={recorder.recording}
+				placeholder="e.g. meeting, planning"
+				onChange={(next) => (tags = next)}
+			/>
 		</label>
 
 		{#if recorder.recording}
@@ -268,6 +277,11 @@
 	.capture-page { display: flex; flex-direction: column; gap: 10px; }
 	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
+	.upload-pending { grid-template-columns: 1fr auto; align-items: center; }
+	.upload-pending strong { grid-column: 1 / -1; }
+	.retry-upload { padding: 6px 10px; border: 1px solid var(--brass); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.retry-upload:hover:not(:disabled) { background: rgba(215, 167, 71, 0.12); }
+	.retry-upload:disabled { opacity: 0.6; cursor: default; }
 	.recorder-core { padding: 12px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
 	.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
 	.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
@@ -280,61 +294,6 @@
 	.tags-field { display: block; margin-bottom: 10px; }
 	.tags-field.disabled { opacity: 0.55; }
 	.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
-	.tags-input {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 5px;
-		min-height: 42px;
-		padding: 6px 7px;
-		border: 1px solid rgba(231, 214, 190, 0.18);
-		border-radius: 3px;
-		background: rgba(7, 6, 5, 0.58);
-		transition: border-color 120ms ease, background 120ms ease;
-	}
-	.tags-input:focus-within { border-color: var(--brass); background: rgba(7, 6, 5, 0.82); }
-	.tag-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		padding: 3px 4px 3px 8px;
-		border: 1px solid rgba(215, 167, 71, 0.32);
-		border-radius: 2px;
-		background: rgba(215, 167, 71, 0.08);
-		color: var(--brass);
-		font-size: 11px;
-		font-weight: 650;
-		line-height: 1;
-	}
-	.tag-chip-text { white-space: nowrap; }
-	.tag-chip-remove {
-		display: grid;
-		place-items: center;
-		width: 16px;
-		height: 16px;
-		padding: 0;
-		border: 0;
-		border-radius: 1px;
-		background: transparent;
-		color: var(--brass);
-		cursor: pointer;
-		line-height: 0;
-		opacity: 0.7;
-	}
-	.tag-chip-remove:hover:not(:disabled) { opacity: 1; background: rgba(213, 45, 36, 0.18); color: #ff8b7c; }
-	.tag-chip-remove:disabled { cursor: default; }
-	.tags-draft {
-		flex: 1 1 80px;
-		min-width: 80px;
-		min-height: 26px;
-		padding: 2px 4px;
-		border: 0;
-		background: transparent;
-		color: var(--bone);
-		font-size: 12px;
-	}
-	.tags-draft::placeholder { color: #665f58; }
-	.tags-draft:focus { outline: none; }
 	.record-control { width: 100%; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
 	.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
 	.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }

@@ -53,6 +53,11 @@ export function pickRecorderMime(): string | undefined {
 }
 
 export type MobileRecorder = {
+	/** Resolves once the MediaRecorder is actually capturing; rejects with
+	 * a normalized error when the mic prompt is denied or setup fails.
+	 * Callers MUST gate their "recording" UI state on this — without it a
+	 * denied prompt looks like a running recording until Stop. */
+	ready: Promise<void>;
 	stop(): Promise<Blob>;
 	cancel(): void;
 	mimeType: string;
@@ -84,10 +89,7 @@ export function startMobileRecorder(opts: {
 	});
 	void navigator.mediaDevices
 		.getUserMedia({ audio: true })
-		.then(resolveStream, (error: unknown) => {
-			rejectStream(normalizeMediaError(error));
-			throw error;
-		});
+		.then(resolveStream, (error: unknown) => rejectStream(normalizeMediaError(error)));
 
 	const mimeType = pickRecorderMime();
 	const recorderOptions: MediaRecorderOptions = {};
@@ -105,6 +107,14 @@ export function startMobileRecorder(opts: {
 		resolveStop = res;
 		rejectStop = rej;
 	});
+	let resolveReady!: () => void;
+	let rejectReady!: (error: unknown) => void;
+	const ready = new Promise<void>((res, rej) => {
+		resolveReady = res;
+		rejectReady = rej;
+	});
+	// A denial/failure path rejects BOTH promises: `ready` flips the UI out
+	// of its pending state, `stopDone` unblocks a racing stop() call.
 
 	streamReady
 		.then((s) => {
@@ -134,10 +144,15 @@ export function startMobileRecorder(opts: {
 				resolveStop(blob);
 			};
 			r.start(1000);
+			resolveReady();
 		})
-		.catch((error) => rejectStop(error));
+		.catch((error) => {
+			rejectReady(error);
+			rejectStop(error);
+		});
 
 	return {
+		ready,
 		mimeType: mimeType ?? '',
 		stop(): Promise<Blob> {
 			try {

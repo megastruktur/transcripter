@@ -157,11 +157,11 @@
 			</button>
 		</nav>
 	{/if}
-
-
 </section>
 
 <style>
+	.archive-page { display: flex; flex-direction: column; gap: 14px; }
+	.archive-tools { display: grid; grid-template-columns: 1fr 116px; gap: 7px; align-items: stretch; }
 	.archive-tools label { display: grid; }
 	.archive-tools input, .archive-tools select { height: 42px; }
 	.archive-tools input[type='search'] { -webkit-appearance: none; appearance: none; }
@@ -186,7 +186,6 @@
 	.state-label.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
 	.state-label.processing, .state-label.uploading { color: var(--brass); border-color: rgba(215,167,71,.25); }
 	.state-label.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
-	.record-name small { margin-top: 4px; font-size: 10px; color: #8b8278; }
 	.record-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 	.record-tag { padding: 1px 6px; border: 1px solid rgba(215,167,71,.32); border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.record-tag-overflow { padding: 1px 6px; border: 1px solid var(--line); border-radius: 2px; color: #8b8278; font-size: 9px; font-weight: 650; line-height: 1.4; }

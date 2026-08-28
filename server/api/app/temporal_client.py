@@ -51,7 +51,7 @@ async def regenerate_stage(rec_id: str, stage: str, duration_sec: float | None =
     return handle.id
 
 async def start_export(rec_id: str, rename_only: bool = False) -> str:
-    """Re-export the recording's vault folder. rename_only=True (the PATCH
+    """Re-export the recording's vault folder. rename_only=True (the title-only PATCH
     rename path) only renames the folder — files inside are NOT rewritten,
     so Obsidian edits survive. Unique workflow id so renames never collide
     with an in-flight pipeline run."""

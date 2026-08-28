@@ -105,22 +105,6 @@ export async function getRecording(cfg: ApiConfig, id: string): Promise<Recordin
 	return resp.json();
 }
 
-export async function createRecording(
-	cfg: ApiConfig,
-	title: string,
-	tags: string[] = []
-): Promise<{ id: string }> {
-	const resp = await req(cfg, '/recordings', {
-		method: 'POST',
-		body: JSON.stringify({ title, tags })
-	});
-	if (!resp.ok) {
-		const detail = await resp.json().catch(() => ({ detail: resp.status }));
-		throw new Error(detail.detail ?? `create ${resp.status}`);
-	}
-	return resp.json();
-}
-
 export async function updateRecording(
 	cfg: ApiConfig,
 	id: string,

@@ -223,8 +223,8 @@ class TagDigest:
     on a contended llama-server can eat the whole budget, and a slow
     failure must NOT trigger Temporal's automatic retry — the digest is
     read-only w.r.t. the recording pipeline, so a retry doubles load on
-    the shared LLM without giving the user a better answer. maximum_attempts=2
-    catches a single transient httpx hiccup.
+    the shared LLM without giving the user a better answer. The user
+    regenerates from the UI.
 
     No finalize / export: the digest writes its own file atomically and
     there is no per-recording state to keep in sync.
@@ -238,6 +238,6 @@ class TagDigest:
             start_to_close_timeout=timedelta(seconds=2400),
             # Same shape as summarize / enrich: LLM-bound, no automatic retry
             # on long failures. The user regenerates from the UI.
-            retry_policy=RetryPolicy(maximum_attempts=2),
+            retry_policy=_no_retry(),
             heartbeat_timeout=timedelta(seconds=120),
         )

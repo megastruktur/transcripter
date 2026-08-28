@@ -207,3 +207,23 @@ Failure modes to watch for (real, not speculative):
 3. Test on a real Android device with `adb install`.
 
 This report closes the build gate. Runtime eval is the next ticket.
+
+## D2 addendum (2026-08-28): capture path landed
+
+The capture flow is implemented (`client/src/lib/mobile-recorder.ts` +
+record-page branch, `POST /recordings/direct` server-side with ffmpeg
+transcode). PoC-era limitations closed since the verdict above:
+
+- **Permission denial is now immediate**: the record UI gates on the
+  recorder's `ready` promise — a denied prompt surfaces as a warning at
+  once instead of a running clock that dies on Stop.
+- **Leaving the page mid-recording cancels the capture** (component-scoped
+  MediaRecorder torn down in the unmount cleanup) — no more orphaned
+  "recording" state with an unreachable handle.
+- **A failed upload no longer discards the take**: the blob is kept in
+  memory with an explicit "Retry upload" affordance. Still in-memory only
+  (PoC) — leaving the page loses it; a durable spool (IndexedDB/OPFS or
+  Rust-side) is the follow-up.
+
+Still open: background tab loss (foreground service), on-device runtime
+validation of the full record→upload→pipeline loop.

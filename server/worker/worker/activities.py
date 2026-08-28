@@ -538,11 +538,18 @@ async def enrich(rec_id: str) -> dict:
             os.environ.get(c.graph.password_env, ""),
             c.graph.database,
             tag=tags[0] if tags else "",
+            exclude_rec=rec_id,
         )
         try:
             try:
-                resolved = await asyncio.to_thread(
-                    resolve_slugs, extracted, c, tags[0] if tags else "", lookup
+                # Heartbeat-wrapped like the extraction: N collisions ×
+                # 30 s LLM calls can otherwise outrun heartbeat_timeout
+                # (CancelledError bypasses the except below and would
+                # strand the stage row in running).
+                resolved = await _heartbeat_while(
+                    asyncio.to_thread(
+                        resolve_slugs, extracted, c, tags[0] if tags else "", lookup
+                    )
                 )
             except Exception:
                 # Dedup is best-effort: a flakey LLM (or neo4j) must
@@ -553,17 +560,20 @@ async def enrich(rec_id: str) -> dict:
                 resolved = extracted
         finally:
             lookup.close()
-        # Write to graph (sync neo4j driver via to_thread).
-        _count = await asyncio.to_thread(
-            write_to_graph,
-            rec_id,
-            tags[0] if tags else "",
-            resolved,
-            profile.enrich.node_labels,
-            c.graph.uri,
-            c.graph.user,
-            os.environ.get(c.graph.password_env, ""),
-            c.graph.database,
+        # Write to graph (sync neo4j driver via to_thread); heartbeat-
+        # wrapped for the same reason as resolve_slugs above.
+        _count = await _heartbeat_while(
+            asyncio.to_thread(
+                write_to_graph,
+                rec_id,
+                tags[0] if tags else "",
+                resolved,
+                profile.enrich.node_labels,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+            )
         )
         details = {
             "events": len(resolved.events),

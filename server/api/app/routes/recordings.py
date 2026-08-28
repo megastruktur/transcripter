@@ -75,8 +75,9 @@ class FinalizeRequest(BaseModel):
 class UpdateRequest(BaseModel):
     # Both fields optional: PATCH updates only what is supplied. The vault
     # folder embeds the title in its name and the summarize profile matches
-    # on normalized tags, so a change to either side triggers start_export
-    # to refresh the exported notes.
+    # on normalized tags: a title change triggers a rename-only export, a
+    # tags change triggers a full export (artifact filename + frontmatter
+    # profile/tags must be re-emitted under the new match).
     title: str | None = None
     tags: list[str] | None = None
 
@@ -184,26 +185,34 @@ def _ffmpeg_transcode(src: Path, dst: Path) -> str:
     Returns the trimmed stderr tail for the success path so callers can log
     it (mostly empty — ffmpeg is chatty on -v error and quiet on success).
     """
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-            str(src),
-            "-ac",
-            "1",
-            "-ar",
-            "48000",
-            str(dst),
-        ],
-        capture_output=True,
-        timeout=FFMPEG_TIMEOUT_SEC,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(src),
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                str(dst),
+            ],
+            capture_output=True,
+            timeout=FFMPEG_TIMEOUT_SEC,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # A hung ffmpeg is a client-side problem (corrupt/pathological
+        # input): translate to 422 instead of a bare 500 traceback.
+        raise HTTPException(
+            status_code=422,
+            detail=f"ffmpeg timed out after {int(FFMPEG_TIMEOUT_SEC)}s",
+        ) from None
     if proc.returncode != 0:
         tail = (proc.stderr or b"").decode("utf-8", errors="replace")
         if len(tail) > FFMPEG_STDERR_TAIL:
@@ -260,6 +269,13 @@ async def create_recording_direct(
     rec_dir.mkdir(parents=True, exist_ok=True)
     (rec_dir / "meta").mkdir(parents=True, exist_ok=True)
 
+    # Same disk guard as the resumable flow: one-shot uploads are unbounded
+    # in size, so reject before writing when storage is nearly full. Runs
+    # AFTER the mkdir above so statvfs never sees a missing path.
+    if free_bytes(cfg.storage.path) < MIN_FREE_BYTES:
+        shutil.rmtree(rec_dir, ignore_errors=True)
+        raise HTTPException(status_code=507, detail="storage almost full")
+
     rec = Recording(
         id=rec_id,
         title=title,
@@ -271,15 +287,14 @@ async def create_recording_direct(
         session.add(Stage(recording_id=rec.id, kind=kind))
 
     def _cleanup_on_failure() -> None:
-        # Roll back the DB row we just added (the session is committed by
-        # the caller right after this function returns on the happy path,
-        # so we delete + commit before rmtree to keep observers consistent).
+        # The Recording/Stage rows were added but NEVER flushed (all failure
+        # paths fire before the first commit): Session.delete() on a pending
+        # instance raises InvalidRequestError. rollback() expunges them.
         try:
-            session.delete(rec)
-            session.commit()
+            session.rollback()
         except Exception:
             logging.getLogger("transcripter.api").exception(
-                "cleanup: delete recording row failed for %s", rec_id
+                "cleanup: rollback failed for %s", rec_id
             )
         shutil.rmtree(rec_dir, ignore_errors=True)
 
@@ -540,12 +555,15 @@ async def update_recording(
     if body.tags is not None:
         rec.tags = _normalize_tags(body.tags)
     session.commit()
-    # Either kind of change requires re-emitting the vault export: a new
-    # title renames the folder, new tags shift the summarize profile match.
-    # Fire-and-forget; the rename stands even if Temporal is down
-    # (worker.backfill is the recovery path).
+    # A title-only change is rename_only: the folder moves and NOTHING
+    # inside is rewritten (Obsidian edits are sacred). A tags change needs
+    # the FULL export: the summarize profile match may have shifted, so the
+    # artifact filename (profile's output_artifact) and the frontmatter
+    # tags:/profile: fields must be re-emitted — rename_only would leave
+    # them stale. Fire-and-forget; the DB change stands even if Temporal
+    # is down (worker.backfill is the recovery path).
     try:
-        await temporal_client.start_export(rec.id, rename_only=True)
+        await temporal_client.start_export(rec.id, rename_only=body.tags is None)
     except Exception:
         logging.getLogger("transcripter.api").exception("start_export failed for %s", rec.id)
     return serialize_recording(rec)
