@@ -17,6 +17,8 @@
 		type Stage
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
+	import { buildTagSuggestions } from '$lib/tags';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
 	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? '';
@@ -44,6 +46,7 @@
 	let audioEl = $state<HTMLAudioElement>();
 	let tagError = $state('');
 	let tagSaving = $state(false);
+	let tagSuggestions = $derived(buildTagSuggestions(profilesCache.items));
 
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
 	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
@@ -139,6 +142,11 @@
 		const tab = artifactTab.active;
 		if (!recording) return;
 		void loadTab(tab);
+	});
+
+	$effect(() => {
+		// Profile tags for the picker; failure leaves free-form entry working.
+		void ensureProfiles(loadApiConfig());
 	});
 
 	function autofocus(node: HTMLElement): void {
@@ -360,6 +368,7 @@
 				tags={recording.tags}
 				dense
 				placeholder="Add a tag and press Enter"
+				suggestions={tagSuggestions}
 				onChange={(next) => void saveTags(next)}
 			/>
 		</div>

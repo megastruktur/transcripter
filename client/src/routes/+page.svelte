@@ -13,7 +13,8 @@
 	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import TagChips from '$lib/TagChips.svelte';
-	import { mergeDraftTags } from '$lib/tags';
+	import { mergeDraftTags, buildTagSuggestions } from '$lib/tags';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
 	import { isAndroidTauri, startMobileRecorder } from '$lib/mobile-recorder';
 	import type { MobileRecorder } from '$lib/mobile-recorder';
 
@@ -34,11 +35,14 @@
 	let failedUpload: { blob: Blob; title: string; tags: string[]; durationSec: number } | null =
 		$state(null);
 	let retrying = $state(false);
+	let tagSuggestions = $derived(buildTagSuggestions(profilesCache.items));
 
 	onMount(() => {
 		// Instant from the shared cache on remounts; enumerates and checks in
 		// the background only when there is no report for this selection yet.
 		void ensureAudioDevices();
+		// Profile tags for the picker; failure leaves free-form entry working.
+		void ensureProfiles(loadApiConfig());
 		// A remount (window re-expanded mid-recording) must not restart the
 		// clock: seed frames immediately instead of waiting for the poller.
 		if (recorder.recording) {
@@ -258,6 +262,7 @@
 				{tags}
 				bind:draft={tagDraft}
 				disabled={recorder.recording}
+				suggestions={tagSuggestions}
 				placeholder="e.g. meeting, planning"
 				onChange={(next) => (tags = next)}
 			/>

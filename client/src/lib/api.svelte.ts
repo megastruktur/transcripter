@@ -25,6 +25,15 @@ export type Recording = {
 	stages: Stage[];
 };
 
+export type ProfileInfo = {
+	id: string;
+	version: number;
+	display_name: string;
+	description: string;
+	tags: string[];
+	has_enrich: boolean;
+};
+
 export type RecordingPage = {
 	items: Recording[];
 	total: number;
@@ -96,6 +105,12 @@ export async function listRecordings(cfg: ApiConfig, params: ListParams): Promis
 	if (params.state && params.state !== 'all') search.set('state', params.state);
 	const resp = await req(cfg, `/recordings?${search}`);
 	if (!resp.ok) throw new Error(`list ${resp.status}`);
+	return resp.json();
+}
+
+export async function listProfiles(cfg: ApiConfig): Promise<ProfileInfo[]> {
+	const resp = await req(cfg, '/profiles');
+	if (!resp.ok) throw new Error(`profiles ${resp.status}`);
 	return resp.json();
 }
 
