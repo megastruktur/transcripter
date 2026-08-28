@@ -88,7 +88,11 @@ jobs:
           # job separately so the NDK targets don't evict host artifacts.
           key: android
       - name: Install Android SDK components
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        # sdkmanager is not on PATH on the runner image, and the preinstalled
+        # SDK lives under a root-owned prefix — hence the full path and sudo.
+        run: |
+          yes | sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          sudo "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
       - name: Install frontend deps
         working-directory: client
         run: pnpm install --frozen-lockfile
