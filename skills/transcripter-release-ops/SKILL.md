@@ -62,6 +62,11 @@ overwrites them). Always bump first, tag second.
   an ephemeral signature breaks in-place updates. Keystore backup (with
   passwords) lives outside git at
   `~/projects/backups/transcripter/android-signing/` on the megaserver.
+- `tauri android init` REGENERATES `gen/android/` and wipes two release-critical
+  patches in `app/build.gradle.kts`: the `signingConfigs.release` env block and
+  `usesCleartextTraffic=true` in defaultConfig (template default is false →
+  release APKs can't reach the plain-HTTP LAN server). Re-apply both after any
+  regeneration.
 - `pnpm install --frozen-lockfile` in `client/` → `tauri-apps/tauri-action@v0`
   builds and attaches bundles to release `Transcriptor Maximus vX.Y.Z`
   (non-draft, non-prerelease).
