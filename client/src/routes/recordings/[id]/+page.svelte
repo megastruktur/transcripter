@@ -27,7 +27,8 @@
 		transcribe: 'transcript',
 		diarize: 'diarize',
 		merge_speakers: 'speakers',
-		summarize: 'summary'
+		summarize: 'summary',
+		enrich: 'enrich'
 	};
 
 	let recording = $state<Recording | null>(null);

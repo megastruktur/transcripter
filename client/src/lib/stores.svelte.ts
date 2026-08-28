@@ -33,14 +33,15 @@ export const artifactTab = $state<{ active: ArtifactTabKey }>({ active: 'transcr
 
 /** Canonical pipeline stage order and display names. Shared by the detail
  * page (stage chips, error lines) and the layout context-bar (re-run cluster). */
-export const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize'] as const;
+export const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize', 'enrich'] as const;
 export type StageKind = (typeof STAGES)[number];
 export const stageNames: Record<StageKind, string> = {
 	chunk: 'Chunks',
 	transcribe: 'Transcript',
 	diarize: 'Diarize',
 	merge_speakers: 'Speakers',
-	summarize: 'Summary'
+	summarize: 'Summary',
+	enrich: 'Enrich'
 };
 /** Short labels for the compact re-run buttons in the context bar; the full
  * stageNames go into tooltips and accessible names. */
@@ -49,7 +50,8 @@ export const stageShortNames: Record<StageKind, string> = {
 	transcribe: 'Trn',
 	diarize: 'Dia',
 	merge_speakers: 'Spk',
-	summarize: 'Sum'
+	summarize: 'Sum',
+	enrich: 'Enr'
 };
 
 /** Re-run context published by the recording detail page. The layout

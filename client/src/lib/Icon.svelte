@@ -24,7 +24,8 @@
 		| 'summary'
 		| 'json'
 		| 'chunk'
-		| 'diarize';
+		| 'diarize'
+		| 'enrich';
 </script>
 
 <script lang="ts">
@@ -112,6 +113,11 @@
 		<path d="M4 10v4M7.5 7.5v9M11 9.5v5" />
 		<circle cx="16.8" cy="8.4" r="2.3" />
 		<path d="M14 18c.5-2.3 1.5-3.4 2.8-3.4s2.3 1.1 2.8 3.4" />
+	{:else if name === 'enrich'}
+		<circle cx="6" cy="6.5" r="2.3" />
+		<circle cx="18" cy="6.5" r="2.3" />
+		<circle cx="12" cy="17.5" r="2.3" />
+		<path d="M8.2 7.3h7.6M7 8.6l3.9 6.7M17 8.6l-3.9 6.7" />
 	{/if}
 </svg>
 
