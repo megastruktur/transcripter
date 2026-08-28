@@ -52,3 +52,15 @@
   `meta/summary.md` stays canonical). Format contract:
   `server/profiles/README.md`. Broken profiles warn+skip; the pipeline is
   never affected. Tag edits apply on the next summarize regenerate.
+- Knowledge graph (2026-08-28): optional `enrich` stage after summarize —
+  profiles with an `enrich:` section extract {events, entities, relations}
+  via the summarize LLM (json_object, in-activity retries) into Neo4j CE
+  (compose profile `graph`, no published ports, mem_limit 1.5g). Writes are
+  idempotent: DETACH DELETE by origin_recording_id → MERGE by (tag, slug);
+  dedup is slug-normalization + a best-effort LLM same-entity question.
+  enrich is best-effort (skipped without graph/profile, failed never fails
+  the recording). Profile prompts substitute ONLY {title}/{transcript}
+  literally — JSON schema braces in prompts are safe.
+  `server/scripts/e2e_smoke.sh` GRAPH=1 verifies the write path through a
+  deterministic in-container probe (scripts/graph_probe.py) plus a live
+  enrich regenerate cycle.

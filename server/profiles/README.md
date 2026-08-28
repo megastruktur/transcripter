@@ -37,7 +37,29 @@ summarize:
 - **Применение**: профиль матчится на момент запуска стадии. Смена тегов на
   существующей записи → нажмите regenerate summarize.
 
+## Секция enrich (host ≥ 0.9.0, нужен compose-профиль `graph`)
+
+```yaml
+enrich:
+  prompt: |              # обязательно; ОБЯЗАН содержать {transcript}
+    Извлеки из транскрипта JSON: {"events": [...], "entities": [...],
+    "relations": [...]} … {transcript}
+  node_labels:           # опционально; defaults: Entity / Event
+    entity: Entity
+    event: Event
+```
+
+После summarize хост просит LLM вернуть JSON-объект
+`{events: [{ts, kind, summary}], entities: [{slug, label, type}],
+relations: [{from_slug, to_slug, type}]}` и пишет его в Neo4j: узлы и рёбра
+несут `tag` и `origin_recording_id`; повторный прогон идемпотентен
+(DETACH DELETE по записи → MERGE по (tag, slug)); дедуп — slug-нормализация
++ LLM-вопрос «тот же объект?». Промпт подставляет ТОЛЬКО `{title}` и
+`{transcript}` (литерально) — фигурные скобки JSON-примеров безопасны.
+Стадия best-effort: без графа или enrich-секции — skipped, ошибка не портит
+запись.
+
 ## Будущие секции (forward-compat)
 
-`enrich:` (волна B) и `digest:` (волна C) — неизвестные поля сегодня дают
-warn и игнорируются; файлы с ними не ломают хост 0.9.0.
+`digest:` (волна C) — неизвестные поля сегодня дают warn и игнорируются;
+файлы с ними не ломают хост.

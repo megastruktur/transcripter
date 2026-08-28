@@ -545,3 +545,38 @@ def test_pre_existing_lookup_returns_helper_instance() -> None:
         gdmock.return_value = driver
         lookup = pre_existing_lookup("bolt://n", "neo4j", "pw", "neo4j", "pathfinder")
     assert isinstance(lookup, ExistingEntityLookup)
+
+def test_render_prompt_tolerates_json_braces():
+    """Profile prompts embed JSON schema examples; only {title}/{transcript}
+    are placeholders — literal braces must survive (str.format regression)."""
+    from worker.enrich import _render_prompt
+
+    out = _render_prompt('Return {"events": []} for «{title}». {transcript}', "t", "BODY")
+    assert '{"events": []}' in out and "«t»" in out and "BODY" in out
+
+
+def test_pre_existing_lookup_instantiates_driver(monkeypatch):
+    """Regression: pre_existing_lookup passed the UNCALLED GraphDatabase.driver
+    factory into the lookup (2026-08-27): 'function' object has no attribute
+    'close'. The factory MUST be called with uri+auth."""
+    import worker.enrich as en
+
+    calls = {}
+
+    class _FakeDriver:
+        def session(self, database=None):  # pragma: no cover - not needed here
+            raise AssertionError("not used")
+
+        def close(self):
+            calls["closed"] = True
+
+    def fake_driver(uri, auth=None):
+        calls["uri"] = uri
+        calls["auth"] = auth
+        return _FakeDriver()
+
+    monkeypatch.setattr(en.GraphDatabase, "driver", fake_driver)
+    lookup = en.pre_existing_lookup("bolt://x:7687", "neo4j", "pw", "neo4j", tag="t")
+    assert calls["uri"] == "bolt://x:7687" and calls["auth"] == ("neo4j", "pw")
+    lookup.close()
+    assert calls.get("closed") is True

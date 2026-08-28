@@ -10,6 +10,7 @@ from temporalio.worker import Worker
 from .activities import (
     chunk,
     diarize,
+    enrich,
     export_transcript,
     finalize_recording,
     merge_speakers,
@@ -20,6 +21,11 @@ from .activities import (
 from .config import load_config
 from .db import init_engine
 from .workflows import ExportRecording, ProcessRecording
+
+# Module-level so tests can assert it matches every @activity.defn
+# (an unregistered activity fails workflows at runtime with NotFoundError
+# while the stage row sits pending — observed 2026-08-27 on enrich).
+ACTIVITIES = [chunk, transcribe, diarize, merge_speakers, summarize, enrich, finalize_recording, export_transcript]
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("transcripter.worker")
@@ -72,7 +78,7 @@ async def amain() -> None:
         client,
         task_queue=TASK_QUEUE,
         workflows=[ProcessRecording, ExportRecording],
-        activities=[chunk, transcribe, diarize, merge_speakers, summarize, finalize_recording, export_transcript],
+        activities=ACTIVITIES,
     )
     log.info("worker started on queue %s", TASK_QUEUE)
     await worker.run()

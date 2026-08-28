@@ -77,4 +77,7 @@ def _render_profile_prompt(template: str, title: str, transcript: str) -> str:
 
     Validation that ``{transcript}`` is present happens in the Profile model
     (profiles.py) — by the time we get here, the substitution is safe to run."""
-    return template.format(title=title or "", transcript=transcript)
+    # Literal replacement of exactly two placeholders — NOT str.format: profile
+    # prompts may embed JSON examples whose braces format() would misread
+    # (same incident class as enrich._render_prompt, 2026-08-27).
+    return template.replace("{title}", title or "").replace("{transcript}", transcript)

@@ -552,7 +552,7 @@ async def enrich(rec_id: str) -> dict:
                 log.exception("enrich: dedup failed; falling back to raw extraction")
                 resolved = extracted
         finally:
-            lookup._driver.close()
+            lookup.close()
         # Write to graph (sync neo4j driver via to_thread).
         _count = await asyncio.to_thread(
             write_to_graph,

@@ -162,7 +162,12 @@ def _parse_extraction(payload: Any) -> ExtractedGraph:
 def _render_prompt(template: str, title: str, transcript: str) -> str:
     """Substitute {title} / {transcript}. The contract requires ``{transcript}``;
     profiles.py already enforces that on load. ``{title}`` is optional."""
-    return template.format(title=title or "", transcript=transcript)
+    # Literal replacement of exactly two placeholders — NOT str.format:
+    # profile prompts legitimately embed JSON schema examples with braces
+    # ({"events": [...]}) which format() would read as replacement fields
+    # and die with KeyError (observed live 2026-08-27 on the pathfinder
+    # profile's enrich prompt).
+    return template.replace("{title}", title or "").replace("{transcript}", transcript)
 
 
 def extract_from_transcript(
@@ -361,8 +366,11 @@ def write_to_graph(
                 (
                     f"CREATE (e:`{safe_event_label}` {{"
                     "ts: $ts, kind: $kind, summary: $summary, "
+                    # Not an f-string: a single closing brace is literal here
+                    # ("}}" would survive verbatim and break Cypher — caught
+                    # by scripts/graph_probe.py against a live Neo4j).
                     "tag: $tag, origin_recording_id: $rec"
-                    "}}) RETURN elementId(e)"
+                    "}) RETURN elementId(e)"
                 ),
             )
             mentions_query = cast(
@@ -567,6 +575,12 @@ class ExistingEntityLookup:
         self._database = database
         self._tag = tag
 
+    def close(self) -> None:
+        """Release the underlying driver. The OWNING side (whoever built
+        the lookup via pre_existing_lookup) closes through this method —
+        never by reaching into ``_driver`` directly."""
+        self._driver.close()
+
     def __call__(self, slug: str) -> dict[str, str] | None:
         with self._driver.session(database=self._database) as session:
             row = session.run(
@@ -588,6 +602,6 @@ def pre_existing_lookup(
     tag: str,
 ) -> ExistingEntityLookup:
     """Build an ``ExistingEntityLookup`` bound to the configured graph."""
-    driver = GraphDatabase.driver
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
 
     return ExistingEntityLookup(driver, graph_database, tag)

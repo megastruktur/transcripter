@@ -125,3 +125,10 @@ def test_profile_mode_empty_title_renders(meta, monkeypatch):
         meta, _cfg(), prompt_template="T={title} B={transcript}", title=""
     )
     assert "T= B=hello" in sent["json"]["messages"][1]["content"]
+
+
+def test_render_profile_prompt_tolerates_json_braces():
+    from worker.summarize import _render_profile_prompt
+
+    out = _render_profile_prompt('Schema {"a": 1}; title={title}; body: {transcript}', "t", "BODY")
+    assert '{"a": 1}' in out and "title=t" in out and "body: BODY" in out

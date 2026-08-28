@@ -236,6 +236,41 @@ else
   echo "  skip: summarize not done — session-log.md not asserted"
 fi
 
+if [ "${GRAPH:-0}" = "1" ]; then
+  echo "== 9c. knowledge graph (enrich stage)"
+  echo "$RESP" | jq -e '.stages[] | select(.kind=="enrich").status=="done"' >/dev/null \
+    && echo "  ok: enrich done" || { echo "  enrich NOT done:"; echo "$RESP" | jq -r '.stages[] | select(.kind=="enrich")'; exit 1; }
+  # The LLM extraction on the speech fixture legitimately returns EMPTY
+  # (the pathfinder profile demands RPG facts), so node counts from the
+  # model are informational only; the deterministic write-path probe
+  # (write -> rewrite -> cleanup through worker.enrich.write_to_graph,
+  # run inside the worker container because bolt is NOT published) is
+  # what asserts graph correctness.
+  CYPHER() { docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T neo4j \
+    cypher-shell -u neo4j -p "$NEO4J_PASSWORD" --format plain "$1" 2>/dev/null; }
+  NODES=$(CYPHER "MATCH (n {origin_recording_id: '$RID'}) RETURN count(n) AS c" | grep -oE '[0-9]+' | head -1)
+  echo "  info: $((${NODES:-0} + 0)) LLM-extracted graph nodes for recording"
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" cp "$(dirname "$0")/graph_probe.py" worker:/tmp/graph_probe.py
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T -w /app/worker \
+    -e PYTHONPATH=/app/worker worker \
+    .venv/bin/python /tmp/graph_probe.py || { echo "  graph probe FAILED"; exit 1; }
+  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T worker rm -f /tmp/graph_probe.py
+
+  echo "== 9d. enrich regenerate returns to done"
+  HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d '{"stage":"enrich"}' "$API/recordings/$RID/regenerate")
+  test "$HTTP" = "200" || { echo "  regenerate enrich rc=$HTTP"; exit 1; }
+  DEADLINE=$((SECONDS + WAIT))
+  while [ $SECONDS -lt $DEADLINE ]; do
+    ST=$(auth "$API/recordings/$RID" | jq -r '.stages[] | select(.kind=="enrich").status')
+    [ "$ST" = "done" ] && break
+    [ "$ST" = "failed" ] && { echo "  enrich regenerate FAILED"; exit 1; }
+    sleep 10
+  done
+  test "$ST" = "done" && echo "  ok: enrich re-ran to done" || { echo "  TIMEOUT waiting for enrich regenerate"; exit 1; }
+fi
+
 echo "== 10. regenerate diarize"
 HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
