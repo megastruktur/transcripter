@@ -120,7 +120,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          APK=$(find client/src-tauri/gen/android/app/build/outputs/apk -name 'app-release.apk' | head -1)
+          # Tauri's gradle plugin emits a universal split: apk/universal/release/app-universal-release.apk
+          APK=$(find client/src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' ! -name '*-unsigned.apk' | grep -m1 universal || true)
+          APK=${APK:-$(find client/src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' ! -name '*-unsigned.apk' | head -1)}
           test -n "$APK" || { echo "::error::signed APK not found under outputs/apk"; exit 1; }
           VERSION=$(jq -r .version client/src-tauri/tauri.conf.json)
           TAG="v$VERSION"
