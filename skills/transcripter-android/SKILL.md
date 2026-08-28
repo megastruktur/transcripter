@@ -188,9 +188,10 @@ Post-`d1c0591`, the Android path has **no** Rust capture IPC. Flow:
    `app/src/main/assets/index.html` (the SvelteKit SPA built by `pnpm build`).
    Window chrome (collapse / minimize / close) is hidden in the layout
    (`client/src/routes/+layout.svelte`), the OS owns the window.
-   On Android the left navigation rail becomes an overlay drawer (hamburger
-   button top-left, 160ms slide, scrim/Esc/nav-click close), and the
-   titlebar/status-strip absorb `env(safe-area-inset-top/bottom)` so the UI
+   On Android the left navigation rail becomes an overlay drawer (toggled by
+   tapping the app sigil top-left; 160ms slide, scrim/Esc/nav-click close),
+   and the record page dissolves its panel chrome and pins the record button
+   to the bottom for thumb reach. The titlebar/status-strip absorb `env(safe-area-inset-top/bottom)` so the UI
    clears the status bar and gesture pill (needs `viewport-fit=cover` in
    `client/src/app.html` and a WebView ≥ 140 — older WebViews report the
    insets as 0, see tauri-apps/tauri#14142). Desktop layout is untouched

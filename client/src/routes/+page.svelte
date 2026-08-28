@@ -284,6 +284,13 @@
 
 <style>
 	.capture-page { display: flex; flex-direction: column; gap: 10px; }
+	/* Android: the record page is single-purpose, so the panel chrome around
+	   the recorder is dissolved (display:contents drops the panel box but
+	   keeps child order) and the record button pins to the bottom of the
+	   viewport for thumb reach. Desktop keeps the framed instrument panel. */
+	:global(.shell--android) .capture-page { min-height: 100%; }
+	:global(.shell--android) .recorder-core { display: contents; }
+	:global(.shell--android) .record-control { margin-top: auto; position: sticky; bottom: 10px; z-index: 2; }
 	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
 	.upload-pending { grid-template-columns: 1fr auto; align-items: center; }

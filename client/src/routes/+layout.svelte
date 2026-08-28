@@ -199,11 +199,12 @@
 {:else}
 	<div class="app-shell" class:shell--android={android}>
 		<header class="titlebar" data-tauri-drag-region>
-			{#if android}
-				<button class="menu-button" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><Icon name="menu" size={16} /></button>
-			{/if}
 			<div class="identity" data-tauri-drag-region>
-				<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
+				{#if android}
+					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></span></button>
+				{:else}
+					<div class="mini-cog" aria-hidden="true"><Icon name="mark" size={25} /></div>
+				{/if}
 				<div data-tauri-drag-region>
 					<strong data-tauri-drag-region>TRANSCRIPTOR MAXIMUS</strong>
 					<small data-tauri-drag-region>Audio capture console</small>
@@ -362,8 +363,10 @@
 	.page-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
-	.menu-button { width: 30px; height: 30px; display: grid; place-items: center; margin-right: 9px; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
-	.menu-button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.55); background: rgba(215, 167, 71, 0.08); }
+	/* The app sigil doubles as the drawer toggle; negative margin keeps the
+	   visual footprint identical while the hit area grows to ~41px. */
+	.cog-toggle { display: grid; place-items: center; margin: -6px; padding: 6px; border: 0; background: transparent; cursor: pointer; line-height: 0; }
+	.cog-toggle:active .mini-cog { transform: scale(0.94); transition: transform 100ms ease; }
 
 	/* Android: the WebView draws edge-to-edge under the system status bar, so
 	   the titlebar/footer absorb the safe-area insets (env() = 0 on desktop and
