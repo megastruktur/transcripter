@@ -183,6 +183,17 @@ regenerate. Two examples ship in the repo (`pathfinder-party-log`,
 `server/profiles/README.md`. A broken profile logs a warning and is skipped —
 the pipeline is never affected.
 
+With the graph layer on (`--profile graph`), profiles with an `enrich:`
+section additionally extract events/entities/relations into Neo4j after
+summarize (best-effort — failures never hurt the recording), and
+`POST /tags/{tag}/digest {last_n}` renders a digest note of the last N
+tagged sessions to `<transcripts>/digests/<tag>.md`.
+
+Mobile/one-shot uploads: `POST /recordings/direct` accepts a single
+multipart request (audio + title + tags) and transcodes to FLAC
+server-side — used by the Android client (PoC state and build repro:
+`client/ANDROID_POC.md`).
+
 ## ML deployment matrix
 
 ML services are compose **profiles**: the base stack needs none of them.

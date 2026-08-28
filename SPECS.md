@@ -64,3 +64,17 @@
   `server/scripts/e2e_smoke.sh` GRAPH=1 verifies the write path through a
   deterministic in-container probe (scripts/graph_probe.py) plus a live
   enrich regenerate cycle.
+- Tag digests (2026-08-28): `POST /tags/{tag}/digest {last_n}` → 202 +
+  workflow_id; Temporal TagDigest workflow picks the last N done recordings
+  with the tag (Postgres `@>`), pulls their subgraph (Neo4j), renders an
+  Obsidian note to `<transcripts>/digests/<tag>.md` (tmp+rename, frontmatter
+  with recording ids). 409 when the graph layer is off; 400 on
+  non-filesystem-safe tags.
+- Android client PoC (2026-08-28, verdict GO): Tauri v2 Android builds
+  user-local (no sudo): Temurin 21 + SDK/NDK 26.1.10909125, repro in
+  `client/ANDROID_POC.md`. Desktop-only Rust is cfg-gated; capture on Android
+  is JS: getUserMedia → MediaRecorder (webm/opus) → one-shot
+  `POST /recordings/direct` (multipart; server transcodes to canonical FLAC
+  unless the bytes already are FLAC). Runtime mic check on a physical device
+  is pending; backgrounding tears down the MediaStream (foreground service
+  is the known future fix).
