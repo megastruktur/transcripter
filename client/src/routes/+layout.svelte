@@ -7,8 +7,12 @@
 	import { commands } from '$lib/tauri';
 	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, stageNames, stageRetry, stageShortNames, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import { isAndroidTauri } from '$lib/mobile-recorder';
 
 	let { children } = $props();
+	// Android: no desktop window chrome (collapse/minimize/close), no native
+	// window sizing — the WebView is fullscreen and the OS owns the window.
+	const android = isAndroidTauri();
 	let collapsed = $state(browser && localStorage.getItem('transcripter.window-collapsed') === 'true');
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
@@ -78,6 +82,7 @@
 		void checkServerConnection();
 		void initUploadTracking();
 		if (!isTauri()) return;
+		if (android) return;
 		try {
 			const appWindow = getCurrentWindow();
 			const [physicalSize, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
@@ -115,6 +120,7 @@
 	}
 
 	function toggleCollapsed(): void {
+		if (android) return;
 		collapsed = !collapsed;
 		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
 		applyWindowMode(collapsed).catch((error) => console.warn('applyWindowMode failed', error));
@@ -191,11 +197,13 @@
 					<small data-tauri-drag-region>Audio capture console</small>
 				</div>
 			</div>
+			{#if !android}
 			<div class="window-actions">
 				<button type="button" onclick={toggleCollapsed} aria-label="Collapse to symbol" title="Collapse to symbol"><Icon name="collapse" size={16} /></button>
 				<button type="button" onclick={minimizeWindow} aria-label="Minimize window" title="Minimize"><Icon name="minimize" size={16} /></button>
 				<button class="close" type="button" onclick={closeWindow} aria-label="Close window" title="Close"><Icon name="close" size={16} /></button>
 			</div>
+			{/if}
 		</header>
 
 		<div class="hazard-rule" aria-hidden="true"></div>

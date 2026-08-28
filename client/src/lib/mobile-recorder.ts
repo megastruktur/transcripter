@@ -15,6 +15,10 @@
  */
 
 const ANDROID_UA = /Android/i;
+/** Pseudo device id the shared store reports on Android: the platform owns
+ * device routing (system mic via getUserMedia), so there is exactly one
+ * selectable "device" and the desktop IPC enumeration does not exist. */
+export const ANDROID_MIC_ID = 'android-system-mic';
 
 export function isTauriWebview(): boolean {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;

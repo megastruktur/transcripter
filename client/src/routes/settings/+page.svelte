@@ -13,8 +13,10 @@
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import { isAndroidTauri } from '$lib/mobile-recorder';
 
 	let cfg = $state(loadApiConfig());
+	const android = isAndroidTauri();
 	let showToken = $state(false);
 
 	const connected = $derived(connection.phase === 'connected');
@@ -125,6 +127,15 @@
 		</div>
 
 		<div class="form-body">
+			{#if android}
+				<div class="notice android-mic-note" role="status">
+					<strong>System microphone</strong>
+					<span
+						>Android manages the input device and audio routing. The microphone
+						permission prompt appears when you start a recording.</span
+					>
+				</div>
+			{:else}
 			{#if preflight.current?.error}
 				<div class="notice error" role="alert"><strong>Pre-flight failed</strong><span>{preflight.current.error}</span></div>
 			{/if}
@@ -165,6 +176,7 @@
 				{audioDevices.checking ? 'Checking selected devices…' : 'Check selected devices'}
 			</button>
 			{#if audioDevices.error}<p class="device-error" role="alert">Could not load audio devices: {audioDevices.error}</p>{/if}
+			{/if}
 		</div>
 	</div>
 </section>
@@ -219,4 +231,6 @@
 	.check-devices { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
 	.check-devices:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }
 	.device-error { margin: 0; color: #df756b; font-size: 10px; line-height: 1.4; }
+	.android-mic-note { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--line); background: rgba(0,0,0,.18); font-size: 12px; line-height: 1.4; }
+	.android-mic-note strong { font-size: 10px; font-weight: 700; color: #8d847a; }
 </style>

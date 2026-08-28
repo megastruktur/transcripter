@@ -3,6 +3,7 @@ import type { AudioDevices, PreFlightReport } from '$lib/tauri';
 import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
 import type { ApiConfig, Stage } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
+import { ANDROID_MIC_ID, isAndroidTauri } from '$lib/mobile-recorder';
 
 export type UploadState = {
 	sessionId: string;
@@ -262,6 +263,23 @@ export function refreshAudioDevices(): Promise<void> {
 	if (audioDevicesRequest) return audioDevicesRequest;
 	audioDevicesRequest = (async () => {
 		try {
+			if (isAndroidTauri()) {
+				// Android owns device routing: recording goes through the system mic
+				// via getUserMedia (mobile-recorder.ts), and the desktop
+				// cmd_list_audio_devices command is not even registered in the
+				// android build. Report a single pseudo device so every consumer
+				// (record page, settings) sees a valid, selected microphone.
+				audioDevices.devices = {
+					microphones: [{ id: ANDROID_MIC_ID, label: 'System microphone', is_default: true }],
+					system_outputs: [],
+					default_microphone: ANDROID_MIC_ID,
+					default_system_output: null
+				};
+				audioDevices.error = '';
+				audioDevices.selectedMicrophone = ANDROID_MIC_ID;
+				audioDevices.selectedSystemOutput = SYSTEM_AUDIO_OFF;
+				return;
+			}
 			const devices = await commands.listAudioDevices();
 			audioDevices.devices = devices;
 			audioDevices.error = '';
@@ -362,6 +380,9 @@ let audioCheckSeq = 0;
 let audioChecksInFlight = 0;
 
 export async function checkAudioDevices(probe = true): Promise<void> {
+	// No preflight on Android: the capture stack is the WebView's, and the
+	// only check that matters (mic permission) happens at record start.
+	if (isAndroidTauri()) return;
 	const microphone = audioDevices.selectedMicrophone;
 	const systemOutput = audioDevices.selectedSystemOutput;
 	if (!microphone) {
