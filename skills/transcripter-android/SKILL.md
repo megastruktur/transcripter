@@ -383,6 +383,18 @@ release — keep them separate tickets.
 - **No sudo on the dev host.** All Android tools are user-local under
   `~/.local/`; do not try to `apt install` them.
 
+## Launcher icon
+
+The launcher icon is the app sigil (`client/src-tauri/icons/app-icon.svg`),
+regenerated with `pnpm tauri icon src-tauri/icons/app-icon.svg` (from
+`client/`) - it rewrites the mipmaps under
+`gen/android/app/src/main/res/mipmap-*` plus the adaptive-icon set
+(`mipmap-anydpi-v26`). The adaptive-icon background color lives in
+`gen/android/app/src/main/res/values/ic_launcher_background.xml` and is
+pinned to the sigil's dark base `#171311` (tauri's generator resets it to
+`#fff` - re-apply the pin after any regeneration). The changed `.png`s are
+committed.
+
 ## Sources
 
 Local artifacts (verified on this host):
