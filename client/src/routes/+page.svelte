@@ -290,6 +290,7 @@
 	   viewport for thumb reach. Desktop keeps the framed instrument panel. */
 	:global(.shell--android) .capture-page { min-height: 100%; }
 	:global(.shell--android) .recorder-core { display: contents; }
+	:global(.shell--android) .recorder-core::before { display: none; }
 	:global(.shell--android) .record-control { margin-top: auto; position: sticky; bottom: 10px; z-index: 2; }
 	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
 	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
