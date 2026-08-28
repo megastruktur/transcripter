@@ -30,7 +30,11 @@ android {
     }
     namespace = "com.megastruktur.transcripter"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // The client talks to a user-configured LAN server over plain HTTP by design
+        // (README documents the no-TLS single-user tradeoff), so cleartext must
+        // be allowed in release too - otherwise Android 9+ kills the WebView's
+        // requests before they leave the device ("Could not reach the server").
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.megastruktur.transcripter"
         minSdk = 24
         targetSdk = 36
@@ -39,7 +43,6 @@ android {
     }
     buildTypes {
         getByName("debug") {
-            manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
