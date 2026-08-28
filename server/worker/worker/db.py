@@ -6,7 +6,8 @@ Worker owns stage transitions while executing activities.
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import ARRAY, JSON, Enum, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, Enum, ForeignKey, String, Text, create_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import TEXT
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -50,8 +51,11 @@ class Recording(Base):
     # Wave A knowledge-graph tags. Postgres stores TEXT[]; SQLite (worker
     # unit tests + local dev) gets a JSON variant so the same python-side
     # ``list[str]`` default works in both dialects. Matches the API schema.
+    # NOTE: the DIALECT-SPECIFIC postgresql ARRAY — the generic
+    # sqlalchemy.ARRAY lacks .contains() (@>) which digest.py relies on
+    # (NotImplementedError at runtime on Postgres; sqlite tests never saw it).
     tags: Mapped[list[str]] = mapped_column(
-        ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
         nullable=False,
         default=list,
     )

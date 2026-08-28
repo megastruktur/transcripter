@@ -7,7 +7,8 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import ARRAY, JSON, Enum, Float, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text, create_engine
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import TEXT
 from sqlalchemy.orm import (
     DeclarativeBase,
@@ -53,7 +54,9 @@ class Recording(Base):
     # Postgres stores TEXT[]; SQLite (tests, local dev) gets a JSON variant so
     # the same python-side `list[str]` default works in both dialects.
     tags: Mapped[list[str]] = mapped_column(
-        ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        # Dialect-specific postgresql ARRAY: the generic sqlalchemy.ARRAY
+        # lacks .contains() (@>) — keep both packages on the same type.
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
         nullable=False,
         default=list,
     )
