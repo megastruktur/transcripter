@@ -161,6 +161,35 @@ Do not introduce:
 - page descriptions that merely repeat the title and controls;
 - one-off colors, radii, shadows, or icon styles outside the shared system.
 
+## Platform parity (desktop vs Android)
+
+One SvelteKit codebase ships both the desktop app and the Android app, and
+one version number covers both. The presentations deliberately differ
+(window chrome, navigation rail vs drawer, safe-area insets, thumb-reach
+layout) — that is ergonomics, not drift. The rules that keep the two
+presentations from diverging:
+
+- **One component tree.** Platform differences live only in the shell layer:
+  `.shell--android` CSS overrides and rare `{#if android}` branches for
+  chrome that does not exist on the platform (window buttons, titlebar).
+  Never fork a page or component per platform — no `*.android.svelte` files,
+  no duplicated views.
+- **Feature parity through the API.** Every capability goes through the same
+  REST API. Platform-specific code is limited to input adapters (capture:
+  MediaRecorder vs cpal/FLAC) and OS integration, never to features.
+- **Standardize behavior, not pixels.** Do not unify the views to "avoid
+  differences"; the fixed 440×720 desktop frame and the edge-to-edge Android
+  presentation are both canonical. Divergence is a bug only when the same
+  state reads differently (color, status, affordance) — not when the same
+  component sits differently.
+- **Two-viewport smoke check.** After any layout/shell change, verify BOTH
+  presentations before merge: desktop 440×720 and Android 411×914 (Chrome
+  mobile UA). The change must be intentional in both, pixel-stable in the
+  one it does not target.
+- **Release parity is a process item.** Version bumps, tags and changelogs
+  cover both platforms from one commit; building the Android artifact is a
+  release step, not a separate version line.
+
 ## Review checklist
 
 Before merging client UI work, verify:
@@ -173,5 +202,7 @@ Before merging client UI work, verify:
 - Panels read as connected machine surfaces, not floating web cards.
 - Icons use the shared SVG system and have accessible names.
 - Focus is visible and reduced motion is respected.
+- Both presentations verified: desktop 440×720 and Android 411×914, with
+  the change intentional in each.
 - The change uses one strong motif and removes decorative excess.
 - The result still looks like Transcriptor Maximus when all franchise names are removed.

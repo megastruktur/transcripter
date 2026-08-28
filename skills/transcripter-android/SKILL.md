@@ -382,6 +382,11 @@ release — keep them separate tickets.
   quoted `yes | sdkmanager --licenses` line does not fork oddly.
 - **No sudo on the dev host.** All Android tools are user-local under
   `~/.local/`; do not try to `apt install` them.
+- **Platform parity rule (DESIGN_GUIDELINES.md § Platform parity).** One
+  component tree; Android differences only via `.shell--android` CSS and
+  `{#if android}` chrome branches — never fork pages. After any
+  layout/shell change, verify BOTH presentations before merge: desktop
+  440×720 and Android 411×914 (mobile Chrome UA), each intentional.
 
 ## Launcher icon
 
