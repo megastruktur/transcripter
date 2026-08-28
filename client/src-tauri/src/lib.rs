@@ -1,30 +1,38 @@
 pub mod capture;
+pub mod encode;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod permissions;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod recording;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod spool;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub mod uploader;
 #[cfg(target_os = "macos")]
 mod capture_macos;
 #[cfg(target_os = "windows")]
 mod capture_windows;
-pub mod encode;
-pub mod permissions;
-pub mod recording;
-pub mod spool;
-pub mod uploader;
 
 use std::time::Duration;
 
+use tauri::{AppHandle, Emitter, Manager};
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager,
 };
 use tokio::runtime::Runtime;
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::permissions::PreFlightReport;
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use crate::spool::{Spool, SpoolSession};
 
 static RUNTIME: std::sync::LazyLock<Runtime> =
     std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime"));
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -33,6 +41,7 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
     let Some(window) = app.get_webview_window("main") else {
@@ -51,66 +60,79 @@ fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
     let _ = window.set_visible_on_all_workspaces(collapsed);
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Spool entries from previous runs are retried when the frontend calls
-    // cmd_retry_pending (Recordings mount, with configured credentials).
     tauri::Builder::default()
-        .setup(|app| {
-            let show = MenuItemBuilder::with_id("show", "Show Transcriptor Maximus").build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+        .setup(|_app| {
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            {
+                let show = MenuItemBuilder::with_id("show", "Show Transcriptor Maximus").build(_app)?;
+                let quit = MenuItemBuilder::with_id("quit", "Quit").build(_app)?;
+                let menu = MenuBuilder::new(_app).items(&[&show, &quit]).build()?;
 
-            #[cfg(target_os = "macos")]
-            let tray_icon_bytes: &[u8] = include_bytes!("../icons/tray/32x32.png");
-            #[cfg(not(target_os = "macos"))]
-            let tray_icon_bytes: &[u8] = include_bytes!("../icons/32x32.png");
+                #[cfg(target_os = "macos")]
+                let tray_icon_bytes: &[u8] = include_bytes!("../icons/tray/32x32.png");
+                #[cfg(not(target_os = "macos"))]
+                let tray_icon_bytes: &[u8] = include_bytes!("../icons/32x32.png");
 
-            TrayIconBuilder::with_id("transcripter-tray")
-                .icon(Image::from_bytes(tray_icon_bytes)?)
-                .icon_as_template(cfg!(target_os = "macos"))
-                .tooltip("Transcriptor Maximus")
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show" => show_main_window(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                })
-                .build(app)?;
-
+                TrayIconBuilder::with_id("transcripter-tray")
+                    .icon(Image::from_bytes(tray_icon_bytes)?)
+                    .icon_as_template(cfg!(target_os = "macos"))
+                    .tooltip("Transcriptor Maximus")
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "show" => show_main_window(app),
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            show_main_window(tray.app_handle());
+                        }
+                    })
+                    .build(_app)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_list_audio_devices,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_pre_flight,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_start_recording,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_stop_recording,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_recording_frames,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_recording_degraded,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_upload_now,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_retry_pending,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_pending_uploads,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_apply_window_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_list_audio_devices() -> Result<capture::AudioDevices, String> {
     capture::list_devices()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_pre_flight(
     probe: Option<bool>,
@@ -126,6 +148,7 @@ fn cmd_pre_flight(
     )
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_start_recording(
     app: AppHandle,
@@ -145,6 +168,8 @@ fn cmd_start_recording(
         capture_system.unwrap_or(true),
     )
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_stop_recording(
     app: AppHandle,
@@ -174,6 +199,7 @@ fn cmd_stop_recording(
     Ok(session)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<u32, String> {
     let spool = spool_from_app(&app)?;
@@ -194,16 +220,19 @@ fn cmd_retry_pending(app: AppHandle, base_url: String, token: String) -> Result<
     Ok(count)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_recording_frames() -> Result<u64, String> {
     recording::frames_written()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_recording_degraded() -> Option<String> {
     recording::degraded_reason()
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn spool_from_app(app: &AppHandle) -> Result<Spool, String> {
     use tauri::Manager;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -230,6 +259,7 @@ pub struct UploadStatusEvent {
 
 const UPLOAD_STATUS_EVENT: &str = "upload://status";
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn emit_upload_status(
     app: &AppHandle,
     session: &SpoolSession,
@@ -251,6 +281,7 @@ fn emit_upload_status(
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_upload_now(
     app: AppHandle,
@@ -272,6 +303,7 @@ fn cmd_upload_now(
 
 /// Spool sessions not yet uploaded — lets the UI seed its upload state
 /// on startup (before any event arrives) instead of showing a stale zero.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_pending_uploads(app: AppHandle) -> Result<Vec<SpoolSession>, String> {
     let spool = spool_from_app(&app)?;
@@ -279,6 +311,7 @@ fn cmd_pending_uploads(app: AppHandle) -> Result<Vec<SpoolSession>, String> {
 }
 
 /// catch_unwind for futures (tokio has no built-in; use futures crate).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 async fn futures_catch<F: std::future::Future>(
     fut: std::panic::AssertUnwindSafe<F>,
 ) -> Result<F::Output, Box<dyn std::any::Any + Send>> {
@@ -286,6 +319,7 @@ async fn futures_catch<F: std::future::Future>(
     fut.catch_unwind().await
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[derive(Clone)]
 struct UploadJob {
     app: AppHandle,
@@ -294,10 +328,12 @@ struct UploadJob {
     cfg: UploadCfg,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 enum QueueMsg {
     Job(UploadJob),
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 static UPLOAD_QUEUE: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<QueueMsg>> =
     std::sync::LazyLock::new(|| {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<QueueMsg>();
@@ -364,11 +400,13 @@ static UPLOAD_QUEUE: std::sync::LazyLock<tokio::sync::mpsc::UnboundedSender<Queu
     });
 
 /// Sessions already queued (dedup between stop-path and cmd_retry_pending).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 static QUEUED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
 /// Enqueue an upload; the single queue worker processes jobs sequentially.
 /// Returns immediately; failures are logged and the spool entry stays pending.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn enqueue_upload(
     app: AppHandle,
     spool_dir: std::path::PathBuf,
@@ -397,6 +435,7 @@ fn enqueue_upload(
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 async fn try_upload(
     spool_dir: &std::path::Path,
     session: &SpoolSession,

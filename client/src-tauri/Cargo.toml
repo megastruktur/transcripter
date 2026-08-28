@@ -10,17 +10,28 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+# Cross-platform deps. `tauri` features must be the MINIMUM set that compiles
+# on every supported target — desktop-only features (x11, tray-icon) live in
+# target-specific blocks below.
+#
+# Notes for the android build:
+#   * `custom-protocol` is required so `tauri::generate_context!()` accepts
+#     the in-app asset:// scheme that the generated Android shell loads.
+#   * `macos-private-api` is harmlessly gated by cfg inside tauri on non-mac
+#     builds, but it MUST stay in the base feature list because
+#     `tauri.conf.json` declares `app.macOSPrivateApi: true` and the tauri
+#     build script enforces that the corresponding feature is enabled
+#     (otherwise `cargo check` aborts with a feature-allowlist error).
+#   * `cpal` is desktop-only (ALSA on linux / CoreAudio on macOS / WASAPI on
+#     Windows); on android the recording path runs through the WebView's
+#     getUserMedia. Pulling cpal in for android targets adds `-laaudio` to
+#     the link line and the build fails.
 [dependencies]
-tauri = { version = "2", default-features = false, features = ["wry", "compression", "x11", "macos-private-api", "tray-icon", "image-png"] }
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "image-png", "custom-protocol", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-cpal = "=0.18.2"
 flacenc = "=0.5.1"
 ringbuf = "=0.5.1"
-# NOTE: no TLS backend on purpose for the LAN MVP — ring (rustls) cannot
-# build under the zig-cc/gnu.2.38 host toolchain; https baseUrls are
-# unsupported until the toolchain or a TLS impl builds. UI fetch still
-# supports https where the webview does.
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 futures = "0.3"
@@ -29,6 +40,18 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 anyhow = "1"
 thiserror = "2"
+
+# Linux + macOS — both need x11 (linux) and tray-icon (both). macos-private-api
+# is harmless on linux (no-op) and required on macOS.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+tauri = { version = "2", default-features = false, features = ["wry", "compression", "x11", "tray-icon", "macos-private-api", "image-png", "custom-protocol"] }
+cpal = "=0.18.2"
+
+# Windows gets its own minimal tauri line so it doesn't accidentally pull in
+# tray-icon backends that don't compile under windows-msvc stable.
+[target.'cfg(target_os = "windows")'.dependencies]
+cpal = "=0.18.2"
+windows-registry = "0.6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.4"
@@ -40,5 +63,3 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 # private TCC SPI — see capture_macos.rs for why this is unavoidable.
 block2 = { version = "0.6", default-features = false, features = ["std"] }
 libc = "0.2"
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-registry = "0.6"
