@@ -559,6 +559,16 @@ Anyway** option — clear the quarantine attribute once after install:
 `xattr -cr "/Applications/Transcriptor Maximus.app"`. Permanent fix:
 [sign and notarize it yourself](https://v2.tauri.app/distribute/sign/macos/).
 
+**Android** — built and signed by CI on every release; no local build needed.
+The `android` job in `.github/workflows/release.yml` produces a universal APK
+and attaches it to the GitHub release as
+`Transcriptor.Maximus_<version>_universal.apk`. Signing uses the repo secrets
+`ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` /
+`ANDROID_KEY_PASSWORD`; the keystore backup lives outside git on the megaserver
+at `~/projects/backups/transcripter/android-signing/`. The key is self-signed,
+so Android shows an "unknown developer" prompt on install — but every release
+is signed with the same key, so in-place updates keep working.
+
 **First run after install:** Settings → Server URL
 `http://<server-LAN-IP>:8090` + your `TRANSCRIPTER_TOKEN`. Windows Firewall
 will prompt on first upload — allow it. macOS 14.2+ prompts separately for

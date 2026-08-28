@@ -51,6 +51,17 @@ overwrites them). Always bump first, tag second.
 - Trigger: `push` of tags `v*` (or `workflow_dispatch`).
 - Matrix: `macos-15` (aarch64-apple-darwin), `macos-15` (x86_64-apple-darwin),
   `windows-2022`. `fail-fast: false`.
+- The `android` job (ubuntu-latest) builds a signed universal APK via
+  `tauri android build --apk` and uploads it as
+  `Transcriptor.Maximus_<version>_universal.apk` with `gh release upload`.
+  Signing: env-driven `signingConfigs.release` in
+  `client/src-tauri/gen/android/app/build.gradle.kts` fed by secrets
+  `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` /
+  `ANDROID_KEY_ALIAS` (= `transcripter`) / `ANDROID_KEY_PASSWORD`. The job
+  fails fast if the secrets are absent — never fall back to a debug key:
+  an ephemeral signature breaks in-place updates. Keystore backup (with
+  passwords) lives outside git at
+  `~/projects/backups/transcripter/android-signing/` on the megaserver.
 - `pnpm install --frozen-lockfile` in `client/` → `tauri-apps/tauri-action@v0`
   builds and attaches bundles to release `Transcriptor Maximus vX.Y.Z`
   (non-draft, non-prerelease).
