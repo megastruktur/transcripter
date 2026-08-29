@@ -171,7 +171,7 @@ def test_profiles_lists_valid_yaml(
         "version: '1'\n"
         "display_name: Standup\n"
         "description: Daily sync\n"
-        "tags: [standup, sync]\n"
+        "type: standup\n"
         "summarize: {prompt: 'Sum {transcript}'}\n"
     )
     cfg = client.app.state.config
@@ -186,7 +186,7 @@ def test_profiles_lists_valid_yaml(
     assert entry["version"] == "1"
     assert entry["display_name"] == "Standup"
     assert entry["description"] == "Daily sync"
-    assert entry["tags"] == ["standup", "sync"]
+    assert entry["type"] == "standup"
 
 
 def test_profiles_skips_broken_yaml(
@@ -200,7 +200,7 @@ def test_profiles_skips_broken_yaml(
     (profiles_dir / "incomplete.yaml").write_text("id: x\ndisplay_name: y\n")
     # good one
     (profiles_dir / "good.yaml").write_text(
-        "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntags: [t]\n"
+        "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntype: t\n"
         "summarize: {prompt: 'Sum {transcript}'}\n"
     )
 
@@ -213,16 +213,20 @@ def test_profiles_skips_broken_yaml(
     assert ids == ["g"]
 
 
-def test_profiles_skips_non_list_tags(
+def test_profiles_skips_removed_tags_field(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Phase 0 cutover: a profile still carrying the REMOVED ``tags:``
+    routing key is warn+skipped (worker would reject it too) — it must
+    not appear in the listing."""
     profiles_dir = tmp_path / "profiles"
     profiles_dir.mkdir()
     (profiles_dir / "bad_tags.yaml").write_text(
-        "id: bt\ndisplay_name: BT\ndescription: d\ntags: not-a-list\n"
+        "id: bt\ndisplay_name: BT\ndescription: d\nversion: '1'\n"
+        "tags: [alpha]\nsummarize: {prompt: 'Sum {transcript}'}\n"
     )
     (profiles_dir / "good.yaml").write_text(
-        "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntags: [t]\n"
+        "id: g\nversion: '1'\ndisplay_name: G\ndescription: ok\ntype: t\n"
         "summarize: {prompt: 'Sum {transcript}'}\n"
     )
     cfg = client.app.state.config
@@ -245,7 +249,7 @@ def test_profiles_re_scan_returns_new_file(
     assert client.get("/profiles").json() == []
 
     (profiles_dir / "late.yaml").write_text(
-        "id: late\nversion: '1'\ndisplay_name: Late\ndescription: d\ntags: [t]\n"
+        "id: late\nversion: '1'\ndisplay_name: Late\ndescription: d\ntype: t\n"
         "summarize: {prompt: 'Sum {transcript}'}\n"
     )
 

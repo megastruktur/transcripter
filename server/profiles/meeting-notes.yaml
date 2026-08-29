@@ -2,12 +2,10 @@
 # Copy and adapt for your own domain. Contract: see README.md in this directory.
 id: meeting-notes
 version: 1.0.0
-min_host_version: 0.9.0
+min_host_version: 0.10.0
 display_name: Meeting Notes
 description: Structured meeting notes with decisions and action items
-tags:
-  - meeting
-  - совещание
+type: meeting
 summarize:
   # The prompt MUST contain {transcript}; {title} is optional.
   prompt: |
@@ -31,3 +29,23 @@ summarize:
     TRANSCRIPT:
     {transcript}
   output_artifact: meeting-notes.md
+#
+# Wave B: extract meeting entities/events into the knowledge graph.
+enrich:
+  prompt: |
+    Ты извлекаешь структурированные данные из транскрипта деловой встречи
+    «{title}». Верни JSON-объект:
+    {"events": [{"ts": "…", "kind": "decision|action|deadline|discussion|risk|info"}],
+     "entities": [{"slug": "…", "label": "…", "type": "person|project|team|decision|action_item|deadline|system"}],
+     "relations": [{"from_slug": "…", "to_slug": "…", "type": "owner_of|works_on|depends_on|decides|assigned_to"}]}
+    Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
+    kind — один из: decision (решение), action (поручение), deadline (срок),
+    discussion (обсуждение), risk (риск), info (факт);
+    type — один из: person (человек), project (проект), team (команда),
+    decision (решение), action_item (поручение), deadline (срок), system (система);
+    relations — связи между сущностями (owner_of — владеет, works_on — работает над,
+    depends_on — зависит от, decides — принимает решение о, assigned_to — назначено на).
+    events — ключевые моменты встречи в хронологическом порядке;
+    Пустые разделы — пустые списки.
+    ТРАНСКРИПТ:
+    {transcript}

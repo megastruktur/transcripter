@@ -10,6 +10,7 @@ import sys
 import threading
 from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any
 
 from temporalio import activity
 
@@ -444,9 +445,11 @@ async def summarize(rec_id: str) -> dict:
         title = rec.title or ""
         # Re-scan profiles per D11: editing a yaml in PROFILES_DIR is meant
         # to take effect on the next stage run, no worker restart needed.
-        from .profiles import match_profile
+        # Phase 0: routing is by recording.type (tags are user grouping
+        # now); a typeless recording → None → built-in default prompt.
+        from .profiles import match_profile_by_type
 
-        profile = match_profile(rec.tags or [], c.profiles.path)
+        profile = match_profile_by_type(rec.type, c.profiles.path)
     prompt_template = profile.summarize.prompt if profile is not None else None
     try:
         from .summarize import summarize_transcript
@@ -484,13 +487,22 @@ async def enrich(rec_id: str) -> dict:
     """Wave-B knowledge-graph extraction stage (best-effort).
 
     Skipped when EITHER (a) no profile with an ``enrich`` section
-    matched the recording, OR (b) the graph backend is not configured
-    (empty ``graph.uri``). The same shape as ``diarize``/``merge_speakers``
-    so the activity is honest about WHY it did nothing.
+    matches the recording's type, OR (b) the graph backend is not
+    configured (empty ``graph.uri``). The same shape as
+    ``diarize``/``merge_speakers`` so the activity is honest about WHY
+    it did nothing.
 
     Otherwise: extract (json_object, ×3 attempts), dedup with slug+LLM,
-    write one transaction (DETACH DELETE by ``origin_recording_id``
-    then MERGE/CREATE), and report the entity count.
+    write one transaction PER NAMESPACE (see below), and report the
+    entity count.
+
+    Phase 0 namespaces: the extraction is written as a COPY into EVERY
+    free tag of the recording (tags are pure user grouping now); a
+    recording with no tags lands in the built-in ``untagged`` namespace.
+    The first write purges the recording's old nodes in ALL namespaces
+    (``origin_recording_id``-scoped DETACH DELETE — see
+    ``enrich.write_to_graph``), so tag edits between regenerates leave
+    no stale copies behind.
     """
     set_stage(rec_id, "enrich", StageStatus.running, inc_attempts=True)
     c = cfg()
@@ -505,17 +517,15 @@ async def enrich(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         title = rec.title or ""
         tags = list(rec.tags or [])
-        from .profiles import match_profile
+        # Phase 0: profile routing by recording.type; the TAGS are the
+        # graph namespaces (every tag gets a copy; empty → ["untagged"]).
+        from .profiles import match_profile_by_type
 
-        profile = match_profile(tags, c.profiles.path)
+        profile = match_profile_by_type(rec.type, c.profiles.path)
     if profile is None or profile.enrich is None:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
         return {"skipped": "no profile with enrich"}
-    # The graph tag is the tag that MATCHED the profile, not blindly
-    # tags[0]: a recording tagged ["game", "pathfinder"] matched via
-    # "pathfinder" must write tag="pathfinder" or digests for it find an
-    # empty slice. Deterministic: first matching tag in recording order.
-    graph_tag = next((t for t in tags if t in profile.tags), tags[0] if tags else "")
+    graph_tags = tags or ["untagged"]
     try:
         from .enrich import (
             extract_from_transcript,
@@ -535,56 +545,66 @@ async def enrich(rec_id: str) -> dict:
             )
         )
         # Two-level dedup: slug collisions across the local extraction
-        # (already-present in `extracted`) AND against the live graph
-        # (pre-existing entities on the same tag).
-        lookup = pre_existing_lookup(
-            c.graph.uri,
-            c.graph.user,
-            os.environ.get(c.graph.password_env, ""),
-            c.graph.database,
-            tag=graph_tag,
-            exclude_rec=rec_id,
-        )
-        try:
-            try:
-                # Heartbeat-wrapped like the extraction: N collisions ×
-                # 30 s LLM calls can otherwise outrun heartbeat_timeout
-                # (CancelledError bypasses the except below and would
-                # strand the stage row in running).
-                resolved = await _heartbeat_while(
-                    asyncio.to_thread(
-                        resolve_slugs, extracted, c, graph_tag, lookup
-                    )
-                )
-            except Exception:
-                # Dedup is best-effort: a flakey LLM (or neo4j) must
-                # never kill the stage. Fall back to the raw extraction
-                # — slug collisions inside the extraction itself are
-                # already handled by ``slugify``.
-                log.exception("enrich: dedup failed; falling back to raw extraction")
-                resolved = extracted
-        finally:
-            lookup.close()
-        # Write to graph (sync neo4j driver via to_thread); heartbeat-
-        # wrapped for the same reason as resolve_slugs above.
-        _count = await _heartbeat_while(
-            asyncio.to_thread(
-                write_to_graph,
-                rec_id,
-                graph_tag,
-                resolved,
-                profile.enrich.node_labels,
+        # (already-present in `extracted`) AND against the live graph.
+        # Per Phase 0 the dedup runs per NAMESPACE (a copy per tag is
+        # deduped against that namespace's own entities — namespaces are
+        # deliberately independent groups).
+        resolved_by_tag: dict[str, Any] = {}
+        for graph_tag in graph_tags:
+            lookup = pre_existing_lookup(
                 c.graph.uri,
                 c.graph.user,
                 os.environ.get(c.graph.password_env, ""),
                 c.graph.database,
+                tag=graph_tag,
+                exclude_rec=rec_id,
             )
-        )
+            try:
+                try:
+                    # Heartbeat-wrapped like the extraction: N collisions ×
+                    # 30 s LLM calls can otherwise outrun heartbeat_timeout
+                    # (CancelledError bypasses the except below and would
+                    # strand the stage row in running).
+                    resolved_by_tag[graph_tag] = await _heartbeat_while(
+                        asyncio.to_thread(
+                            resolve_slugs, extracted, c, graph_tag, lookup
+                        )
+                    )
+                except Exception:
+                    # Dedup is best-effort: a flakey LLM (or neo4j) must
+                    # never kill the stage. Fall back to the raw extraction
+                    # — slug collisions inside the extraction itself are
+                    # already handled by ``slugify``.
+                    log.exception("enrich: dedup failed; falling back to raw extraction")
+                    resolved_by_tag[graph_tag] = extracted
+            finally:
+                lookup.close()
+        # Write to graph (sync neo4j driver via to_thread); heartbeat-
+        # wrapped for the same reason as resolve_slugs above. The FIRST
+        # namespace call purges this recording's stale nodes in every
+        # namespace; the rest skip the redundant DELETE.
+        _count = 0
+        for idx, graph_tag in enumerate(graph_tags):
+            _count += await _heartbeat_while(
+                asyncio.to_thread(
+                    write_to_graph,
+                    rec_id,
+                    graph_tag,
+                    resolved_by_tag[graph_tag],
+                    profile.enrich.node_labels,
+                    c.graph.uri,
+                    c.graph.user,
+                    os.environ.get(c.graph.password_env, ""),
+                    c.graph.database,
+                    purge_origin=idx == 0,
+                )
+            )
         details = {
-            "events": len(resolved.events),
-            "entities": len(resolved.entities),
-            "relations": len(resolved.relations),
+            "events": len(extracted.events),
+            "entities": len(extracted.entities),
+            "relations": len(extracted.relations),
             "profile_id": profile.id,
+            "namespaces": graph_tags,
         }
         set_stage(rec_id, "enrich", StageStatus.done, details=details)
         return details

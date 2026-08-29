@@ -82,10 +82,10 @@ def _make_profile(has_enrich: bool) -> Profile:
     return Profile(
         id="pathfinder",
         version="1.0.0",
-        min_host_version="0.9.0",
+        min_host_version="0.10.0",
         display_name="Pathfinder",
         description="d",
-        tags=["pathfinder"],
+        type="ttrpg",
         summarize=SummarizeSpec(prompt="sum {transcript}", output_artifact="session-log.md"),
         enrich=EnrichSpec(prompt="enr {transcript}", node_labels=EnrichNodeLabels())
         if has_enrich
@@ -112,7 +112,7 @@ def test_skipped_when_graph_disabled(recording_id: str) -> None:
     cfg = _cfg(graph_enabled=False)
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=_make_profile(has_enrich=True)),
+        patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=True)),
     ):
         result = _run(activities.enrich(recording_id))
     assert result == {"skipped": "graph disabled"}
@@ -125,7 +125,7 @@ def test_skipped_when_no_profile_with_enrich(recording_id: str) -> None:
     cfg = _cfg(graph_enabled=True)
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=_make_profile(has_enrich=False)),
+        patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=False)),
     ):
         result = _run(activities.enrich(recording_id))
     assert result == {"skipped": "no profile with enrich"}
@@ -138,7 +138,7 @@ def test_skipped_when_no_profile_at_all(recording_id: str) -> None:
     cfg = _cfg(graph_enabled=True)
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=None),
+        patch("worker.profiles.match_profile_by_type", return_value=None),
     ):
         result = _run(activities.enrich(recording_id))
     assert result == {"skipped": "no profile with enrich"}
@@ -154,7 +154,7 @@ def test_done_when_extraction_and_write_succeed(recording_id: str) -> None:
 
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=profile),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
         patch(
             "worker.enrich.extract_from_transcript",
             return_value=extracted_graph,
@@ -187,7 +187,7 @@ def test_failed_when_extraction_raises(recording_id: str) -> None:
     profile = _make_profile(has_enrich=True)
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=profile),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
         patch(
             "worker.enrich.extract_from_transcript",
             side_effect=ValueError("LLM gave up"),
@@ -216,7 +216,7 @@ def test_done_when_dedup_fails_falls_back_to_raw(recording_id: str) -> None:
 
     with (
         patch("worker.activities.cfg", return_value=cfg),
-        patch("worker.profiles.match_profile", return_value=profile),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
         patch(
             "worker.enrich.extract_from_transcript",
             return_value=extracted_graph,

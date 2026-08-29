@@ -39,16 +39,17 @@ from neo4j import GraphDatabase
 from sqlalchemy import text
 
 from .db import Recording, RecordingState, session
+from .enrich import slugify
 
 log = logging.getLogger("transcripter.digest")
 
-# Tag name on disk: only the file-system-safe subset that survives every
-# Obsidian / Vault / Windows-share combination. Anything outside is rejected
-# at the API boundary (regex in routes/tags.py) so we can return 400 cleanly.
-# IDENTICAL to the API's _TAG_RE (routes/tags.py): the tag becomes the
-# digest filename verbatim, so the API must never 202 a tag the worker
-# would reject here. Length-capped to fit a filename segment.
-_SAFE_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# Tag NAME (the user-facing free tag): Phase 0 loosened it from the old
+# ASCII file-safe pattern to allow spaces, dots, underscores, dashes and
+# ANY Unicode letters/digits (\w with re.UNICODE — Cyrillic etc.). First
+# char must not be a space; ≤64 chars so the slug below always fits a
+# filename segment. EXACT TWIN of the API's _TAG_RE (routes/tags.py) —
+# change the two IN SYNC or the API would 202 a tag the worker rejects.
+_SAFE_TAG_RE = re.compile(r"^[\w][ \w.-]{0,63}$", re.UNICODE)
 
 # HTTP budget kept 30 s UNDER the Temporal start_to_close (2400 s) so a
 # httpx.ReadTimeout fires (a plain Exception → activity raised) before
@@ -148,19 +149,42 @@ class DigestInput:
 
 
 def safe_filename(tag: str) -> str:
-    """Return the file-safe form of ``tag`` or raise ``ValueError``.
+    """Return the digest FILENAME for ``tag``: a Unicode-aware slug +
+    ``.md``. The old contract used the raw tag as the filename, which the
+    Phase 0 free tags (spaces, Cyrillic) forbid — now the display tag
+    goes to frontmatter ``tag:`` verbatim and only the slug hits the
+    filesystem (spaces → dashes, casefolded, same mapping enrich uses
+    for entity slugs; "Мой Замок" → "мой-замок.md").
 
-    The API already rejects bad tags with 400, so this guard only fires if
-    something internal calls with a non-normalized value — failing loudly
-    keeps a bad path out of the user's transcripts dir instead of dropping
-    a ``<hash>.md`` the user can't trace back.
+    The API already rejects bad tags with 400, so the regex guard only
+    fires if something internal calls with a non-normalized value —
+    failing loudly keeps a bad path out of the user's transcripts dir
+    instead of dropping a file the user can't trace back.
     """
     if not _SAFE_TAG_RE.match(tag):
         raise ValueError(
-            f"tag {tag!r} is not file-safe (only [a-z0-9._-], starting with "
-            "an alphanumeric)"
+            f"tag {tag!r} is not file-safe (unicode word chars, spaces, dots, "
+            "underscores, dashes; must not start with a space)"
         )
-    return f"{tag}.md"
+    return f"{slugify(tag)}.md"
+
+
+def _disambiguate_filename(
+    directory: Path, filename: str
+) -> str:
+    """First ``<stem>[-N].md`` in ``directory`` not taken by another
+    digest file. Two distinct tags can slug to the same name ("dnd dark
+    castle" vs "dnd-dark-castle" → "dnd-dark-castle.md"); the -2 suffix
+    (same shape as enrich._disambiguate / export.py folder suffixes)
+    keeps both digests — the frontmatter ``tag:`` still identifies which
+    is which."""
+    candidate = filename
+    n = 2
+    while (directory / candidate).exists():
+        stem, dot, ext = filename.rpartition(".")
+        candidate = f"{stem}-{n}{dot}{ext}"
+        n += 1
+    return candidate
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -407,13 +431,20 @@ def write_digest(
 ) -> Path:
     """Atomically write the digest note under ``<transcripts_root>/digests/``.
 
+    The filename is the tag's SLUG (see ``safe_filename``); when another
+    tag already slug-collided onto that name, a ``-2`` suffix disambiguates
+    (frontmatter ``tag:`` carries the display tag either way).
+
     Returns the path that was written. The caller is responsible for the
     LLM call; this function only assembles the final markdown and
     performs the atomic write.
     """
-    filename = safe_filename(input.tag)
-    target = transcripts_root / "digests" / filename
+    digests_dir = transcripts_root / "digests"
+    filename = _disambiguate_filename(digests_dir, safe_filename(input.tag))
+    target = digests_dir / filename
     recording_ids = [r.recording_id for r in input.rows]
+    # tag: = the DISPLAY tag verbatim (spaces/Cyrillic as the user typed
+    # it after normalization); the filename is only the slug.
     fm = _frontmatter(recording_ids, input.tag, len(recording_ids))
     content = f"---\n{fm}\n---\n\n{body.rstrip()}\n"
     _atomic_write(target, content)
@@ -442,8 +473,8 @@ def run_digest(
     """
     if not _SAFE_TAG_RE.match(tag):
         raise ValueError(
-            f"tag {tag!r} is not file-safe (only [a-z0-9._-], starting with "
-            "an alphanumeric)"
+            f"tag {tag!r} is not file-safe (unicode word chars, spaces, dots, "
+            "underscores, dashes; must not start with a space)"
         )
     input = build_digest_input(tag, last_n, cfg)
     if not input.rows:

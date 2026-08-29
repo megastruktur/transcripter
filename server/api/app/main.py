@@ -89,8 +89,42 @@ def _migrate_tags_column() -> None:
         )
 
 
+def _migrate_type_columns() -> None:
+    """Phase 0 (type/freehand-tag split): add ``recordings.type`` and
+    ``recordings.recorded_at`` for databases created before the feature.
+    create_all only sees the CURRENT schema; existing Postgres tables keep
+    their old shape, so the columns are added idempotently at startup
+    (same pattern as _migrate_tags_column).
+
+    The type backfill is ONE-OFF and guarded by ``WHERE type IS NULL``:
+    existing recordings are typed by matching their current tags against
+    the Phase-0 mapping (pathfinder → ttrpg, meeting/совещание → meeting);
+    the guard makes re-runs no-ops so manual type edits are never
+    overwritten. SQLite test databases get both columns from create_all.
+    """
+    if engine().dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    with engine().begin() as conn:
+        conn.execute(text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS type TEXT"))
+        conn.execute(
+            text("ALTER TABLE recordings ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMP")
+        )
+        conn.execute(
+            text(
+                "UPDATE recordings SET type = CASE "
+                "WHEN tags @> ARRAY['pathfinder'] THEN 'ttrpg' "
+                "WHEN tags @> ARRAY['meeting'] OR tags @> ARRAY['совещание'] THEN 'meeting' "
+                "ELSE NULL END "
+                "WHERE type IS NULL"
+            )
+        )
+
+
 _migrate_stage_kind_enum()
 _migrate_tags_column()
+_migrate_type_columns()
 
 app.include_router(recordings.router)
 app.include_router(regenerate.router)

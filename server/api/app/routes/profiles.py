@@ -27,8 +27,10 @@ _LOG = logging.getLogger("transcripter.api.profiles")
 # worker would warn+skip must NOT appear in GET /profiles (the client would
 # offer a profile that can never match). Keep these in sync with
 # worker.profiles (HOST_VERSION, slug class, tags rules, summarize prompt).
-_HOST_VERSION = "0.9.0"
+_HOST_VERSION = "0.10.0"
 _SAFE_SLUG = re.compile(r"^[a-z0-9._-]+$")
+# Recording-type slug — EXACT twin of worker profiles._SAFE_TYPE.
+_SAFE_TYPE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 def _vparts(v: str) -> tuple[int, ...]:
@@ -96,7 +98,7 @@ class _ProfileSpec(BaseModel):
     min_host_version: str = "0.0.0"
     display_name: str = Field(min_length=1)
     description: str = ""
-    tags: list[str]
+    type: str
     summarize: _SummarizeSpec
     enrich: _EnrichSpec | None = None
 
@@ -107,17 +109,26 @@ class _ProfileSpec(BaseModel):
             raise ValueError(f"id {v!r} must match [a-z0-9._-]")
         return v
 
-    @field_validator("tags")
+    @field_validator("type")
     @classmethod
-    def _tags_nonempty_str(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("tags must be a non-empty list[str]")
-        cleaned = [t.strip().lower() for t in v if isinstance(t, str) and t.strip()]
-        if not cleaned:
-            raise ValueError("tags must contain at least one non-empty string")
-        if len(set(cleaned)) != len(cleaned):
-            raise ValueError("tags must be unique (case-insensitive)")
-        return cleaned
+    def _type_safe(cls, v: str) -> str:
+        if not _SAFE_TYPE.match(v):
+            raise ValueError(
+                f"type {v!r} must match ^[a-z0-9][a-z0-9-]{{0,31}}$"
+            )
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _tags_removed(cls, data):
+        """Phase 0 cutover twin of worker profiles: ``tags:`` is the
+        removed routing key — warn + skip the profile (never list it),
+        same as the worker's loader would."""
+        if isinstance(data, dict) and "tags" in data:
+            raise ValueError(
+                "field 'tags' was removed in Phase 0 — replace it with 'type'"
+            )
+        return data
 
     @model_validator(mode="after")
     def _host_version_ok(self) -> "_ProfileSpec":
@@ -179,7 +190,8 @@ def _list_profiles(profiles_dir: Any) -> list[dict[str, Any]]:
                 "version": profile.version,
                 "display_name": profile.display_name,
                 "description": profile.description,
-                "tags": profile.tags,
+                # Phase 0: the client's type selector is built from this.
+                "type": profile.type,
                 # Validated model: enrich survived _EnrichSpec (prompt with
                 # {transcript}), so the worker would honor it too.
                 "has_enrich": profile.enrich is not None,

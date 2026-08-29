@@ -62,7 +62,7 @@ id: pathfinder
 version: 1.0.0
 display_name: Pathfinder
 description: d
-tags: [p]
+type: p
 summarize:
   prompt: 's {transcript}'
   output_artifact: summary.md
@@ -85,7 +85,7 @@ id: meeting
 version: 1.0.0
 display_name: Meeting
 description: d
-tags: [m]
+type: m
 summarize:
   prompt: 's {transcript}'
 """,
@@ -105,7 +105,7 @@ id: bad
 version: 1.0.0
 display_name: Bad
 description: d
-tags: [b]
+type: b
 summarize:
   prompt: 's {transcript}'
 enrich:

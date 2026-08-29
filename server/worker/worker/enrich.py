@@ -324,11 +324,25 @@ def write_to_graph(
     graph_user: str,
     graph_password: str,
     graph_database: str,
+    purge_origin: bool = True,
 ) -> int:
-    """Single transaction:
+    """Single transaction, writing the extraction into the ONE namespace
+    ``tag`` (the activity calls this once per namespace):
 
     1. ``MATCH (n {origin_recording_id: $rec}) DETACH DELETE n`` —
        idempotency (a re-run produces the same state, never duplicates).
+       The match is on the ``origin_recording_id`` PROPERTY, deliberately
+       NOT scoped to ``tag``: the first purge (``purge_origin=True``)
+       removes this recording's copies from EVERY namespace at once, so
+       tags edited between regenerates leave no stale copies behind.
+       Namespace calls 2..N pass ``purge_origin=False`` — deleting again
+       is a no-op anyway (nothing matches), but skipping the query keeps
+       N namespaces from doing N full scans.
+       Leak audit 2026-08-28: the ONLY writer of graph nodes is this
+       function; every node carries ``origin_recording_id`` (entity,
+       event, and every MERGE/CREATE branch below), so the property-scoped
+       DELETE provably reaches all of them. No other write path exists →
+       no leak.
     2. ``MERGE`` entities by ``(tag, slug)``. The dedup loop above has
        already resolved same-entity collisions and re-slugged the new
        candidate (``-2``, ``-3`` suffix). Carry ``origin_recording_id``
@@ -392,12 +406,12 @@ def write_to_graph(
                     "MERGE (a)-[:MENTIONS]->(b)"
                 ),
             )
-
             delete_query = cast(
                 "Any",
                 "MATCH (n {origin_recording_id: $rec}) DETACH DELETE n",
             )
-            tx.run(delete_query, rec=rec_id)
+            if purge_origin:
+                tx.run(delete_query, rec=rec_id)
 
             # First pass: entities. Build a slug → id map via MERGE so
             # the second pass (relations) can refer to them by key.

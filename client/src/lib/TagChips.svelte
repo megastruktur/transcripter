@@ -21,8 +21,9 @@
 		/** In-progress input text; bindable so the parent can flush it
 		 * before an action (see the record page's beginRecording). */
 		draft?: string;
-		/** Server-known tags (from profiles). Selecting one adds the chip;
-		 * free-form entry stays legal for tags no profile claims. */
+		/** Server-known freehand tags (GET /tags, or the recordings
+		 * fallback). Selecting one adds the chip; free-form entry stays
+		 * legal for tags not in the list. */
 		suggestions?: TagSuggestion[];
 	} = $props();
 
@@ -40,12 +41,7 @@
 		const pool = suggestions.filter((s) => !tags.includes(s.tag));
 		if (needle.length === 0) return pool.slice(0, MAX_ROWS);
 		return pool
-			.filter(
-				(s) =>
-					s.tag.includes(needle) ||
-					s.profiles.some((p) => p.toLowerCase().includes(needle)) ||
-					s.description.toLowerCase().includes(needle)
-			)
+			.filter((s) => s.tag.includes(needle))
 			.slice(0, MAX_ROWS);
 	});
 
@@ -193,7 +189,7 @@
 
 {#if open && filtered.length > 0}
 	<div class="tag-suggest-pop" style={popStyle} use:portal>
-		<ul id="tag-suggest-list" role="listbox" aria-label="Available tag logics">
+		<ul id="tag-suggest-list" role="listbox" aria-label="Recent freehand tags">
 			{#each filtered as suggestion, i (suggestion.tag)}
 				<li
 					id={`tag-suggest-${suggestion.tag}`}
@@ -208,13 +204,9 @@
 					}}
 				>
 					<span class="suggest-tag">{suggestion.tag}</span>
-					<span class="suggest-profile">
-						{suggestion.profiles.join(', ')}
-						{#if suggestion.hasEnrich}<span class="suggest-kg">graph</span>{/if}
+					<span class="suggest-count">
+						{suggestion.recent ? 'recent' : `×${suggestion.count}`}
 					</span>
-					{#if suggestion.description}
-						<span class="suggest-desc">{suggestion.description}</span>
-					{/if}
 				</li>
 			{/each}
 		</ul>
@@ -315,30 +307,9 @@
 		font-weight: 650;
 		line-height: 1.2;
 	}
-	.suggest-profile {
-		color: var(--bone);
-		font-size: 10px;
-		opacity: 0.75;
-		line-height: 1.2;
-	}
-	.suggest-kg {
-		margin-left: 6px;
-		padding: 1px 5px;
-		border: 1px solid rgba(231, 214, 190, 0.25);
-		border-radius: 2px;
-		font-size: 9px;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		opacity: 0.8;
-	}
-	.suggest-desc {
+	.suggest-count {
 		color: #8f867c;
 		font-size: 10px;
-		line-height: 1.3;
-		display: -webkit-box;
-		line-clamp: 2;
-		-webkit-line-clamp: 2;
-		-webkit-box-orient: vertical;
-		overflow: hidden;
+		line-height: 1.2;
 	}
 </style>

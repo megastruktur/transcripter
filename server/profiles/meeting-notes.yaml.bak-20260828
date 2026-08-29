@@ -1,0 +1,33 @@
+# Example profile: structured meeting notes (custom output name + prompt).
+# Copy and adapt for your own domain. Contract: see README.md in this directory.
+id: meeting-notes
+version: 1.0.0
+min_host_version: 0.9.0
+display_name: Meeting Notes
+description: Structured meeting notes with decisions and action items
+tags:
+  - meeting
+  - совещание
+summarize:
+  # The prompt MUST contain {transcript}; {title} is optional.
+  prompt: |
+    You are a meeting secretary. Below is the transcript of «{title}».
+    Write notes in the same language as the transcript:
+
+    ## Summary
+    3-5 bullet key points.
+
+    ## Decisions
+    What was agreed, with context. If none — say so.
+
+    ## Action items
+    Task — owner (if identifiable) — deadline (if mentioned).
+
+    ## Open questions
+    Topics left unresolved.
+
+    Stick to the transcript; do not invent facts.
+
+    TRANSCRIPT:
+    {transcript}
+  output_artifact: meeting-notes.md

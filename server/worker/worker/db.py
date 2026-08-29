@@ -68,6 +68,13 @@ class Recording(Base):
     total_bytes: Mapped[int | None] = mapped_column(default=None)
     sha256: Mapped[str | None] = mapped_column(String(64), default=None)
     duration_sec: Mapped[float | None] = mapped_column(default=None)
+    # Phase 0 type/freehand-tag split — mirrors the API schema (app/db.py):
+    # `type` routes the pipeline (profile match by recording.type), NULL →
+    # built-in default pipeline; `recorded_at` is the import backdate.
+    # Both nullable; the API startup migration adds them to existing
+    # Postgres tables, so the worker never needs its own ALTER.
+    type: Mapped[str | None] = mapped_column(Text, default=None)
+    recorded_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 

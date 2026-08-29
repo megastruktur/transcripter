@@ -16,18 +16,18 @@ REC_ID = "a1b2c3d4-1111-2222-3333-444444444444"
 CREATED = datetime(2026, 8, 23, 18, 45, tzinfo=UTC)
 
 
-def _rec(tags=None, title="Meet"):
-    return Rec(REC_ID, title, CREATED, None, "done", tags=list(tags or []))
+def _rec(tags=None, title="Meet", type_=None):
+    return Rec(REC_ID, title, CREATED, None, "done", tags=list(tags or []), type=type_)
 
 
-def _profile_yaml(name="p", tags=None, output_artifact="session-log.md") -> str:
+def _profile_yaml(name="p", type_="meeting", output_artifact="session-log.md") -> str:
     return f"""\
 id: {name}
 version: 1.0.0
-min_host_version: 0.9.0
+min_host_version: 0.10.0
 display_name: {name}
 description: d
-tags: {list(tags or ["alpha"])}
+type: {type_}
 summarize:
   prompt: 'p {{transcript}}'
   output_artifact: {output_artifact}
@@ -76,8 +76,8 @@ class TestProfileRenaming:
         meta = tmp_path / "meta"
         profiles = tmp_path / "profiles"
         _setup_meta(meta, transcript=True, summary=True)
-        _setup_profiles(profiles, _profile_yaml("p", tags=["alpha"], output_artifact="session-log.md"))
-        path = export_recording(root, meta, _rec(tags=["alpha"]), UTC, profiles_dir=profiles)
+        _setup_profiles(profiles, _profile_yaml("p", type_="meeting", output_artifact="session-log.md"))
+        path = export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         assert (path / "session-log.md").exists()
         assert not (path / "summary.md").exists()
 
@@ -88,7 +88,7 @@ class TestProfileRenaming:
         profiles = tmp_path / "profiles"
         _setup_meta(meta, transcript=True, summary=True)
         _setup_profiles(profiles, _profile_yaml(output_artifact="session-log.md"))
-        export_recording(root, meta, _rec(tags=["alpha"]), UTC, profiles_dir=profiles)
+        export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         assert (meta / "summary.md").exists()
         assert not (meta / "session-log.md").exists()
 
@@ -99,10 +99,10 @@ class TestProfileRenaming:
         _setup_meta(meta, transcript=True, summary=True)
         _setup_profiles(
             profiles,
-            _profile_yaml("zeta", tags=["a"], output_artifact="zeta.md"),
-            _profile_yaml("alpha", tags=["a"], output_artifact="alpha.md"),
+            _profile_yaml("zeta", type_="meeting", output_artifact="zeta.md"),
+            _profile_yaml("alpha", type_="meeting", output_artifact="alpha.md"),
         )
-        path = export_recording(root, meta, _rec(tags=["a"]), UTC, profiles_dir=profiles)
+        path = export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         assert (path / "alpha.md").exists()
         assert not (path / "zeta.md").exists()
 
@@ -138,11 +138,11 @@ class TestComputedWhitelist:
         profiles = tmp_path / "profiles"
         _setup_meta(meta, transcript=True, summary=True)
         _setup_profiles(profiles, _profile_yaml(output_artifact="session-log.md"))
-        path = export_recording(root, meta, _rec(tags=["alpha"]), UTC, profiles_dir=profiles)
+        path = export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         assert (path / "session-log.md").exists()
         for f in profiles.iterdir():
             f.unlink()
-        path2 = export_recording(root, meta, _rec(tags=[]), UTC, profiles_dir=profiles)
+        path2 = export_recording(root, meta, _rec(type_=None), UTC, profiles_dir=profiles)
         assert (path2 / "summary.md").exists()
         # Orphan stays (user content, per contract).
         assert (path2 / "session-log.md").exists()
@@ -153,11 +153,11 @@ class TestComputedWhitelist:
         profiles = tmp_path / "profiles"
         _setup_meta(meta, transcript=True, summary=True)
         _setup_profiles(profiles, _profile_yaml(output_artifact="session-log.md"))
-        path = export_recording(root, meta, _rec(tags=["alpha"]), UTC, profiles_dir=profiles)
+        path = export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         user = path / "scratch.md"
         user.write_text("mine", encoding="utf-8")
         # Second export (regenerate) — user file MUST survive.
-        export_recording(root, meta, _rec(tags=["alpha"]), UTC, profiles_dir=profiles)
+        export_recording(root, meta, _rec(type_="meeting"), UTC, profiles_dir=profiles)
         assert user.exists()
         assert user.read_text(encoding="utf-8") == "mine"
 

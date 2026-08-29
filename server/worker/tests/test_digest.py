@@ -151,30 +151,48 @@ class TestSafeFilename:
     def test_accepts_alnum(self) -> None:
         assert safe_filename("pathfinder") == "pathfinder.md"
 
-    def test_accepts_dotted(self) -> None:
-        assert safe_filename("foo.bar") == "foo.bar.md"
+    def test_dots_slug_to_dashes(self) -> None:
+        """Phase 0: the filename is the tag's SLUG — punctuation maps to
+        dashes (enrich.slugify), the display tag lives in frontmatter."""
+        assert safe_filename("foo.bar") == "foo-bar.md"
 
     def test_accepts_dashed(self) -> None:
         assert safe_filename("morning-standup") == "morning-standup.md"
 
-    def test_rejects_uppercase(self) -> None:
-        with pytest.raises(ValueError, match="not file-safe"):
-            safe_filename("Pathfinder")
+    def test_spaces_slug_to_dashes(self) -> None:
+        """Free tags may contain spaces (API regex allows them); the
+        filename slugs them out."""
+        assert safe_filename("dnd dark castle") == "dnd-dark-castle.md"
 
-    def test_rejects_space(self) -> None:
-        # The API regex allows spaces in the tag; the file system layer
-        # requires a stricter shape — this guard catches an internal
-        # caller bypassing the API layer.
-        with pytest.raises(ValueError, match="not file-safe"):
-            safe_filename("morning standup")
+    def test_cyrillic_survives_slug(self) -> None:
+        assert safe_filename("Мой Замок") == "мой-замок.md"
 
     def test_rejects_leading_dash(self) -> None:
         with pytest.raises(ValueError, match="not file-safe"):
             safe_filename("-leading")
 
+    def test_rejects_leading_space(self) -> None:
+        with pytest.raises(ValueError, match="not file-safe"):
+            safe_filename(" leading")
+
     def test_rejects_dollar(self) -> None:
         with pytest.raises(ValueError, match="not file-safe"):
             safe_filename("a$b")
+
+    def test_slug_collision_disambiguated(
+        self, tmp_path: Path
+    ) -> None:
+        """'dnd dark castle' and 'dnd-dark-castle' slug to the SAME name;
+        the second write gets the -2 suffix so both digests survive."""
+        from worker.digest import _disambiguate_filename, safe_filename
+
+        digests = tmp_path / "digests"
+        digests.mkdir()
+        first = _disambiguate_filename(digests, safe_filename("dnd dark castle"))
+        (digests / first).write_text("one", encoding="utf-8")
+        second = _disambiguate_filename(digests, safe_filename("dnd-dark-castle"))
+        assert first == "dnd-dark-castle.md"
+        assert second == "dnd-dark-castle-2.md"
 
 
 # ---------- _atomic_write ------------------------------------------------------
@@ -404,11 +422,13 @@ def test_run_digest_llm_error_propagates(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_run_digest_invalid_tag_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sanitization is defensive — the API already rejects bad tags, but
-    an internal caller bypassing it must surface a clear ValueError."""
+    an internal caller bypassing it must surface a clear ValueError.
+    ("Bad Tag" is VALID under the Phase 0 unicode regex — case is the
+    display-tag's business; punctuation outside the whitelist is not.)"""
     cfg = activities._cfg
     with pytest.raises(ValueError, match="not file-safe"):
         asyncio.run(
-            asyncio.to_thread(run_digest, "Bad Tag", 2, cfg, cfg.transcripts.path)
+            asyncio.to_thread(run_digest, "bad$tag", 2, cfg, cfg.transcripts.path)
         )
 
 

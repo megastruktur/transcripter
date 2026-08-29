@@ -23,9 +23,10 @@
 		| 'speakers'
 		| 'summary'
 		| 'json'
-		| 'chunk'
-		| 'diarize'
-		| 'enrich';
+	| 'chunk'
+	| 'diarize'
+	| 'enrich'
+	| 'import';
 </script>
 
 <script lang="ts">
@@ -118,6 +119,9 @@
 		<circle cx="18" cy="6.5" r="2.3" />
 		<circle cx="12" cy="17.5" r="2.3" />
 		<path d="M8.2 7.3h7.6M7 8.6l3.9 6.7M17 8.6l-3.9 6.7" />
+	{:else if name === 'import'}
+		<path d="M12 3v11M8 10l4 4 4-4" />
+		<path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17" />
 	{/if}
 </svg>
 

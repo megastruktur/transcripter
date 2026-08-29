@@ -17,7 +17,7 @@
 		type Stage
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
-	import { buildTagSuggestions } from '$lib/tags';
+	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
 	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
@@ -47,7 +47,18 @@
 	let audioEl = $state<HTMLAudioElement>();
 	let tagError = $state('');
 	let tagSaving = $state(false);
-	let tagSuggestions = $derived(buildTagSuggestions(profilesCache.items));
+	let tagSuggestions = $derived(tagSuggestionsCache.items);
+	/** Pipeline-type editor state: null = editing closed; string = draft value. */
+	let typeDraft = $state<string | null>(null);
+	let typeSaving = $state(false);
+	let typeError = $state('');
+	/** recorded_at editor state: null = editing closed; string = datetime-local draft. */
+	let whenDraft = $state<string | null>(null);
+	let whenSaving = $state(false);
+	let whenError = $state('');
+	const typeProfile = $derived(
+		recording?.type ? profilesCache.items.find((profile) => profile.type === recording?.type) ?? null : null
+	);
 
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
 	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
@@ -146,8 +157,9 @@
 	});
 
 	$effect(() => {
-		// Profile tags for the picker; failure leaves free-form entry working.
+		// Type hint + freehand-tag suggestions; failures degrade silently.
 		void ensureProfiles(loadApiConfig());
+		void ensureTagSuggestions(loadApiConfig());
 	});
 
 	function autofocus(node: HTMLElement): void {
@@ -204,6 +216,57 @@
 			tagError = `Tag update failed: ${caught instanceof Error ? caught.message : String(caught)}`;
 		} finally {
 			tagSaving = false;
+		}
+	}
+
+	async function commitType(): Promise<void> {
+		if (!recording || typeDraft === null || typeSaving) return;
+		const next = typeDraft;
+		const previous = recording.type;
+		typeDraft = null;
+		if (next === previous) return;
+		recording = { ...recording, type: next };
+		typeSaving = true;
+		typeError = '';
+		try {
+			// A type change re-runs the pipeline (summarize+enrich) on the
+			// server when the recording is done — the response carries the
+			// fresh state; the poller picks up the re-processing stages.
+			applyRecording(await updateRecording(loadApiConfig(), recording.id, { type: next }));
+		} catch (caught) {
+			recording = { ...recording, type: previous };
+			typeError = `Type update failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+		} finally {
+			typeSaving = false;
+		}
+	}
+
+	function toLocalDatetimeValue(iso: string | null): string {
+		if (!iso) return '';
+		const date = new Date(iso);
+		if (Number.isNaN(date.getTime())) return '';
+		const pad = (n: number) => String(n).padStart(2, '0');
+		return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	}
+
+	async function commitWhen(): Promise<void> {
+		if (!recording || whenDraft === null || whenSaving) return;
+		const draft = whenDraft;
+		whenDraft = null;
+		// Empty draft clears the backdate (falls back to created_at display).
+		const iso = draft ? new Date(draft).toISOString() : null;
+		const previous = recording.recorded_at;
+		if (iso === previous) return;
+		recording = { ...recording, recorded_at: iso };
+		whenSaving = true;
+		whenError = '';
+		try {
+			applyRecording(await updateRecording(loadApiConfig(), recording.id, { recorded_at: iso }));
+		} catch (caught) {
+			recording = { ...recording, recorded_at: previous };
+			whenError = `Date update failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+		} finally {
+			whenSaving = false;
 		}
 	}
 
@@ -347,8 +410,38 @@
 		<div class="detail-meta">
 			<div class="meta-row">
 				<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
-				<span class="meta-text">{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)} · {sizeLabel(recording.total_bytes)}</span>
+				<span class="meta-text">{dateLabel(recording.recorded_at ?? recording.created_at)} · {durationLabel(recording.duration_sec)} · {sizeLabel(recording.total_bytes)}</span>
 				<span class={`state-label ${recording.state}`}>{recording.state}</span>
+			</div>
+			<div class="meta-row type-row">
+				{#if typeDraft !== null}
+					<select class="type-edit" bind:value={typeDraft} aria-label="Pipeline type" disabled={typeSaving}>
+						<option value={null}>None — default pipeline</option>
+						{#each profilesCache.items as profile (profile.id)}
+							<option value={profile.type}>{profile.display_name}</option>
+						{/each}
+					</select>
+					<button class="meta-edit-save" type="button" onclick={() => void commitType()} disabled={typeSaving}>Save</button>
+					<button class="meta-edit-cancel" type="button" onclick={() => (typeDraft = null)} disabled={typeSaving}>Cancel</button>
+				{:else}
+					<button class="type-badge" type="button" title="Change pipeline type" onclick={() => (typeDraft = recording?.type ?? null)}>
+						{typeProfile ? typeProfile.display_name : recording.type}
+					</button>
+					{#if typeSaving}<span class="meta-saving">saving…</span>{/if}
+				{/if}
+				{#if whenDraft !== null}
+					<input class="when-edit" type="datetime-local" bind:value={whenDraft} aria-label="Recorded at" disabled={whenSaving} />
+					<button class="meta-edit-save" type="button" onclick={() => void commitWhen()} disabled={whenSaving}>Save</button>
+					<button class="meta-edit-cancel" type="button" onclick={() => (whenDraft = null)} disabled={whenSaving}>Cancel</button>
+				{:else}
+					<button class="when-badge" type="button" title="Edit recorded date" onclick={() => (whenDraft = toLocalDatetimeValue(recording?.recorded_at ?? recording?.created_at ?? null))}>
+						<Icon name="pencil" size={11} strokeWidth={1.5} />
+						{recording.recorded_at ? dateLabel(recording.recorded_at) : 'date = upload time'}
+					</button>
+					{#if whenSaving}<span class="meta-saving">saving…</span>{/if}
+				{/if}
+				{#if typeError}<span class="inline-error" role="alert">{typeError}</span>{/if}
+				{#if whenError}<span class="inline-error" role="alert">{whenError}</span>{/if}
 			</div>
 			<span class="stage-icons" role="group" aria-label="Pipeline stages">
 				{#each recording.stages as stage (stage.kind)}
@@ -373,17 +466,18 @@
 				onChange={(next) => void saveTags(next)}
 			/>
 		</div>
-		{#if tagError}
-			<p class="inline-error" role="alert">{tagError}</p>
-		{:else if recording.tags.length > 0}
-			<p class="tags-hint">New tags apply to the summarize profile on the next regenerate.</p>
-		{/if}
-		{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
-			<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
-		{/each}
-		{#if rerunError}
-			<p class="inline-error" role="alert">{rerunError}</p>
-		{/if}
+	{#if tagError}
+		<p class="inline-error" role="alert">{tagError}</p>
+	{:else if recording.tags.length > 0}
+		<p class="tags-hint">Tag changes re-run memory extraction automatically.</p>
+	{/if}
+	{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
+		<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
+	{/each}
+	{#if rerunError}
+		<p class="inline-error" role="alert">{rerunError}</p>
+	{/if}
+
 
 		{#if recording.state === 'uploading'}
 			<p class="audio-note">Audio available after upload.</p>
@@ -430,7 +524,17 @@
 	.detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
 	.back-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
 	.back-button:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
-	.detail-meta { display: flex; flex-direction: column; gap: 8px; }
+.detail-meta { display: flex; flex-direction: column; gap: 8px; }
+.type-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.type-badge { padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; }
+.type-badge:hover { border-color: var(--brass); background: rgba(215,167,71,0.08); }
+.when-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; cursor: pointer; }
+.when-badge:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
+.type-edit, .when-edit { padding: 4px 6px; border: 1px solid rgba(215,167,71,.4); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 11px; color-scheme: dark; }
+.meta-edit-save { padding: 4px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,0.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+.meta-edit-cancel { padding: 4px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; cursor: pointer; }
+.meta-edit-save:disabled, .meta-edit-cancel:disabled { opacity: 0.6; cursor: default; }
+.meta-saving { font-size: 10px; color: #8d847a; }
 	.meta-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; }
 	.meta-text { font-size: 11px; color: #8b8278; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.state-mark { width: 7px; height: 7px; border-radius: 50%; background: #706960; box-shadow: 0 0 0 3px rgba(112,105,96,.12); }

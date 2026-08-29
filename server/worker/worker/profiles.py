@@ -6,8 +6,10 @@ one yaml file each. The host re-scans the directory on EVERY call
 contract, and exposes two helpers used downstream:
 
 - ``load_profiles(profiles_dir)`` — list[Profile] (warn+skip on bad files)
-- ``match_profile(tags, profiles_dir)`` — first profile by sorted(id) whose
-  tag set intersects ``tags``; logs a warning on multi-match.
+- ``match_profile_by_type(rec_type, profiles_dir)`` — first profile by
+  sorted(id) whose ``type`` equals the recording's type; logs a warning
+  on multi-match. A recording with no type (NULL) never matches →
+  callers fall back to the built-in default pipeline.
 
 A missing directory is treated as "no profiles configured" (return ``[]``).
 """
@@ -16,7 +18,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
 from pathlib import Path
 
 import yaml
@@ -26,7 +27,7 @@ log = logging.getLogger("transcripter.profiles")
 
 # Host version this build accepts. Bumped per release; profiles declare a
 # minimum compatible host in ``min_host_version`` and are rejected below it.
-HOST_VERSION = "0.9.0"
+HOST_VERSION = "0.10.0"
 
 # Filenames that look like artifacts or lockfiles are not profile sources.
 _YAML_SUFFIX = ".yaml"
@@ -34,6 +35,11 @@ _YAML_ALT_SUFFIX = ".yml"
 
 # Artifact name sanitization: only [a-z0-9._-]; anything else → warn+skip.
 _SAFE_ARTIFACT = re.compile(r"^[a-z0-9._-]+$")
+
+# Recording-type slug (the pipeline-routing key): lowercase, starts with
+# an alphanumeric, then alphanumerics/dashes, ≤32 chars. Mirrored by the
+# API (routes/recordings.py TYPE_RE + routes/profiles.py) — keep in sync.
+_SAFE_TYPE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 class SummarizeSpec(BaseModel):
@@ -104,7 +110,10 @@ class Profile(BaseModel):
     min_host_version: str = "0.0.0"
     display_name: str = Field(min_length=1)
     description: str = ""
-    tags: list[str] = Field(default_factory=list)
+    # Phase 0 cutover: the recording TYPE this profile routes (was: tags
+    # intersection). Mandatory; a legacy file carrying `tags:` fails
+    # validation via the unknown-field rule below (warn+skip as invalid).
+    type: str
     summarize: SummarizeSpec
     enrich: EnrichSpec | None = None
 
@@ -118,7 +127,7 @@ class Profile(BaseModel):
                 "min_host_version",
                 "display_name",
                 "description",
-                "tags",
+                "type",
                 "summarize",
                 "enrich",
             }
@@ -130,6 +139,21 @@ class Profile(BaseModel):
                 )
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _tags_removed(cls, data):
+        """Phase 0 cutover: ``tags:`` is the REMOVED tag-intersection
+        routing. Unlike ordinary unknown fields (forward-compat: warn +
+        load), a file still carrying ``tags:`` is skipped as invalid —
+        silently loading it with default routing would mask the author's
+        intent. Replace it with ``type:``."""
+        if isinstance(data, dict) and "tags" in data:
+            raise ValueError(
+                "field 'tags' was removed in Phase 0 — replace it with 'type' "
+                "(profile routing is by recording.type now)"
+            )
+        return data
+
     @field_validator("id")
     @classmethod
     def _id_safe(cls, v: str) -> str:
@@ -138,17 +162,14 @@ class Profile(BaseModel):
             raise ValueError(f"id {v!r} must match [a-z0-9._-]")
         return v
 
-    @field_validator("tags")
+    @field_validator("type")
     @classmethod
-    def _tags_nonempty_str(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("tags must be a non-empty list[str]")
-        cleaned = [t.strip().lower() for t in v if isinstance(t, str) and t.strip()]
-        if not cleaned:
-            raise ValueError("tags must contain at least one non-empty string")
-        if len(set(cleaned)) != len(cleaned):
-            raise ValueError("tags must be unique (case-insensitive)")
-        return cleaned
+    def _type_safe(cls, v: str) -> str:
+        if not _SAFE_TYPE.match(v):
+            raise ValueError(
+                f"type {v!r} must match ^[a-z0-9][a-z0-9-]{{0,31}}$"
+            )
+        return v
 
     @model_validator(mode="after")
     def _host_version_ok(self) -> Profile:
@@ -235,32 +256,31 @@ def load_profiles(profiles_dir: Path | str) -> list[Profile]:
     return profiles
 
 
-def match_profile(
-    tags: Iterable[str], profiles_dir: Path | str
+def match_profile_by_type(
+    rec_type: str | None, profiles_dir: Path | str
 ) -> Profile | None:
-    """Return the first profile (sorted by id) whose ``tags`` intersect the
-    recording's normalized tags. Multi-match → pick sorted-first + warn.
+    """Return the first profile (sorted by id) whose ``type`` equals the
+    recording's type. Multi-match → pick sorted-first + warn.
 
-    Tags on both sides are compared lowercase; callers are expected to pass
-    already-normalized tags, but we lowercase defensively for tag equality."""
+    ``rec_type=None`` (untyped recording) → ``None``: the caller falls
+    back to the built-in default pipeline (summarize) / skips enrich.
+    A type that matches no profile behaves the same way — unknown types
+    are stored as-is, the pipeline simply has no profile for them.
+    """
+    if not rec_type:
+        return None
     pdir = Path(profiles_dir)
     if not pdir.is_dir():
         return None
-    rec_tags = {t.strip().lower() for t in tags if isinstance(t, str) and t.strip()}
-    if not rec_tags:
-        return None
-    matches: list[Profile] = []
-    for prof in load_profiles(pdir):
-        if rec_tags.intersection(prof.tags):
-            matches.append(prof)
+    matches: list[Profile] = [p for p in load_profiles(pdir) if p.type == rec_type]
     if not matches:
         return None
     matches.sort(key=lambda p: p.id)
     if len(matches) > 1:
         log.warning(
-            "profile match: %d profiles match tags %s; using first by sorted id: %s",
+            "profile match: %d profiles match type %r; using first by sorted id: %s",
             len(matches),
-            sorted(rec_tags),
+            rec_type,
             matches[0].id,
         )
     return matches[0]

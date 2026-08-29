@@ -16,23 +16,27 @@ import logging
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app import temporal_client
 from app.config import ServerConfig
+from app.db import get_session
 
 router = APIRouter(prefix="/tags")
 
 _LOG = logging.getLogger("transcripter.api.tags")
 
-# After trim+lowercase: must start with an alphanumeric, then lowercase
-# alphanumerics, dots, underscores, dashes — NO spaces: the tag becomes
-# the digest filename verbatim (worker digest._SAFE_TAG_RE), so the two
-# regexes must stay IDENTICAL or the API would 202 a workflow that then
-# fails deterministically. Length-capped so the tag always fits a
-# filename segment.
-_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# After trim+lowercase: must start with a word character (Unicode letter,
+# digit or underscore), then word chars, spaces, dots, underscores, dashes
+# — free-form user grouping per Phase 0 (a tag like "dnd dark castle" or
+# «мой замок» is fine). First char not a space; ≤64 chars so the
+# slugified digest filename always fits a filename segment. EXACT TWIN of
+# worker digest._SAFE_TAG_RE — the worker must accept everything this
+# regex accepts; change the two IN SYNC.
+_TAG_RE = re.compile(r"^[\w][ \w.-]{0,63}$", re.UNICODE)
 
 
 class DigestRequest(BaseModel):
@@ -59,8 +63,8 @@ def _validate_tag(tag: str) -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                "tag must match ^[a-z0-9][a-z0-9 ._-]*$ (lowercase alphanum, "
-                "dots, underscores, dashes, spaces; must start with alphanum)"
+                "tag must match ^[\\w][ \\w.-]{0,63}$ (unicode word chars, "
+                "spaces, dots, underscores, dashes; must not start with a space)"
             ),
         )
 
@@ -96,3 +100,45 @@ async def post_digest(
             status_code=503, detail="temporal unavailable; try again later"
         )
     return {"workflow_id": workflow_id, "tag": norm, "last_n": body.last_n}
+
+
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
+class TagListResponse(BaseModel):
+    items: list[TagCount]
+
+
+@router.get("")
+def list_tags(request: Request, session: Session = Depends(get_session)) -> dict:
+    """Distinct free tags with recording counts (Phase 0): the source for
+    the client's tag suggestions. Counts include recordings in ANY state
+    (a tag on an uploading capture is real user intent) — ordering is
+    count DESC then tag ASC so the UI shows popular tags first and the
+    tail is deterministic. Dialect split mirrors worker digest
+    ``_select_recordings``: Postgres unnests the TEXT[], SQLite explodes
+    the JSON array (tests).
+    """
+
+    dialect_name = session.get_bind().dialect.name
+    if dialect_name == "postgresql":
+        rows = session.execute(
+            text(
+                "SELECT tag, count(*) AS count FROM recordings, "
+                "unnest(recordings.tags) AS tag "
+                "WHERE tag <> '' GROUP BY tag "
+                "ORDER BY count DESC, tag ASC"
+            )
+        ).all()
+    else:
+        rows = session.execute(
+            text(
+                "SELECT value AS tag, count(*) AS count FROM recordings, "
+                "json_each(recordings.tags) "
+                "WHERE value <> '' GROUP BY value "
+                "ORDER BY count DESC, tag ASC"
+            )
+        ).all()
+    return {"items": [{"tag": row[0], "count": row[1]} for row in rows]}

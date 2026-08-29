@@ -68,6 +68,14 @@ class Recording(Base):
     total_bytes: Mapped[int | None] = mapped_column(default=None)
     sha256: Mapped[str | None] = mapped_column(String(64), default=None)
     duration_sec: Mapped[float | None] = mapped_column(Float, default=None)
+    # Phase 0 type/freehand-tag split: `type` is the system recording-type
+    # slug (^[a-z0-9][a-z0-9-]{0,31}$) that routes the pipeline (profile
+    # match); NULL → built-in default pipeline. `recorded_at` is when the
+    # audio actually happened (import backdate); NULL → client displays
+    # coalesce(recorded_at, created_at). Both nullable: pre-Phase-0 rows
+    # predate them (columns are added idempotently in app.main startup).
+    type: Mapped[str | None] = mapped_column(Text, default=None)
+    recorded_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 

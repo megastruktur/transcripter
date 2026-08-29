@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import uuid as uuid_mod
 from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import (
@@ -53,8 +54,45 @@ from app.db import (
 router = APIRouter(prefix="/recordings")
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# Recording-type slug (Phase 0): system preset key that routes the
+# pipeline. Unknown types are STORED as-is (the pipeline just matches no
+# profile); only garbage shapes get a 400. EXACT twin of worker
+# profiles._SAFE_TYPE — keep in sync.
+TYPE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 MAX_CHUNK = 16 * 1024 * 1024
 MIN_FREE_BYTES = 2 * MAX_CHUNK
+
+
+def _parse_type(raw: str | None) -> str | None:
+    """Validate an optional recording-type slug; ``None``/empty → None,
+    garbage shape → 400 (the client sent a broken type, not "no type")."""
+    if raw is None or raw == "":
+        return None
+    if not TYPE_RE.match(raw):
+        raise HTTPException(
+            status_code=400,
+            detail="type must match ^[a-z0-9][a-z0-9-]{0,31}$",
+        )
+    return raw
+
+
+def _parse_recorded_at(raw: str | None) -> datetime | None:
+    """Parse an optional ISO-8601 import backdate; ``None``/empty → None,
+    unparseable → 400. Stored as NAIVE UTC (the column is a plain
+    TIMESTAMP, matching created_at storage): an offset-bearing value is
+    converted to UTC and stripped, a naive value is taken as UTC already.
+    Serialized back as bare isoformat — UTC implied."""
+    if raw is None or raw == "":
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="recorded_at must be ISO-8601"
+        ) from exc
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
+    return dt
 
 
 class CreateRecording(BaseModel):
@@ -71,15 +109,17 @@ class FinalizeRequest(BaseModel):
     sha256: str = Field(min_length=64, max_length=64)
     duration_sec: float | None = None
 
-
 class UpdateRequest(BaseModel):
-    # Both fields optional: PATCH updates only what is supplied. The vault
-    # folder embeds the title in its name and the summarize profile matches
-    # on normalized tags: a title change triggers a rename-only export, a
-    # tags change triggers a full export (artifact filename + frontmatter
-    # profile/tags must be re-emitted under the new match).
+    # All fields optional: PATCH updates only what is supplied (min one
+    # field). The vault folder embeds the title in its name; a title
+    # change is rename-only. A tags change rewrites artifacts (frontmatter
+    # tags must be re-emitted) AND regenerates enrich (graph namespaces
+    # are the tags). A type change re-runs summarize+enrich (new profile
+    # routing). recorded_at only feeds the export frontmatter.
     title: str | None = None
     tags: list[str] | None = None
+    type: str | None = None
+    recorded_at: str | None = None
 
 
 def _normalize_tags(raw: Iterable[str] | None) -> list[str]:
@@ -231,16 +271,25 @@ async def create_recording_direct(
     title: str = Form(default=""),
     tags: str = Form(default="[]"),
     duration_sec: float | None = Form(default=None),
+    type: str = Form(default=""),
+    recorded_at: str = Form(default=""),
     session: Session = Depends(get_session),
 ) -> dict:
     """One-shot multipart upload. See module docstring for the contract.
 
     Validation runs before any DB / FS side effects: an empty file rejects
-    with 400, malformed `tags` JSON rejects with 400. After the recording
-    row is committed, any transcode failure (or silent FLAC) tears down the
-    directory + row so the client can retry from a clean slate.
+    with 400, malformed `tags` JSON rejects with 400. Import backdate
+    fields (Phase 0): `type` is an optional slug (garbage → 400, unknown
+    type stored as-is — the pipeline just matches no profile) and
+    `recorded_at` an optional ISO-8601 timestamp (garbage → 400). After
+    the recording row is committed, any transcode failure (or silent
+    FLAC) tears down the directory + row so the client can retry from a
+    clean slate.
     """
     cfg = _cfg(request)
+
+    rec_type = _parse_type(type)
+    rec_recorded_at = _parse_recorded_at(recorded_at)
 
     # Tags come in as a JSON-encoded string — multipart form fields can't
     # carry typed list[str] cleanly, and we want the client to be able to
@@ -250,8 +299,7 @@ async def create_recording_direct(
         raw_tags = json.loads(tags) if tags else []
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"invalid tags JSON: {exc.msg}") from exc
-    if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
-        raise HTTPException(status_code=400, detail="tags must be a JSON array of strings")
+
 
     # Probe the first 4 bytes without consuming the underlying stream.
     head = await file.read(4)
@@ -281,6 +329,8 @@ async def create_recording_direct(
         title=title,
         tags=_normalize_tags(raw_tags),
         duration_sec=duration_sec,
+        type=rec_type,
+        recorded_at=rec_recorded_at,
     )
     session.add(rec)
     for kind in STAGE_KINDS:
@@ -297,6 +347,7 @@ async def create_recording_direct(
                 "cleanup: rollback failed for %s", rec_id
             )
         shutil.rmtree(rec_dir, ignore_errors=True)
+
 
     try:
         if is_flac:
@@ -548,22 +599,57 @@ async def update_recording(
     # PATCH semantics: only the supplied fields are touched. At least one
     # field must be set or the call is a no-op that would still trigger an
     # export cycle.
-    if body.title is None and body.tags is None:
+    if (
+        body.title is None
+        and body.tags is None
+        and body.type is None
+        and body.recorded_at is None
+    ):
         raise HTTPException(status_code=400, detail="no fields to update")
+    # Validate BEFORE mutating: a garbage type/recorded_at must not leave
+    # a half-updated row.
+    new_type = _parse_type(body.type) if body.type is not None else None
+    new_recorded_at = (
+        _parse_recorded_at(body.recorded_at) if body.recorded_at is not None else None
+    )
+    type_changed = body.type is not None and rec.type != new_type
+    tags_changed = body.tags is not None and rec.tags != _normalize_tags(body.tags)
     if body.title is not None:
         rec.title = body.title.strip()
     if body.tags is not None:
         rec.tags = _normalize_tags(body.tags)
+    if body.type is not None:
+        rec.type = new_type
+    if body.recorded_at is not None:
+        rec.recorded_at = new_recorded_at
     session.commit()
-    # A title-only change is rename_only: the folder moves and NOTHING
-    # inside is rewritten (Obsidian edits are sacred). A tags change needs
-    # the FULL export: the summarize profile match may have shifted, so the
-    # artifact filename (profile's output_artifact) and the frontmatter
-    # tags:/profile: fields must be re-emitted — rename_only would leave
-    # them stale. Fire-and-forget; the DB change stands even if Temporal
-    # is down (worker.backfill is the recovery path).
+    # Side effects, in order of blast radius. Everything is fire-and-
+    # forget: the DB change stands even if Temporal is down (worker
+    # .backfill is the recovery path).
     try:
-        await temporal_client.start_export(rec.id, rename_only=body.tags is None)
+        if rec.state == RecordingState.done and (type_changed or tags_changed):
+            # Phase 0 (plan §0.3): a done recording whose tags/type changed
+            # regenerates the knowledge graph — enrich writes into the
+            # (new) tag namespaces, and the old namespaces are purged by
+            # the origin-scoped DETACH DELETE. A type change additionally
+            # re-runs summarize (different profile prompt/artifact); the
+            # workflow then cascades enrich + export itself, so one
+            # start at `summarize` covers both. A tags-only change starts
+            # at `enrich` (profile routing is by type — tags can't change
+            # the summarize profile any more).
+            start_stage = "summarize" if type_changed else "enrich"
+            await temporal_client.regenerate_stage(rec.id, start_stage, rec.duration_sec)
+            # The regenerate workflow's finally-block exports the note
+            # folder, so no separate start_export is needed on this path.
+        else:
+            await temporal_client.start_export(
+                rec.id,
+                rename_only=(
+                    body.tags is None
+                    and body.type is None
+                    and body.recorded_at is None
+                ),
+            )
     except Exception:
         logging.getLogger("transcripter.api").exception("start_export failed for %s", rec.id)
     return serialize_recording(rec)
@@ -574,6 +660,8 @@ def serialize_recording(rec: Recording) -> dict:
         "id": rec.id,
         "title": rec.title,
         "tags": list(rec.tags or []),
+        "type": rec.type,
+        "recorded_at": rec.recorded_at.isoformat() if rec.recorded_at else None,
         "state": rec.state.value,
         "committed_bytes": rec.committed_bytes,
         "total_bytes": rec.total_bytes,

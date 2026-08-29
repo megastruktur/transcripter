@@ -2,10 +2,12 @@
 # Copy and adapt for your own domain. Contract: see README.md in this directory.
 id: pathfinder-party-log
 version: 1.0.0
-min_host_version: 0.10.0
+min_host_version: 0.9.0
 display_name: Pathfinder Party Log
 description: "Chronicle of a tabletop RPG session: events, loot, NPCs, plot hooks"
-type: ttrpg
+tags:
+  - pathfinder
+  - pathfinder party log
 summarize:
   # The prompt MUST contain {transcript}; {title} is optional.
   prompt: |

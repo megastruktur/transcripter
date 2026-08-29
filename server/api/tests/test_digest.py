@@ -131,15 +131,15 @@ def test_digest_tag_with_disallowed_chars_400(
     assert r.status_code == 400
 
 
-def test_digest_tag_with_spaces_400(
+def test_digest_tag_with_spaces_202(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spaces are rejected: the tag becomes the digest filename verbatim
-    and the worker's file-safe regex forbids spaces — the API must not
-    202 a workflow that would then fail deterministically."""
+    """Phase 0: free tags may contain spaces — the API accepts them and
+    the worker slugs the filename (frontmatter keeps the display tag)."""
     _enable_graph(client, monkeypatch)
     r = client.post("/tags/morning%20standup/digest", json={"last_n": 2})
-    assert r.status_code == 400
+    assert r.status_code == 202, r.text
+    assert r.json()["tag"] == "morning standup"
 
 
 def test_digest_tag_too_long_400(

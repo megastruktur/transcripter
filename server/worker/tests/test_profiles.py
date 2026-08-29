@@ -9,7 +9,7 @@ from worker.profiles import (
     SummarizeSpec,
     artifacts_for_export,
     load_profiles,
-    match_profile,
+    match_profile_by_type,
 )
 
 
@@ -17,10 +17,10 @@ def _valid_yaml() -> str:
     return """\
 id: test-profile
 version: 1.0.0
-min_host_version: 0.9.0
+min_host_version: 0.10.0
 display_name: Test
 description: Test profile
-tags: [alpha, beta]
+type: meeting
 summarize:
   prompt: |
     Hello {title}. {transcript}
@@ -43,10 +43,10 @@ class TestProfileModel:
             {
                 "id": "foo",
                 "version": "1.0.0",
-                "min_host_version": "0.9.0",
+                "min_host_version": "0.10.0",
                 "display_name": "Foo",
                 "description": "x",
-                "tags": ["a"],
+                "type": "meeting",
                 "summarize": {
                     "prompt": "before {transcript} after",
                     "output_artifact": "x.md",
@@ -54,7 +54,7 @@ class TestProfileModel:
             }
         )
         assert prof.id == "foo"
-        assert prof.tags == ["a"]
+        assert prof.type == "meeting"
 
     def test_min_host_version_too_new_warns(self, tmp_path, caplog):
         _write_profile(
@@ -66,7 +66,7 @@ version: 1.0.0
 min_host_version: 99.0.0
 display_name: F
 description: d
-tags: [a]
+type: meeting
 summarize:
   prompt: 'p {transcript}'
 """,
@@ -84,7 +84,7 @@ id: notp
 version: 1.0.0
 display_name: T
 description: d
-tags: [a]
+type: meeting
 summarize:
   prompt: 'no transcript placeholder here'
 """,
@@ -102,7 +102,7 @@ id: unsafe
 version: 1.0.0
 display_name: T
 description: d
-tags: [a]
+type: meeting
 summarize:
   prompt: 'p {transcript}'
   output_artifact: '../evil.md'
@@ -112,41 +112,6 @@ summarize:
             profiles = load_profiles(tmp_path)
         assert profiles == []
 
-    def test_empty_tags_skipped(self, tmp_path, caplog):
-        _write_profile(
-            tmp_path,
-            "empty-tags.yaml",
-            """\
-id: emptytags
-version: 1.0.0
-display_name: T
-description: d
-tags: []
-summarize:
-  prompt: 'p {transcript}'
-""",
-        )
-        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
-            profiles = load_profiles(tmp_path)
-        assert profiles == []
-
-    def test_duplicate_tags_skipped(self, tmp_path, caplog):
-        _write_profile(
-            tmp_path,
-            "dup-tags.yaml",
-            """\
-id: dup
-version: 1.0.0
-display_name: D
-description: d
-tags: [a, A]
-summarize:
-  prompt: 'p {transcript}'
-""",
-        )
-        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
-            profiles = load_profiles(tmp_path)
-        assert profiles == []
 
     def test_unknown_field_logs_warning(self, tmp_path, caplog):
         _write_profile(
@@ -157,7 +122,7 @@ id: un
 version: 1.0.0
 display_name: U
 description: d
-tags: [a]
+type: meeting
 unknown_field: hi
 summarize:
   prompt: 'p {transcript}'
@@ -228,36 +193,46 @@ class TestLoadProfiles:
         assert [p.id for p in profiles] == ["late"]
 
 
-# --- match_profile ----------------------------------------------------------
+# --- match_profile_by_type (Phase 0) ----------------------------------------
 
 
-class TestMatchProfile:
+class TestMatchProfileByType:
     def test_no_profiles_dir_returns_none(self, tmp_path):
-        assert match_profile(["alpha"], tmp_path / "absent") is None
+        assert match_profile_by_type("meeting", tmp_path / "absent") is None
 
-    def test_empty_recording_tags_returns_none(self, tmp_path):
+    def test_none_recording_type_returns_none(self, tmp_path):
+        """Untyped recording → default pipeline (no profile)."""
         _write_profile(tmp_path, "p.yaml", _valid_yaml())
-        assert match_profile([], tmp_path) is None
+        assert match_profile_by_type(None, tmp_path) is None
 
-    def test_no_overlap_returns_none(self, tmp_path):
+    def test_empty_recording_type_returns_none(self, tmp_path):
         _write_profile(tmp_path, "p.yaml", _valid_yaml())
-        assert match_profile(["nothing"], tmp_path) is None
+        assert match_profile_by_type("", tmp_path) is None
 
-    def test_overlap_returns_profile(self, tmp_path):
+    def test_unknown_type_returns_none(self, tmp_path):
+        """Unknown types are stored as-is; they simply match no profile."""
         _write_profile(tmp_path, "p.yaml", _valid_yaml())
-        prof = match_profile(["alpha"], tmp_path)
+        assert match_profile_by_type("lecture", tmp_path) is None
+
+    def test_type_match_returns_profile(self, tmp_path):
+        _write_profile(tmp_path, "p.yaml", _valid_yaml())
+        prof = match_profile_by_type("meeting", tmp_path)
         assert prof is not None
         assert prof.id == "test-profile"
 
     def test_multi_match_picks_sorted_first_with_warning(self, tmp_path, caplog):
-        _write_profile(tmp_path, "zeta.yaml", _valid_yaml().replace("test-profile", "zeta"))
+        _write_profile(
+            tmp_path,
+            "zeta.yaml",
+            _valid_yaml().replace("test-profile", "zeta"),
+        )
         _write_profile(
             tmp_path,
             "alpha.yaml",
             _valid_yaml().replace("test-profile", "alpha"),
         )
         with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
-            prof = match_profile(["alpha"], tmp_path)
+            prof = match_profile_by_type("meeting", tmp_path)
         assert prof is not None
         assert prof.id == "alpha"
         assert any(
@@ -265,26 +240,70 @@ class TestMatchProfile:
             for r in caplog.records
         )
 
-    def test_tags_compared_case_insensitive(self, tmp_path):
-        _write_profile(
-            tmp_path,
-            "p.yaml",
-            _valid_yaml().replace("test-profile", "p").replace("[alpha, beta]", "[ALPHA]"),
-        )
-        # Profile tags are normalized lowercase by the validator; rec tags
-        # with mixed case should still match after the loader's defens­ive
-        # lowercasing.
-        prof = match_profile(["alpha"], tmp_path)
-        assert prof is not None
-        assert prof.id == "p"
-
     def test_summary_spec_prompt_includes_transcript(self):
         spec = SummarizeSpec(prompt="Hello {title}, transcript: {transcript}")
         assert "{transcript}" in spec.prompt
 
     def test_host_version_constant(self):
-        # Constant is the contract for wave A — bump on release.
-        assert HOST_VERSION == "0.9.0"
+        # Phase 0 bumped the floor: profiles declare min_host_version 0.10.0.
+        assert HOST_VERSION == "0.10.0"
+
+
+class TestLegacyTagsRemoved:
+    """Phase 0 cutover: a profile carrying the REMOVED ``tags:`` key is
+    warn+skipped as invalid — not loaded with default routing."""
+
+    def test_tags_field_skips_profile(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "legacy.yaml",
+            """\
+id: legacy
+version: 1.0.0
+display_name: L
+description: d
+tags: [alpha]
+summarize:
+  prompt: 'p {transcript}'
+""",
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_type_field_is_valid(self):
+        prof = Profile.model_validate(
+            {
+                "id": "foo",
+                "version": "1.0.0",
+                "display_name": "Foo",
+                "description": "x",
+                "type": "ttrpg",
+                "summarize": {"prompt": "p {transcript}"},
+            }
+        )
+        assert prof.type == "ttrpg"
+
+    def test_bad_type_slug_skips_profile(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "badtype.yaml",
+            _valid_yaml().replace("type: meeting", "type: 'Bad Type!'"),
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
+    def test_missing_type_skips_profile(self, tmp_path, caplog):
+        _write_profile(
+            tmp_path,
+            "notype.yaml",
+            _valid_yaml().replace("type: meeting\n", ""),
+        )
+        with caplog.at_level(logging.WARNING, logger="transcripter.profiles"):
+            profiles = load_profiles(tmp_path)
+        assert profiles == []
+
 
 
 # --- artifacts_for_export ---------------------------------------------------

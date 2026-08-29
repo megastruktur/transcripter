@@ -1,17 +1,16 @@
-import type { ProfileInfo } from './api.svelte';
+import type { Recording, TagCount } from './api.svelte';
 
-/** One row of the tag-picker dropdown: a server-known tag plus the
- * "parsing logic" (profile) it activates. Several profiles may claim the
- * same tag (the server's match rule picks the first by sorted id) — the
- * row folds them into one entry naming all of them. */
+/** One row of the tag-picker dropdown: a server-known freehand tag plus
+ * how many recordings already carry it. Sourced from GET /tags (recent
+ * freehand tags), with an offline fallback built from the recordings list. */
 export type TagSuggestion = {
 	tag: string;
-	/** Display names of every profile declaring this tag. */
-	profiles: string[];
-	/** First profile's description — shown as the row's subtitle. */
-	description: string;
-	/** True when any claiming profile extracts into the knowledge graph. */
-	hasEnrich: boolean;
+	/** How many recordings carry the tag ("×3") — server counts from
+	 * GET /tags; the recordings fallback shows "recent" instead. */
+	count: number | null;
+	/** True when the row comes from the recordings-list fallback (the
+	 * /tags endpoint was unreachable). */
+	recent: boolean;
 };
 
 /** Tag helpers shared by the record page and the recording-detail page.
@@ -37,30 +36,28 @@ export function mergeDraftTags(tags: string[], draft: string): string[] {
 	return next;
 }
 
-/** Folds the profile list into picker rows, one per tag, sorted by tag.
- * Already-added tags are NOT filtered here — TagChips does that per
- * render so the same suggestion list works for every input instance. */
-export function buildTagSuggestions(profiles: ProfileInfo[]): TagSuggestion[] {
-	const byTag = new Map<string, TagSuggestion>();
-	for (const profile of profiles) {
-		for (const raw of profile.tags) {
+/** Folds the GET /tags payload into picker rows. The server already
+ * orders by count desc then tag asc; that order is preserved. Already-
+ * added tags are NOT filtered here — TagChips does that per render so the
+ * same suggestion list works for every input instance. */
+export function buildTagSuggestions(tagCounts: TagCount[]): TagSuggestion[] {
+	return tagCounts.map((tc) => ({ tag: tc.tag, count: tc.count, recent: false }));
+}
+
+/** Offline fallback: derive "recent tags" from a recordings list when
+ * GET /tags is unavailable. Newest first (the caller passes the page it
+ * already has, newest-first), later occurrences win over earlier ones,
+ * deduped. Counts are unknown → `count: null`. */
+export function buildRecentSuggestions(recordings: Recording[]): TagSuggestion[] {
+	const seen = new Set<string>();
+	const rows: TagSuggestion[] = [];
+	for (const rec of recordings) {
+		for (const raw of rec.tags) {
 			const tag = normalizeTag(raw);
-			if (tag === null) continue;
-			const row = byTag.get(tag);
-			if (row) {
-				if (!row.profiles.includes(profile.display_name)) {
-					row.profiles.push(profile.display_name);
-				}
-				row.hasEnrich = row.hasEnrich || profile.has_enrich;
-			} else {
-				byTag.set(tag, {
-					tag,
-					profiles: [profile.display_name],
-					description: profile.description,
-					hasEnrich: profile.has_enrich
-				});
-			}
+			if (tag === null || seen.has(tag)) continue;
+			seen.add(tag);
+			rows.push({ tag, count: null, recent: true });
 		}
 	}
-	return [...byTag.values()].sort((a, b) => a.tag.localeCompare(b.tag));
+	return rows;
 }

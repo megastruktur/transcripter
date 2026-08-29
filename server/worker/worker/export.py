@@ -120,8 +120,9 @@ def _frontmatter_tags(rec_tags: list[str]) -> list[str]:
 class Rec:
     """Recording-level metadata the exporter needs.
 
-    `tags` is wave A — used to re-match a knowledge-graph profile at export
-    time (D11) and to render Obsidian frontmatter `tags:` for the note.
+    `tags` renders Obsidian frontmatter ``tags:`` (user grouping).
+    `type` (Phase 0) re-matches the knowledge-graph profile at export
+    time (D11): routing is by recording.type; NULL → no profile.
     """
 
     id: str
@@ -130,6 +131,8 @@ class Rec:
     duration_sec: float | None
     state: str = ""
     tags: list[str] = _dataclass_field(default_factory=list)
+    type: str | None = None
+
 
 def folder_path(root: Path, rec: Rec, zone: ZoneInfo) -> Path:
     return root / folder_name(rec.title, rec.id, rec.created_at, zone)
@@ -210,6 +213,7 @@ def load_recording(rec_id: str) -> Rec:
             rec.duration_sec,
             rec.state.value,
             tags=tags,
+            type=rec.type,
         )
 
 
@@ -283,9 +287,10 @@ def export_recording(
     - Mirror: known artifact names absent from meta are unlinked from the
       folder (e.g. diarize disabled → diarized-transcript.md must not go
       stale in the vault); unknown/user files are never touched.
-    - Profile (wave A): the summary artifact is renamed to
-      ``profile.summarize.output_artifact`` in the note folder when a profile
-      matches the recording's tags. Meta stays canonical
+    - Profile (Phase 0): the summary artifact is renamed to
+      ``profile.summarize.output_artifact`` in the note folder when a
+      profile matches the recording's TYPE (routing by recording.type;
+      tags are user grouping now). Meta stays canonical
       (``meta/summary.md``). Whitelist = static 3 + every known profile's
       output_artifact; a removed profile's note falls out of the whitelist
       and is deliberately kept as user content (manual cleanup). Re-match
@@ -307,16 +312,15 @@ def export_recording(
 
     # Re-match profile per D11 (the meta canonical file is summary.md; the
     # note-folder filename for the summary becomes profile.output_artifact
-    # when a profile matched). profiles_dir=None disables the profile path
-    # (legacy callers + unit tests that mock Rec without tags).
     profile = None
     summary_target = "summary.md"
     if profiles_dir is not None:
-        from .profiles import match_profile
+        from .profiles import match_profile_by_type
 
-        profile = match_profile(rec.tags, profiles_dir)
+        profile = match_profile_by_type(rec.type, profiles_dir)
         if profile is not None:
             summary_target = profile.summarize.output_artifact
+
 
     # Static pair: meta name → target name (same for transcript/diarized).
     # Summary row is dynamic (profile renaming).

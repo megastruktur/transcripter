@@ -22,6 +22,11 @@ export type Recording = {
 	total_bytes: number | null;
 	duration_sec: number | null;
 	created_at: string;
+	/** Pipeline type slug (`meeting`, `ttrpg`, …); null = default pipeline. */
+	type: string | null;
+	/** When the audio actually sounded (import backdate); null = unknown —
+	 * clients display coalesce(recorded_at, created_at). */
+	recorded_at: string | null;
 	stages: Stage[];
 };
 
@@ -30,6 +35,9 @@ export type ProfileInfo = {
 	version: number;
 	display_name: string;
 	description: string;
+	/** Slug of the pipeline this profile routes to (`meeting`, `ttrpg`…). */
+	type: string | null;
+	/** Kept for the transition: legacy profiles may still carry tags. */
 	tags: string[];
 	has_enrich: boolean;
 };
@@ -51,6 +59,10 @@ export type ListParams = {
 export type UpdateRecordingPatch = {
 	title?: string;
 	tags?: string[];
+	/** Type slug; null clears the type (back to the default pipeline). */
+	type?: string | null;
+	/** ISO-8601 timestamp; null clears the backdate. */
+	recorded_at?: string | null;
 };
 
 const STORAGE_KEY = 'transcripter.apiConfig';
@@ -114,6 +126,22 @@ export async function listProfiles(cfg: ApiConfig): Promise<ProfileInfo[]> {
 	return resp.json();
 }
 
+export type TagCount = {
+	tag: string;
+	count: number;
+};
+
+/** Distinct freehand tags with session counts, ordered count desc then
+ * tag asc — the server's ordering; no client re-sort. Source for the
+ * recorder/import tag pickers (recent freehand tags), replacing the old
+ * profile-tags source. */
+export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
+	const resp = await req(cfg, '/tags');
+	if (!resp.ok) throw new Error(`tags ${resp.status}`);
+	const body = (await resp.json()) as { items: TagCount[] };
+	return body.items;
+}
+
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
 	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });
@@ -166,7 +194,6 @@ export async function fetchArtifact(
 	if (!resp.ok) throw Object.assign(new Error(`artifact ${resp.status}`), { status: resp.status });
 	return resp.text();
 }
-
 export async function deleteRecording(cfg: ApiConfig, id: string): Promise<void> {
 	const resp = await req(cfg, `/recordings/${id}`, { method: 'DELETE' });
 	if (!resp.ok) {
@@ -176,29 +203,34 @@ export async function deleteRecording(cfg: ApiConfig, id: string): Promise<void>
 }
 
 /**
- * Upload a single captured audio blob directly through the REST multipart
- * endpoint used by the Android capture path (mobile webview -> WebM/Opus ->
- * POST /recordings/direct). The server handles transcoding to canonical
- * FLAC and seeds the standard pipeline (same as a desktop recording finalize).
+ * Upload a single audio blob through the REST multipart endpoint
+ * POST /recordings/direct (mobile webview capture -> WebM/Opus, import
+ * surface -> FLAC/WAV/MP3). The server transcodes to canonical FLAC and
+ * seeds the standard pipeline.
  *
- * `onProgress` is optional: a single indeterminate tick after the body is
- * sent is enough for the PoC UI; per-byte progress on a single multipart
- * POST would need the fetch-stream ReadableStream tee trick and is out of
- * scope for this gate. The hook exists so callers can wire richer progress
- * later without another signature break.
+ * `opts` carries the Phase-0 meta fields with their exact wire names:
+ * `type` is the pipeline-type slug, `recordedAt` (client-side camelCase)
+ * maps to the `recorded_at` ISO-8601 multipart field (import backdate).
+ * Both are optional; absent fields are simply not sent.
  *
  * Tags and duration_sec mirror the desktop JSON create path (server
- * normalizes tags the same way); title and duration_sec are optional in the
- * multipart body but the server treats absent title as empty and absent
- * duration_sec as null (both are tolerated).
+ * normalizes tags the same way); title and duration_sec are optional in
+ * the multipart body but the server tolerates them being absent.
  */
+export type UploadDirectOpts = {
+	/** Pipeline type slug (`meeting`, `ttrpg`…). */
+	type?: string;
+	/** ISO-8601 "when it actually sounded" backdate. */
+	recordedAt?: string;
+};
+
 export async function uploadDirect(
 	cfg: ApiConfig,
 	file: Blob,
 	title: string | null,
 	tags: string[] = [],
 	durationSec: number | null = null,
-	onProgress?: (deltaBytes: number) => void
+	opts: UploadDirectOpts = {}
 ): Promise<{ id: string }> {
 	const form = new FormData();
 	form.append('file', file, filenameForBlob(file));
@@ -207,7 +239,8 @@ export async function uploadDirect(
 	if (durationSec !== null && Number.isFinite(durationSec)) {
 		form.append('duration_sec', durationSec.toFixed(3));
 	}
-
+	if (opts.type) form.append('type', opts.type);
+	if (opts.recordedAt) form.append('recorded_at', opts.recordedAt);
 	const url = `${cfg.baseUrl.replace(/\/$/, '')}/recordings/direct`;
 	const resp = await fetch(url, {
 		method: 'POST',
@@ -218,10 +251,6 @@ export async function uploadDirect(
 		},
 		body: form
 	});
-	// Indeterminate progress tick after the body has been sent. Real per-byte
-	// progress is out of scope for the PoC (see docstring above).
-	onProgress?.(file.size);
-
 	if (resp.status === 401) {
 		throw Object.assign(new Error('unauthorized: check token in Settings'), { status: 401 });
 	}
