@@ -328,6 +328,45 @@ extraction внутри enrich (риск 3×2400 с на один вызов).
 ~0.08 с/батч-32 уже измерен живьём. Вектора НЕ сущностей —
 **сегментов transcripts**. Нового LLM-трафика нет вообще.
 
+**Бэкенд эмбеддингов — переключаемый провайдер (паттерн speaches).**
+Один клиент `embed_texts(texts) -> list[vec]` с двумя имплементациями:
+
+- `local` (дефолт): сегодняшний ONNX int8 in-process в worker;
+  api при local-бэкенде получает `models:/models:ro` volume.
+- `http`: любой OpenAI-совместимый `POST /v1/embeddings` —
+  LiteLLM-прокси (роут эмбеддинг-модели), Infinity-контейнер,
+  Ollama, OpenAI. Оба потребителя (worker-индексация, api-запрос)
+  ходят в один endpoint; onnxruntime/tokenizers в api не нужны.
+
+Конфиг в `graph.embed` (миграция плоских `embed_*` ключей 2.5 —
+чистый cutover, config.yaml+example вместе):
+`backend: local|http`, `model_path` (local), `base_url`, `model`,
+`api_key_env`, `dimensions` (http; local фиксирован 1024).
+Переопределения из среды по образцу SUMMARIZE_MODEL: compose
+прокидывает `EMBED_BACKEND/EMBED_BASE_URL/EMBED_MODEL` из .env —
+смена провайдера без правки config.yaml. Опциональный контейнер
+эмбеддинг-сервера (кандидат Infinity с bge-m3) — отдельный compose
+профиль `embeddings`, выключен по умолчанию: local-бэкенд не требует
+ни одного контейнера.
+
+Две ловушки смены модели (ловятся метой, не пользователем):
+(1) **размерность/модель как метаданные индекса** — таблица meta в
+каждом index-файле хранит {backend, model, dimensions}; vec0 строится
+под dimensions конфига. Несовпадение при записи → авто-ребилд этого
+index-файла (индексация идемпотентна); при поиске → 503 с подсказкой
+«run backfill». Смена модели = переиндексация, тихих смесей нет.
+(2) **τ_high/τ_low калиброваны под bge-m3** (фаза 2.5, живые
+замеры) — другая модель даёт другое распределение косинусов, дедуп
+может осыпаться; смена эмбеддер-модели требует пересчёта порогов и
+пере-эмбеддинга сущностей графа (backfill). Документируем в
+config.example; guard'ом служит та же мета (модель в детали стадии).
+
+Голод шлюза (3-F) теперь касается и индексации, если http-бэкенд
+указывает на перегруженный прокси: embed-вызовы получают свой
+таймаут (60 с) и best-effort семантику — сбой индексации НИКОГДА не
+валит enrich (details `indexed_segments: 0` + warning), поиск при
+лежащем бэкенде → 503 `available: false`.
+
 **Что сегментируется** (порядок выбора, дешёвое → точное):
 1. diarized-transcript.md существует (диаризация была) → сегменты =
    спикер-ходы из merge (`[mm:ss – mm:ss]` в начале каждого хода).
@@ -364,9 +403,9 @@ embedder уже загружен в процессе, один asyncio.to_thread
 сегменты этой записи в её тегах (DELETE by recording_id во всех
 валидных тегах записи).
 
-**API**: `GET /tags/{tag}/search?q=…&k=20` — embed(q) в api-процессе
-(модель в /models volume; api-контейнеру добавить volume `models:/models:ro`
-— сегодня его нет), KNN по sqlite-vec, ответ:
+**API**: `GET /tags/{tag}/search?q=…&k=20` — embed(q) через тот же
+клиент (local: /models volume + `models:/models:ro` в api; http:
+endpoint из конфига), KNN по sqlite-vec, ответ:
 `{tag, query, hits: [{recording_id, session_title, ts_start, ts_end,
 speaker, snippet, distance}]}`. client → клик = переход в запись с
 seek по ts_start (parseTs уже есть из фазы 3).
