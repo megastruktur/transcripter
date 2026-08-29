@@ -20,6 +20,10 @@ services:
       EMBED_BACKEND: ${EMBED_BACKEND:-}
       EMBED_BASE_URL: ${EMBED_BASE_URL:-}
       EMBED_MODEL: ${EMBED_MODEL:-}
+      # graph.embed.api_key_env references this when the embed backend is
+      # http (LiteLLM) — the api embeds search queries through the same
+      # endpoint the worker indexed with. Harmless when unused.
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
     volumes:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
