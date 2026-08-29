@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from temporalio.exceptions import ApplicationError
 
 from worker import activities
 from worker.db import Base, Recording, RecordingState, Stage, StageStatus, session
@@ -44,6 +45,10 @@ def _make_cfg(tmp_path: Path) -> Any:
     cfg.recordings_root = tmp_path / "storage" / "recordings"
     # transcripts root for digest placement (real tmp dir).
     cfg.transcripts.path = tmp_path / "transcripts"
+    # Phase 3-F F3: the dedup soft gate reads summarize.* for its probe.
+    cfg.summarize.base_url = "http://llm:8080/v1"
+    cfg.summarize.model = "m"
+    cfg.summarize.api_key_env = ""
     return cfg
 
 
@@ -89,6 +94,7 @@ def _happy_enrich(env: dict, graph: MagicMock) -> None:
     """Standard successful-enrich patch stack."""
     stack = [
         patch("worker.profiles.match_profile_by_type", return_value=None),
+        patch("worker.enrich.dedup_llm_gate", return_value=True),
         patch("worker.enrich.extract_from_transcript", return_value=graph),
         patch("worker.enrich.resolve_slugs", return_value=graph),
         patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
@@ -254,7 +260,8 @@ def test_skipped_stage_never_digests(recording_id: str, tmp_path: Path) -> None:
             "worker.digest.run_digest",
             return_value={"written": True, "path": "/x.md"},
         ) as rd,
+        pytest.raises(ApplicationError, match="graph disabled"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "graph disabled"}
+        _run(activities.enrich(recording_id))
+    # Phase 3-F F2: skips raise; the digest call is still never reached.
     rd.assert_not_called()

@@ -37,6 +37,23 @@ def _no_retry() -> RetryPolicy:
     the user re-runs regeneration deliberately from the UI."""
     return RetryPolicy(maximum_attempts=1)
 
+def _enrich_retry() -> RetryPolicy:
+    """Phase 3-F F2: enrich gets 3 attempts with a 5-min backoff.
+
+    The live incident (2026-08-29): extraction sat in the shared LiteLLM
+    FIFO queue behind ~10 req/min of parallel consumers and timed out at
+    2400 s. A retry just gives the queue time to drain — no re-run risk
+    of the transcribe kind (enrich is idempotent: DETACH DELETE by
+    origin_recording_id). Intentional skips are excluded server-side:
+    the activity raises ApplicationError(non_retryable=True) for them,
+    which Temporal never retries regardless of this policy. Workflow
+    ceiling is unlimited (no execution_timeout set), so 3×(2400+300)
+    fits."""
+    return RetryPolicy(
+        maximum_attempts=3,
+        initial_interval=timedelta(seconds=300),
+        maximum_interval=timedelta(seconds=300),
+    )
 
 def _diarize_retry() -> RetryPolicy:
     # No compose depends_on anymore (profile-gated service): the first
@@ -176,6 +193,9 @@ class ProcessRecording:
         # Wave B: enrich is best-effort like diarize/merge — a failure
         # must not abort the recording. The activity catches its own
         # errors and marks `failed`; we only escalate infra errors.
+        # Phase 3-F F2: _enrich_retry (3 attempts, 5-min backoff) lets a
+        # starved FIFO queue drain; intentional skips are
+        # non-retryable ApplicationErrors and never re-run.
         if idx <= 5:
             try:
                 result["enrich"] = await workflow.execute_activity(
@@ -185,7 +205,7 @@ class ProcessRecording:
                     # timeout is the binding constraint, and the HTTP
                     # budget inside the activity is 30 s under.
                     start_to_close_timeout=timedelta(seconds=2400),
-                    retry_policy=_no_retry(),
+                    retry_policy=_enrich_retry(),
                     heartbeat_timeout=timedelta(seconds=120),
                 )
             except ActivityError:

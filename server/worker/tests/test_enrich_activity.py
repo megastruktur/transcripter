@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from temporalio.exceptions import ApplicationError
 
 from worker import activities
 from worker.db import Base, Recording, RecordingState, Stage, StageStatus, session
@@ -32,6 +33,11 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(db_mod, "_SessionLocal", Session)
     monkeypatch.setattr(activities, "_cfg", _make_cfg(tmp_path))
+    # Phase 3-F F3: the dedup soft gate would REALLY probe the LLM
+    # (and sleep 60/120 s on failure) — unit tests patch it healthy.
+    import worker.enrich as _enrich_mod
+
+    monkeypatch.setattr(_enrich_mod, "dedup_llm_gate", lambda cfg: True)
 
 
 def _make_cfg(tmp_path: Path) -> Any:
@@ -108,6 +114,10 @@ def _cfg(graph_enabled: bool, tmp_path: Path) -> Any:
     cfg.graph.enrich_all = True
     cfg.graph.auto_digest = False
     cfg.graph.auto_digest_window_sec = 3600
+    # Phase 3-F F3: the dedup soft gate reads summarize.* for its probe.
+    cfg.summarize.base_url = "http://llm:8080/v1"
+    cfg.summarize.model = "m"
+    cfg.summarize.api_key_env = ""
     cfg.profiles.path = tmp_path / "profiles"
     # Real paths: the done-path tests let the activity write
     # meta/events.json for real (write_events_json uses os.replace).
@@ -121,13 +131,16 @@ def _run(coro):
 
 
 def test_skipped_when_graph_disabled(recording_id: str, tmp_path: Path) -> None:
+    """Phase 3-F F2: intentional skips raise a NON-RETRYABLE
+    ApplicationError (the row still says skipped; Temporal sees a
+    terminal failure the retry policy can never re-run)."""
     cfg = _cfg(graph_enabled=False, tmp_path=tmp_path)
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=True)),
+        pytest.raises(ApplicationError, match="graph disabled"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "graph disabled"}
+        _run(activities.enrich(recording_id))
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.skipped
@@ -138,9 +151,9 @@ def test_skipped_when_no_profile_with_enrich(recording_id: str, tmp_path: Path) 
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=False)),
+        pytest.raises(ApplicationError, match="no profile with enrich"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "no profile with enrich"}
+        _run(activities.enrich(recording_id))
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.skipped
@@ -155,9 +168,9 @@ def test_skipped_when_no_profile_at_all(recording_id: str, tmp_path: Path) -> No
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=None),
+        pytest.raises(ApplicationError, match="no profile with enrich"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "no profile with enrich"}
+        _run(activities.enrich(recording_id))
 
 
 def test_done_when_extraction_and_write_succeed(recording_id: str, tmp_path: Path) -> None:

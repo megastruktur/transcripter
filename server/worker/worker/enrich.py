@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -394,6 +395,84 @@ def ask_same_entity(
     return verdict
 
 
+# --- Phase 3-F F3: soft gate ahead of the dedup LLM batch ----------------------
+# The live incident: extraction (2400 s budget) starved the trivial Y/N
+# calls (30 s budget) in the SAME shared LiteLLM FIFO queue; every Y/N
+# timed out and gray-zone pairs merged as "same". The gate sends ONE
+# probe Y/N before the resolve_slugs batch: a healthy answer proves the
+# queue serves small calls too; a ReadTimeout/429/5xx means the proxy is
+# overloaded and the whole dedup-LLM batch would burn its per-call 30 s
+# for nothing.
+
+# Probe/backoff budget: 3 probes with a 60 s ×2 backoff (60 s, 120 s) —
+# bounded ~3.5 min on top of the activity, priced well under the 2400 s
+# envelope.
+_GATE_TIMEOUT_SEC = 30.0
+_GATE_BACKOFF_SEC = 60.0
+_GATE_MAX_ATTEMPTS = 3
+
+
+def _gate_probe(cfg: Any) -> bool:
+    """ONE tiny Y/N call; True = proxy healthy for small requests.
+
+    Raises on ReadTimeout/transport errors/429/5xx (the caller backs
+    off and re-probes). A 2xx with an ambiguous body counts as healthy —
+    the queue answered; parsing quality is ask_same_entity's problem.
+    """
+    api_key = os.environ.get(cfg.summarize.api_key_env, "")
+    headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+    r = httpx.post(
+        cfg.summarize.base_url.rstrip("/") + "/chat/completions",
+        headers=headers,
+        json={
+            "model": cfg.summarize.model,
+            "messages": system_first_messages(
+                [
+                    {"role": "system", "content": "Answer with a single Y or N."},
+                    {"role": "user", "content": "Are X and X the same entity? Y or N."},
+                ]
+            ),
+        },
+        timeout=_GATE_TIMEOUT_SEC,
+    )
+    r.raise_for_status()
+    r.json()["choices"][0]["message"]["content"]
+    return True
+
+
+def dedup_llm_gate(cfg: Any) -> bool:
+    """True → proceed with LLM dedup; False → skip it (3 failed probes).
+
+    Best-effort by design: a probe success does not promise the whole
+    batch survives (ask_same_entity still swallows its own errors);
+    a probe failure skips the LLM leg so the phase-2.5 prefilter alone
+    decides, with the gray zone merging as "same" — exactly today's
+    per-call error behavior, applied to the whole batch up front.
+    """
+    backoff = _GATE_BACKOFF_SEC
+    for attempt in range(1, _GATE_MAX_ATTEMPTS + 1):
+        try:
+            _gate_probe(cfg)
+            return True
+        except (httpx.HTTPError, ValueError, KeyError) as exc:
+            log.warning(
+                "enrich dedup gate: probe %d/%d failed (%s)",
+                attempt,
+                _GATE_MAX_ATTEMPTS,
+                exc,
+            )
+            if attempt < _GATE_MAX_ATTEMPTS:
+                time.sleep(backoff)
+                backoff *= 2
+    log.warning(
+        "enrich dedup gate: proxy unhealthy after %d probes; "
+        "skipping LLM dedup for this run (prefilter-only)",
+        _GATE_MAX_ATTEMPTS,
+    )
+    return False
+
+
+
 def _dedup_verdict(
     new_label: str,
     new_type: str,
@@ -402,6 +481,7 @@ def _dedup_verdict(
     cfg: Any,
     new_vec: Any,
     existing_vec: Any,
+    llm_enabled: bool = True,
 ) -> bool:
     """Phase 2.5 prefilter + LLM fallback for ONE collision pair.
 
@@ -409,6 +489,9 @@ def _dedup_verdict(
     cosine <= ``graph.embed_tau_low`` → distinct, with NO LLM call. The
     gray zone in between — and every missing-vector case — falls through
     to the classic ``ask_same_entity`` Y/N (errors → same, best-effort).
+    With ``llm_enabled=False`` (Phase 3-F F3: the soft gate judged the
+    proxy unhealthy) the gray zone merges as "same" WITHOUT the call —
+    the exact verdict an errored ask_same_entity returns today.
     """
     decision = same_entity_decision(
         new_label,
@@ -423,6 +506,8 @@ def _dedup_verdict(
         return True
     if decision == "distinct":
         return False
+    if not llm_enabled:
+        return True
     return ask_same_entity(new_label, new_type, existing_label, existing_type, cfg)
 
 
@@ -728,6 +813,7 @@ def resolve_slugs(
     cfg: Any,
     tag: str,
     existing_lookup: ExistingEntityLookup | None = None,
+    llm_enabled: bool = True,
 ) -> ExtractedGraph:
     """Run the two-level dedup loop on ``graph.entities``.
 
@@ -752,6 +838,11 @@ def resolve_slugs(
     ``existing_lookup(slug)`` lets the caller pre-seed collisions with
     entities already in the graph from previous recordings — same
     question, same answer.
+
+    Phase 3-F F3: ``llm_enabled=False`` (the soft gate's
+    dedup_llm_probe failed 3×) keeps the prefilter zones but resolves
+    every gray-zone pair as "same" without any LLM call — identical to
+    per-call error semantics, applied up front.
     """
     # One batched inference for the whole extraction, in entity ORDER
     # (slugs collide, positions don't). ``local_vecs`` answers
@@ -798,6 +889,7 @@ def resolve_slugs(
                 cfg,
                 vec,
                 seen_vecs.get(slug),
+                llm_enabled=llm_enabled,
             )
         elif existing_lookup is not None:
             existing = existing_lookup(slug)
@@ -810,6 +902,7 @@ def resolve_slugs(
                     cfg,
                     vec,
                     existing.get("embedding"),
+                    llm_enabled=llm_enabled,
                 )
                 if same:
                     seen[slug] = ExtractedEntity(

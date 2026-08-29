@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
 
 from .chunk import (
     Manifest,
@@ -152,6 +153,13 @@ async def chunk(rec_id: str) -> dict:
         details = {"chunks": len(manifest.chunks), "target_min": c.chunk.target_min}
         set_stage(rec_id, "chunk", StageStatus.done, details=details)
         return details
+    except asyncio.CancelledError:
+        # Phase 3-F F1: a Temporal cancellation (heartbeat/StartToClose
+        # timeout) bypasses except-Exception; the stage row must never be
+        # stranded in `running`. Mark failed, then re-raise so Temporal
+        # records the activity as cancelled.
+        set_stage(rec_id, "chunk", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("chunk failed for %s", rec_id)
         set_stage(rec_id, "chunk", StageStatus.failed, error=str(e))
@@ -313,6 +321,9 @@ async def transcribe(rec_id: str) -> dict:
                 details["suspect_chunks"] = suspect
         set_stage(rec_id, "transcribe", StageStatus.done, details=details)
         return details
+    except asyncio.CancelledError:
+        set_stage(rec_id, "transcribe", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("transcribe failed for %s", rec_id)
         set_stage(rec_id, "transcribe", StageStatus.failed, error=str(e))
@@ -395,6 +406,9 @@ async def diarize(rec_id: str) -> dict:
             details["chunks"] = len(manifest.chunks)
         set_stage(rec_id, "diarize", StageStatus.done, details=details)
         return details
+    except asyncio.CancelledError:
+        set_stage(rec_id, "diarize", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("diarize failed for %s", rec_id)
         set_stage(rec_id, "diarize", StageStatus.failed, error=str(e))
@@ -426,6 +440,9 @@ async def merge_speakers(rec_id: str) -> dict:
         # JSONs stay (small; diagnostics + re-concat without re-running STT).
         cleanup_chunks(meta_dir(rec_id))
         return details
+    except asyncio.CancelledError:
+        set_stage(rec_id, "merge_speakers", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("merge_speakers failed for %s", rec_id)
         set_stage(rec_id, "merge_speakers", StageStatus.failed, error=str(e))
@@ -511,6 +528,9 @@ async def summarize(rec_id: str) -> dict:
             },
         )
         return {"chars": len(text), "profile_id": profile.id if profile else None}
+    except asyncio.CancelledError:
+        set_stage(rec_id, "summarize", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("summarize failed for %s", rec_id)
         set_stage(rec_id, "summarize", StageStatus.failed, error=str(e))
@@ -574,8 +594,14 @@ async def enrich(rec_id: str) -> dict:
     set_stage(rec_id, "enrich", StageStatus.running, inc_attempts=True)
     c = cfg()
     if not c.graph.enabled:
+        # Phase 3-F F2: intentional skips raise a NON-RETRYABLE
+        # ApplicationError — the stage row honestly says `skipped`, and
+        # Temporal records a terminal failure instead of a success, so
+        # the F2 retry policy (3 attempts for FIFO drain) can never
+        # re-run a skip. The workflow's ActivityError catch keeps the
+        # recording `done` (best-effort contract unchanged).
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "graph disabled"})
-        return {"skipped": "graph disabled"}
+        raise ApplicationError("skipped: graph disabled", non_retryable=True)
     profile = None
     title = ""
     recording_date = ""
@@ -603,10 +629,10 @@ async def enrich(rec_id: str) -> dict:
     enrich = profile.enrich if profile is not None else None
     if profile is not None and enrich is None:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
-        return {"skipped": "no profile with enrich"}
+        raise ApplicationError("skipped: no profile with enrich", non_retryable=True)
     if profile is None and not c.graph.enrich_all:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
-        return {"skipped": "no profile with enrich"}
+        raise ApplicationError("skipped: no profile with enrich", non_retryable=True)
     graph_tags = tags or ["untagged"]
     try:
         from .embeddings import _embedder, entity_vectors
@@ -684,6 +710,16 @@ async def enrich(rec_id: str) -> dict:
                 known_entities_block,
             )
         )
+
+        # Phase 3-F F3: soft gate BEFORE the dedup batch. One probe Y/N
+        # (30 s) with 60 s ×2 backoff, 3 attempts: a starved FIFO queue
+        # fails fast here and the whole LLM-dedup leg is skipped — the
+        # 2.5 prefilter stays, gray-zone merges as "same" (per-call
+        # error semantics, applied up front). Heartbeat-wrapped: the
+        # backoffs (60+120 s) can outrun heartbeat_timeout alone.
+        from .enrich import dedup_llm_gate
+
+        llm_dedup = await _heartbeat_while(asyncio.to_thread(dedup_llm_gate, c))
         # Two-level dedup: slug collisions across the local extraction
         # (already-present in `extracted`) AND against the live graph.
         # Per Phase 0 the dedup runs per NAMESPACE (a copy per tag is
@@ -708,7 +744,12 @@ async def enrich(rec_id: str) -> dict:
                     # strand the stage row in running).
                     resolved_by_tag[graph_tag] = await _heartbeat_while(
                         asyncio.to_thread(
-                            resolve_slugs, extracted, c, graph_tag, lookup
+                            resolve_slugs,
+                            extracted,
+                            c,
+                            graph_tag,
+                            lookup,
+                            llm_dedup,
                         )
                     )
                 except Exception:
@@ -778,6 +819,9 @@ async def enrich(rec_id: str) -> dict:
         if c.graph.auto_digest:
             await _auto_digest_tags(graph_tags, c)
         return details
+    except asyncio.CancelledError:
+        set_stage(rec_id, "enrich", StageStatus.failed, error="cancelled")
+        raise
     except Exception as e:
         log.exception("enrich failed for %s", rec_id)
         set_stage(rec_id, "enrich", StageStatus.failed, error=str(e))

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from temporalio.exceptions import ApplicationError
 
 from worker import activities
 from worker.db import Base, Recording, RecordingState, Stage, StageStatus, session
@@ -27,6 +28,11 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(db_mod, "_SessionLocal", Session)
     monkeypatch.setattr(activities, "_cfg", _make_cfg(tmp_path))
+    # Phase 3-F F3: the dedup soft gate would REALLY probe the LLM
+    # (and sleep 60/120 s on failure) — unit tests patch it healthy.
+    import worker.enrich as _enrich_mod
+
+    monkeypatch.setattr(_enrich_mod, "dedup_llm_gate", lambda cfg: True)
 
 
 def _make_cfg(tmp_path: Path) -> Any:
@@ -183,9 +189,9 @@ def test_no_match_enrich_all_false_skips(recording_id: str, tmp_path: Path) -> N
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=None),
+        pytest.raises(ApplicationError, match="no profile with enrich"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "no profile with enrich"}
+        _run(activities.enrich(recording_id))
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.skipped
@@ -210,9 +216,9 @@ def test_profile_without_enrich_still_skips(recording_id: str, tmp_path: Path) -
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=profile),
+        pytest.raises(ApplicationError, match="no profile with enrich"),
     ):
-        result = _run(activities.enrich(recording_id))
-    assert result == {"skipped": "no profile with enrich"}
+        _run(activities.enrich(recording_id))
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.skipped
