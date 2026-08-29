@@ -154,12 +154,36 @@ def test_summarize_recap_default_on(tmp_path, monkeypatch):
 def test_summarize_recap_from_yaml(tmp_path, monkeypatch):
     cfg_path = _write(
         tmp_path,
-        "summarize:\n"
-        "  enabled: true\n"
-        "  model: m\n"
-        "  base_url: http://x/v1\n"
-        "  recap: false\n",
+        "summarize:\n  enabled: true\n  model: m\n  base_url: http://x/v1\n  recap: false\n",
     )
     monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
     cfg = load_config()
     assert cfg.summarize.recap is False
+
+
+# --- SUMMARIZE_MODEL env override ------------------------------------------------
+
+
+def test_summarize_model_env_wins_over_yaml(tmp_path, monkeypatch):
+    """SUMMARIZE_MODEL (compose passes it from .env) overrides config.yaml —
+    same priority pattern as DIARIZATION_ENDPOINT."""
+    cfg_path = _write(
+        tmp_path,
+        "summarize:\n  enabled: true\n  model: yaml-model\n  base_url: http://x/v1\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    monkeypatch.setenv("SUMMARIZE_MODEL", "env-model")
+    cfg = load_config()
+    assert cfg.summarize.model == "env-model"
+
+
+def test_summarize_model_env_empty_keeps_yaml(tmp_path, monkeypatch):
+    """Unset/empty env (compose default) keeps the yaml value effective."""
+    cfg_path = _write(
+        tmp_path,
+        "summarize:\n  enabled: true\n  model: yaml-model\n  base_url: http://x/v1\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    monkeypatch.setenv("SUMMARIZE_MODEL", "")
+    cfg = load_config()
+    assert cfg.summarize.model == "yaml-model"

@@ -10,6 +10,9 @@ services:
     environment:
       TRANSCRIPTER_TOKEN: ${TRANSCRIPTER_TOKEN:?set TRANSCRIPTER_TOKEN in .env}
       TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
+      # Summarize model from .env — wins over config.yaml summarize.model
+      # (keeps /settings truthful; the worker applies the same override).
+      SUMMARIZE_MODEL: ${SUMMARIZE_MODEL:-}
     volumes:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
@@ -46,6 +49,8 @@ services:
       SPEACHES_API_KEY: ${SPEACHES_API_KEY:-}
       # LiteLLM virtual key for the summarize stage (summarize.api_key_env).
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # Summarize model id override (wins over config.yaml summarize.model).
+      SUMMARIZE_MODEL: ${SUMMARIZE_MODEL:-}
       # Neo4j password for the optional graph profile (graph.password_env
       # in config.yaml). Empty default = graph layer disabled; the enrich
       # stage will report `skipped` without it (best-effort, like diarize).

@@ -94,4 +94,8 @@ def load_config() -> ServerConfig:
         cfg.database.url = env_db
     if env_profiles := os.environ.get("PROFILES_DIR"):
         cfg.profiles.path = Path(env_profiles)
+    # Keep /settings truthful when the worker's model comes from .env
+    # (compose passes SUMMARIZE_MODEL to both services).
+    if env_model := os.environ.get("SUMMARIZE_MODEL"):
+        cfg.summarize.model = env_model
     return cfg

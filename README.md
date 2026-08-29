@@ -362,7 +362,8 @@ transcribe:
 summarize:
   enabled: false          # true once model+base_url are set; stage
                         # reports `skipped` while unconfigured
-  model: ""               # any OpenAI-compatible chat model id
+  model: ""               # any OpenAI-compatible chat model id; SUMMARIZE_MODEL
+                        # in .env (compose passthrough) overrides this — see .env.example
   base_url: ""            # MUST include /v1 (dev stack: LiteLLM proxy at
                         # http://192.168.3.23:4000/v1, qwen3.8-27b-q4_k_m)
   api_key_env: ""         # env var NAME (dev stack: LITELLM_API_KEY in .env —
@@ -375,6 +376,10 @@ diarization:
 
 Storage path, DB URL, and ports live in the same file / `docker-compose.yml`.
 The worker reads config once — `docker compose restart worker` to apply.
+
+`SUMMARIZE_MODEL` in `server/.env` (passed to api+worker by compose) wins over
+`summarize.model` in `config.yaml`; unset/empty keeps the yaml value. The API's
+`/settings` endpoint reports the effective model.
 
 ### Transcript note export (Obsidian-friendly)
 

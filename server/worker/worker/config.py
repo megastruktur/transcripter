@@ -30,6 +30,7 @@ class DiarizationConfig(BaseModel):
     enabled: bool = True
     endpoint: str = "http://diarization:80"
 
+
 class ChunkConfig(BaseModel):
     # OFF by default: short recordings gain nothing from slicing. Enable on
     # CPU voice stacks where a single long request can hit the whisper
@@ -113,6 +114,7 @@ class GraphConfig(BaseModel):
     def enabled(self) -> bool:
         return bool(self.uri)
 
+
 class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
@@ -135,14 +137,20 @@ def load_config() -> WorkerConfig:
         raw = yaml.safe_load(f) or {}
     cfg = WorkerConfig.model_validate(raw)
     if cfg.transcribe.backend == "api" and not cfg.transcribe.base_url:
-        raise ValueError("transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)")
+        raise ValueError(
+            "transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)"
+        )
     if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
         cfg.storage.path = Path(env_storage)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):
         cfg.diarization.endpoint = env_diar
+    # Same priority pattern as DIARIZATION_ENDPOINT: a value set in the
+    # environment (compose passes SUMMARIZE_MODEL from .env) wins over
+    # config.yaml; unset/empty keeps the yaml value effective.
+    if env_model := os.environ.get("SUMMARIZE_MODEL"):
+        cfg.summarize.model = env_model
     if env_profiles := os.environ.get("PROFILES_DIR"):
         cfg.profiles.path = Path(env_profiles)
     return cfg
-
