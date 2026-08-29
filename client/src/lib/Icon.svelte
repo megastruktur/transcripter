@@ -26,7 +26,10 @@
 	| 'chunk'
 	| 'diarize'
 	| 'enrich'
-	| 'import';
+	| 'import'
+	| 'vault'
+	| 'timeline'
+	| 'events';
 </script>
 
 <script lang="ts">
@@ -119,6 +122,20 @@
 		<circle cx="18" cy="6.5" r="2.3" />
 		<circle cx="12" cy="17.5" r="2.3" />
 		<path d="M8.2 7.3h7.6M7 8.6l3.9 6.7M17 8.6l-3.9 6.7" />
+	{:else if name === 'vault'}
+		<rect x="3.5" y="4" width="17" height="16" />
+		<path d="M3.5 9.5h17M3.5 15h17M7 6.75h.01M7 12.25h.01" />
+	{:else if name === 'timeline'}
+		<path d="M6 4v16" />
+		<circle cx="6" cy="6.5" r="1.8" fill="currentColor" stroke="none" />
+		<circle cx="6" cy="12" r="1.8" fill="currentColor" stroke="none" />
+		<circle cx="6" cy="17.5" r="1.8" fill="currentColor" stroke="none" />
+		<path d="M9.5 6.5h5M9.5 12h8M9.5 17.5h6.5" />
+	{:else if name === 'events'}
+		<path d="M4 6.5h9M4 12h16M4 17.5h13" />
+		<circle cx="17.5" cy="6.5" r="1.4" fill="currentColor" stroke="none" />
+		<circle cx="7.5" cy="12" r="1.4" fill="currentColor" stroke="none" />
+		<circle cx="20" cy="17.5" r="1.4" fill="currentColor" stroke="none" />
 	{:else if name === 'import'}
 		<path d="M12 3v11M8 10l4 4 4-4" />
 		<path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17" />

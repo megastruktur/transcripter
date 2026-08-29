@@ -39,6 +39,11 @@ summarize:
   model: ""
   base_url: ""
   api_key_env: ""
+  # Phase 3: recap injects the first-tag digest context (the knowledge
+  # base built from earlier sessions by the graph pipeline) into the
+  # summarize prompt. Requires graph.enabled — no digest notes exist
+  # without the graph, so this stays a no-op there.
+  recap: true
 
 diarization:
   # false → diarize/merge stages report `skipped`; no diarization container

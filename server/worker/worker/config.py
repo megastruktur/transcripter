@@ -19,6 +19,11 @@ class SummarizeConfig(BaseModel):
     model: str = ""
     base_url: str = ""
     api_key_env: str = ""
+    # Phase 3: when ON (and the graph is enabled and the recording carries
+    # a tag), build_recap reads the tag's digest note and injects it into
+    # the summarize prompt as prior context. No digest notes are ever
+    # written without the graph, so recap without graph.enabled is a no-op.
+    recap: bool = True
 
 
 class DiarizationConfig(BaseModel):

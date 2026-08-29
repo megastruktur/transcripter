@@ -138,3 +138,28 @@ def test_graph_embed_from_yaml(tmp_path, monkeypatch):
     assert str(cfg.graph.embed_model_path) == "/data/my-model"
     assert cfg.graph.embed_tau_high == 0.95
     assert cfg.graph.embed_tau_low == 0.80
+
+
+# --- Phase 3: summarize recap knob ----------------------------------------------
+
+
+def test_summarize_recap_default_on(tmp_path, monkeypatch):
+    """recap defaults to True — needs graph.enabled + a tag to fire."""
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.summarize.recap is True
+
+
+def test_summarize_recap_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "summarize:\n"
+        "  enabled: true\n"
+        "  model: m\n"
+        "  base_url: http://x/v1\n"
+        "  recap: false\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.summarize.recap is False

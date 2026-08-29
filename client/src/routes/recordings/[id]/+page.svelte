@@ -15,8 +15,9 @@
 		regenerate,
 		regenerateDigest,
 		loadApiConfig,
+		type EventsArtifact,
 		type Recording,
-		type Stage
+		type Stage,
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
@@ -79,6 +80,7 @@
 	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
 		transcript: { label: 'Transcript', stage: 'transcribe', markdown: true },
 		speakers: { label: 'Speakers', stage: 'merge_speakers', markdown: true },
+		events: { label: 'Events', stage: 'enrich', markdown: false },
 		summary: { label: 'Summary', stage: 'summarize', markdown: true },
 		json: { label: 'JSON', stage: 'transcribe', file: 'segments.json' }
 	};
@@ -89,12 +91,48 @@
 	const activeTab = $derived(artifactTab.active);
 	const currentTab = $derived(tabData[activeTab]);
 
+	/** Recap marker from the summarize stage details (worker sets
+	 * details.recap = { used, sessions, chars } when the memory recap was
+	 * applied). Drives the small brass chip above the artifact panel. */
+	const recapUsed = $derived(
+		recording?.stages.some((s) => s.kind === 'summarize' && s.status === 'done' && (s.details?.recap as { used?: unknown } | undefined)?.used === true) ?? false
+	);
 	function defaultTab(rec: Recording): ArtifactTabKey {
-		const done = (kind: Stage['kind']) => rec.stages.some((s) => s.kind === kind && s.status === 'done');
+		const done = (kind: Stage['kind'] | 'enrich') => rec.stages.some((s) => s.kind === kind && s.status === 'done');
 		if (done('summarize')) return 'summary';
+		if (done('merge_speakers') && done('enrich')) return 'events';
 		if (done('merge_speakers')) return 'speakers';
 		if (done('transcribe')) return 'transcript';
 		return 'json';
+	}
+
+	/** "mm:ss" / "hh:mm:ss" → seconds; NaN for anything else. */
+	function parseTs(ts: string): number {
+		const parts = ts.split(':').map(Number);
+		if (parts.some((n) => Number.isNaN(n)) || parts.length < 2 || parts.length > 3) return NaN;
+		return parts.reduce((acc, n) => acc * 60 + n, 0);
+	}
+
+	/** events.json (fetched as text through the enrich artifact route) →
+	 * parsed payload; null when the body is missing, garbage, or carries no
+	 * events. Rendering is JSON-aware, never raw text. */
+	function parseEventsArtifact(text: string): EventsArtifact | null {
+		try {
+			const parsed = JSON.parse(text) as EventsArtifact;
+			if (!parsed || !Array.isArray(parsed.events)) return null;
+			return parsed;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Events tab: click an event row to jump the player to its offset. */
+	function seekToEvent(ts: string): void {
+		if (!audioEl) return;
+		const seconds = parseTs(ts);
+		if (Number.isNaN(seconds)) return;
+		audioEl.currentTime = seconds;
+		audioEl.play().catch(() => {});
 	}
 
 	function stopPoll(): void {
@@ -642,10 +680,40 @@
 		{:else}
 			<audio bind:this={audioEl} class="audio-player" controls preload="none" src={audioUrl(loadApiConfig(), recording.id)}></audio>
 		{/if}
+		{#if activeTab === 'summary' && recapUsed}
+			<p class="recap-chip">
+				<Icon name="enrich" size={11} />
+				Memory applied
+			</p>
+		{/if}
 
 		<div class="artifact-panel" role="tabpanel" aria-label={TAB_SPECS[activeTab].label}>
 			{#if tabLoading}
 				<p class="tab-placeholder">Retrieving archive…</p>
+			{:else if currentTab?.kind === 'ready' && activeTab === 'events'}
+				{@const events = parseEventsArtifact(currentTab.text)}
+				{#if events === null}
+					<p class="tab-placeholder">No events extracted yet.</p>
+				{:else}
+					<div class="events-body">
+						{#each events.events as event, index (index + event.ts + event.summary)}
+							<button class="event-row" type="button" title="Jump to {event.ts}" onclick={() => seekToEvent(event.ts)}>
+								<span class="event-ts">{event.ts}</span>
+								<span class="event-kind">{event.kind}</span>
+								<span class="event-summary">{event.summary}</span>
+								{#if event.mentions.length > 0}
+									<span class="event-mentions">
+										{#each event.mentions as mention (mention)}
+											<span class="event-mention">{mention}</span>
+										{/each}
+									</span>
+								{/if}
+							</button>
+						{:else}
+							<p class="tab-placeholder">No events extracted yet.</p>
+						{/each}
+					</div>
+				{/if}
 			{:else if currentTab?.kind === 'ready'}
 				{#if TAB_SPECS[activeTab].markdown}
 					<Markdown text={currentTab.text} />
@@ -653,7 +721,7 @@
 					<pre>{currentTab.text}</pre>
 				{/if}
 			{:else if currentTab?.kind === 'missing'}
-				<p class="tab-placeholder">This artifact has not been generated yet.</p>
+				<p class="tab-placeholder">{activeTab === 'events' ? 'No events extracted yet.' : 'This artifact has not been generated yet.'}</p>
 			{:else if currentTab?.kind === 'error'}
 				<p class="tab-error" role="alert">{currentTab.message}</p>
 			{/if}
@@ -728,6 +796,16 @@
 	.digest-close:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
+	.recap-chip { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; color: var(--brass); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+	.events-body { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	.event-row { width: 100%; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 4px 8px; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background 120ms ease; }
+	.event-row:hover { background: rgba(255,255,255,.03); }
+	.event-row:last-child { border-bottom: 0; }
+	.event-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
+	.event-kind { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+	.event-summary { color: #c7bbad; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+	.event-mentions { grid-column: 3; display: flex; flex-wrap: wrap; gap: 4px; }
+	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.artifact-panel { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
 	.artifact-panel pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }

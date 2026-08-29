@@ -453,6 +453,29 @@ async def summarize(rec_id: str) -> dict:
 
         profile = match_profile_by_type(rec.type, c.profiles.path)
     prompt_template = profile.summarize.prompt if profile is not None else None
+    # Phase 3 recap: inject the first-tag digest note as prior context.
+    # Needs the knob, the graph (digest notes are only written when the
+    # graph is enabled), and at least one tag. Best-effort: a recap
+    # failure must never fail the summarize stage.
+    recap_block: str | None = None
+    if c.summarize.recap and c.graph.enabled:
+        with session() as s:
+            rec = s.get(Recording, rec_id)
+            tags = list(rec.tags) if rec is not None and rec.tags else []
+        if tags:
+            try:
+                from .summarize import build_recap
+
+                recap_block = await asyncio.to_thread(
+                    build_recap, tags[0], c.transcripts.path
+                )
+            except Exception:
+                log.exception(
+                    "recap build failed for %s (tag %r) — continuing without",
+                    rec_id,
+                    tags[0],
+                )
+                recap_block = None
     try:
         from .summarize import summarize_transcript
 
@@ -463,13 +486,30 @@ async def summarize(rec_id: str) -> dict:
                 c,
                 prompt_template,
                 title,
+                recap_block,
             )
         )
         # Meta path is canonical (see §1 in wave-A impl plan): export.py
         # renames the artifact in the note folder to profile.output_artifact
         # when a profile matched; meta/summary.md stays the canonical name.
         (meta_dir(rec_id) / "summary.md").write_text(text, encoding="utf-8")
-        set_stage(rec_id, "summarize", StageStatus.done)
+        # Phase 3 recap indicator for the client. set_stage REPLACES
+        # details (db.set_stage), so the dict must be complete. Sessions
+        # count is unknown at this layer — build_recap only sees the
+        # digest note — so it stays 0 and the client renders 'Memory
+        # applied' without a session count. Absent on skip/failure.
+        set_stage(
+            rec_id,
+            "summarize",
+            StageStatus.done,
+            details={
+                "recap": {
+                    "used": recap_block is not None and recap_block != "",
+                    "sessions": 0,
+                    "chars": len(recap_block or ""),
+                }
+            },
+        )
         return {"chars": len(text), "profile_id": profile.id if profile else None}
     except Exception as e:
         log.exception("summarize failed for %s", rec_id)

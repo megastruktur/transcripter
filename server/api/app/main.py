@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from app.config import ServerConfig, load_config
 from app.db import STAGE_KINDS, Base, engine, init_engine
 from app.routes import profiles as profiles_route
-from app.routes import recordings, regenerate, settings, tags
+from app.routes import recordings, regenerate, settings, tags, vault
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
 # <audio> elements cannot send Authorization, so the bearer middleware below
@@ -129,6 +129,7 @@ _migrate_type_columns()
 app.include_router(recordings.router)
 app.include_router(regenerate.router)
 app.include_router(settings.router)
+app.include_router(vault.router)
 app.include_router(profiles_route.router)
 app.include_router(tags.router)
 

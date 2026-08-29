@@ -5,13 +5,6 @@ export type ApiConfig = {
 
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
-export type Stage = {
-	kind: 'chunk' | 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize';
-	status: StageStatus;
-	attempts: number;
-	last_error: string | null;
-	updated_at: string;
-};
 
 export type Recording = {
 	id: string;
@@ -63,6 +56,17 @@ export type UpdateRecordingPatch = {
 	type?: string | null;
 	/** ISO-8601 timestamp; null clears the backdate. */
 	recorded_at?: string | null;
+};
+
+export type Stage = {
+	kind: 'chunk' | 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize';
+	status: StageStatus;
+	attempts: number;
+	last_error: string | null;
+	updated_at: string;
+	/** Stage-reported extra state, e.g. summarize's recap marker
+	 * ({ recap: { used, sessions, chars } }); absent unless set. */
+	details?: Record<string, unknown>;
 };
 
 const STORAGE_KEY = 'transcripter.apiConfig';
@@ -141,6 +145,86 @@ export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
 	const body = (await resp.json()) as { items: TagCount[] };
 	return body.items;
 }
+
+export type TimelineEvent = {
+	/** In-recording offset as written by enrich ("mm:ss" / "hh:mm:ss"). */
+	ts: string;
+	kind: string;
+	summary: string;
+	mentions: string[];
+};
+
+export type TimelineSession = {
+	recording_id: string;
+	title: string;
+	/** ISO-8601 UTC — coalesce(recorded_at, created_at). */
+	date: string;
+	type: string | null;
+	duration_sec: number | null;
+	events: TimelineEvent[];
+	entity_count: number;
+};
+
+export type TagEntity = {
+	slug: string;
+	label: string;
+	type: string;
+	sessions: number;
+	/** ISO-8601 UTC — newest session mentioning the entity. */
+	last_seen: string;
+};
+
+export type TimelineResponse = {
+	tag: string;
+	/** Newest first. */
+	sessions: TimelineSession[];
+	/** Aggregated by last_seen DESC. */
+	entities: TagEntity[];
+	digest_generated: boolean;
+};
+
+export type VaultItem = {
+	tag: string;
+	sessions: number;
+	entities: number;
+	last_activity: string;
+	/** ready = digest note present; stale = note older than the newest
+	 * session; none = no note. */
+	digest: 'ready' | 'stale' | 'none';
+};
+
+export type VaultResponse = {
+	items: VaultItem[];
+};
+
+/** Per-tag timeline (Phase 3): sessions newest-first with their extracted
+ * events plus the tag's aggregated entities. */
+export async function fetchTimeline(cfg: ApiConfig, tag: string): Promise<TimelineResponse> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/timeline`);
+	if (!resp.ok) throw Object.assign(new Error(`timeline ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
+/** Vault overview (Phase 3): one row per free tag with session/entity
+ * counts and digest freshness. */
+export async function fetchVault(cfg: ApiConfig): Promise<VaultResponse> {
+	const resp = await req(cfg, '/vault');
+	if (!resp.ok) throw Object.assign(new Error(`vault ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
+/** Shape of the enrich stage's meta/events.json artifact (written by
+ * worker/enrich.write_events_json; served via the enrich artifact route). */
+export type EventsArtifact = {
+	recording_id: string;
+	recording_date: string;
+	recording_title: string;
+	profile_id: string;
+	namespaces: string[];
+	events: TimelineEvent[];
+	entities: { slug: string; label: string; type: string }[];
+	relations: { from: string; to: string; type: string }[];
+};
 
 /** Per-tag digest note (markdown with frontmatter) produced by the enrich
  * workflow. Throws with .status 404 when the digest is not generated yet. */

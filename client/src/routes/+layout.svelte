@@ -23,12 +23,14 @@
 	const navItems = [
 		{ href: '/', label: 'Record', icon: 'record' },
 		{ href: '/recordings', label: 'Library', icon: 'library' },
+		{ href: '/vault', label: 'Vault', icon: 'vault' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
 
 	const artifactTabs = [
 		{ key: 'transcript', label: 'Transcript', icon: 'transcript' },
 		{ key: 'speakers', label: 'Speakers', icon: 'speakers' },
+		{ key: 'events', label: 'Events', icon: 'events' },
 		{ key: 'summary', label: 'Summary', icon: 'summary' },
 		{ key: 'json', label: 'JSON', icon: 'json' }
 	] as const;
@@ -79,7 +81,13 @@
 		`${audioStatus} · ${serverStatus}${uploadingCount ? ` · ${uploadStatus.text}` : ''}`
 	);
 	const routeName = $derived(
-		page.url.pathname === '/' ? 'Recorder' : page.url.pathname.startsWith('/recordings') ? 'Recordings' : 'Settings'
+		page.url.pathname === '/'
+			? 'Recorder'
+			: page.url.pathname.startsWith('/recordings')
+				? 'Recordings'
+				: page.url.pathname.startsWith('/vault')
+					? 'Vault'
+					: 'Settings'
 	);
 	onMount(async () => {
 		void checkServerConnection();
@@ -216,7 +224,7 @@
 			<nav id="primary-nav" class="rail" class:open={navOpen} aria-label="Primary navigation">
 				{#each navItems as item (item.href)}
 
-					<a href={item.href} onclick={() => (navOpen = false)} aria-current={(item.href === '/recordings' ? page.url.pathname.startsWith('/recordings') : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
+					<a href={item.href} onclick={() => (navOpen = false)} aria-current={(item.href === '/recordings' || item.href === '/vault' ? page.url.pathname.startsWith(item.href) : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
 						<span class="nav-icon" aria-hidden="true"><Icon name={item.icon} size={20} /></span>
 						<span>{item.label}</span>
 					</a>

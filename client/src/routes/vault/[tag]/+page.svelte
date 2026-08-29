@@ -1,0 +1,375 @@
+<script lang="ts">
+	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import Icon from '$lib/Icon.svelte';
+	import Markdown from '$lib/Markdown.svelte';
+	import {
+		fetchTimeline,
+		fetchDigest,
+		regenerateDigest,
+		loadApiConfig,
+		type TimelineResponse,
+		type TimelineSession,
+		type TimelineEvent
+	} from '$lib/api.svelte';
+	import { dateLabel, durationLabel } from '$lib/format';
+
+	const tag = decodeURIComponent(page.params.tag ?? '');
+
+	type TabKey = 'timeline' | 'entities' | 'digest';
+	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'summary' }[] = [
+		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
+		{ key: 'entities', label: 'Entities', icon: 'speakers' },
+		{ key: 'digest', label: 'Digest', icon: 'summary' }
+	];
+	let tab = $state<TabKey>('timeline');
+	let data = $state<TimelineResponse | null>(null);
+	let loading = $state(true);
+	let error = $state('');
+	let notFound = $state(false);
+	let fetchSeq = 0;
+
+	// Digest viewer: shares the detail page's poll shape (10s tick, 2min
+	// budget after a 202) but reads only this tag; duplicated rather than
+	// extracted — the detail page's copy is entangled with recording state.
+	const DIGEST_POLL_MS = 10_000;
+	const DIGEST_POLL_BUDGET_MS = 120_000;
+	let digestText = $state<string | null>(null);
+	let digestLoading = $state(false);
+	let digestMissing = $state(false);
+	let digestError = $state('');
+	let digestGenerating = $state(false);
+	let digestNote = $state('');
+	let digestPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
+	let digestLoaded = false;
+
+	// Timeline sessions expand/collapse one at a time (open = recording_id).
+	let openSession = $state<string | null>(null);
+
+	async function refresh(): Promise<void> {
+		const seq = ++fetchSeq;
+		try {
+			const result = await fetchTimeline(loadApiConfig(), tag);
+			if (seq !== fetchSeq) return;
+			data = result;
+			error = '';
+		} catch (caught) {
+			if (seq !== fetchSeq) return;
+			if ((caught as { status?: number }).status === 404) {
+				notFound = true;
+				error = '';
+			} else {
+				error = String(caught);
+			}
+		} finally {
+			if (seq === fetchSeq) loading = false;
+		}
+	}
+
+	function stopDigestPoll(): void {
+		if (digestPoll) {
+			globalThis.clearTimeout(digestPoll);
+			digestPoll = null;
+		}
+	}
+
+	function scheduleDigestPoll(startedAt: number): void {
+		digestPoll = globalThis.setTimeout(() => void pollDigestOnce(startedAt), DIGEST_POLL_MS);
+	}
+
+	async function pollDigestOnce(startedAt: number): Promise<void> {
+		digestPoll = null;
+		if (tab !== 'digest') return;
+		try {
+			digestText = await fetchDigest(loadApiConfig(), tag);
+			digestGenerating = false;
+			digestMissing = false;
+			digestNote = '';
+		} catch (caught) {
+			const status = (caught as { status?: number }).status;
+			if (status === 404) {
+				if (Date.now() - startedAt >= DIGEST_POLL_BUDGET_MS) {
+					digestGenerating = false;
+					digestNote = 'Still generating — check again in a minute.';
+					return;
+				}
+				scheduleDigestPoll(startedAt);
+				return;
+			}
+			digestGenerating = false;
+			digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+		}
+	}
+
+	async function loadDigest(): Promise<void> {
+		stopDigestPoll();
+		digestText = null;
+		digestMissing = false;
+		digestError = '';
+		digestNote = '';
+		digestGenerating = false;
+		digestLoading = true;
+		try {
+			digestText = await fetchDigest(loadApiConfig(), tag);
+		} catch (caught) {
+			const status = (caught as { status?: number }).status;
+			if (status === 404) {
+				digestMissing = true;
+			} else {
+				digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+			}
+		} finally {
+			digestLoading = false;
+		}
+	}
+
+	async function regenerateDigestNow(): Promise<void> {
+		if (digestGenerating) return;
+		stopDigestPoll();
+		digestText = null;
+		digestMissing = false;
+		digestNote = '';
+		digestError = '';
+		digestGenerating = true;
+		try {
+			await regenerateDigest(loadApiConfig(), tag);
+			scheduleDigestPoll(Date.now());
+		} catch (caught) {
+			digestGenerating = false;
+			digestError = `Digest request failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+		}
+	}
+
+	function switchTab(next: TabKey): void {
+		tab = next;
+		if (next === 'digest' && !digestLoaded) {
+			digestLoaded = true;
+			void loadDigest();
+		}
+	}
+
+	function toggleSession(id: string): void {
+		openSession = openSession === id ? null : id;
+	}
+
+	function sessionDate(session: TimelineSession): string {
+		return dateLabel(session.date);
+	}
+
+
+	onMount(() => {
+		refresh();
+		return stopDigestPoll;
+	});
+</script>
+
+<svelte:head><title>{tag} · Vault · Transcriptor Maximus</title></svelte:head>
+
+<section class="page tag-page">
+	<header class="tag-header">
+		<button class="back-button" type="button" onclick={() => goto('/vault')} aria-label="Back to vault" title="Back to vault">
+			<Icon name="back" size={16} />
+		</button>
+		{#if loading}
+			<span class="skeleton-bar skeleton-heading" aria-hidden="true"></span>
+		{:else}
+			<h1 class="page-title tag-title">{tag}</h1>
+		{/if}
+	</header>
+
+	{#if error}
+		<div class="tag-error" role="alert"><strong>Timeline unavailable</strong><span>{error}</span></div>
+	{/if}
+
+	{#if loading}
+		<div class="skeleton-panel" aria-hidden="true">
+			<span class="skeleton-bar skeleton-strip"></span>
+			<span class="skeleton-bar skeleton-body"></span>
+		</div>
+	{:else if notFound}
+		<div class="notice-panel">
+			<strong>No sessions carry this tag</strong>
+			<small>The tag may have been removed from every recording, or the address is wrong.</small>
+			<a class="back-link" href="/vault"><Icon name="back" size={13} /> Back to vault</a>
+		</div>
+	{:else if data}
+		<div class="tag-tabs" role="tablist" aria-label="Tag views">
+			{#each TABS as entry (entry.key)}
+				<button
+					class="tag-tab"
+					type="button"
+					role="tab"
+					aria-selected={tab === entry.key}
+					class:active={tab === entry.key}
+					onclick={() => switchTab(entry.key)}
+				>
+					<Icon name={entry.icon} size={12} />
+					{entry.label}
+				</button>
+			{/each}
+		</div>
+
+		{#if tab === 'timeline'}
+			<div class="session-list">
+				{#each data.sessions as session (session.recording_id)}
+					<div class="session-card">
+						<button class="session-heading" type="button" onclick={() => toggleSession(session.recording_id)} aria-expanded={openSession === session.recording_id}>
+							<span class="session-mark" class:open={openSession === session.recording_id} aria-hidden="true"></span>
+							<span class="session-name">
+								<strong>{session.title || 'Untitled capture'}</strong>
+								<small>{sessionDate(session)}{session.type ? ` · ${session.type}` : ''}{session.duration_sec !== null ? ` · ${durationLabel(session.duration_sec)}` : ''} · {session.events.length} event{session.events.length === 1 ? '' : 's'}</small>
+							</span>
+							<span class="session-chevron"><Icon name="collapse" size={14} /></span>
+						</button>
+						{#if openSession === session.recording_id}
+							<div class="event-list">
+								{#each session.events as event, index (index + event.ts + event.summary)}
+									<div class="event-line">
+										<span class="event-ts">{event.ts}</span>
+										<span class="event-kind">{event.kind}</span>
+										<span class="event-summary">{event.summary}</span>
+										{#if event.mentions.length > 0}
+											<span class="event-mentions">
+												{#each event.mentions as mention (mention)}
+													<span class="event-mention">{mention}</span>
+												{/each}
+											</span>
+										{/if}
+									</div>
+								{:else}
+									<p class="event-empty">No events extracted for this session.</p>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{:else}
+					<div class="empty">
+						<span class="empty-icon" aria-hidden="true"><Icon name="timeline" size={30} /></span>
+						<strong>No sessions carry this tag</strong>
+						<small>Tag recordings in the Library to build the timeline.</small>
+					</div>
+				{/each}
+			</div>
+		{:else if tab === 'entities'}
+			<div class="entity-list">
+				{#each data.entities as entity (entity.slug)}
+					<div class="entity-row">
+						<span class="entity-name">
+							<strong>{entity.label}</strong>
+							<small>{entity.type}</small>
+						</span>
+						<span class="entity-meta">
+							<small>{entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
+							<small>{dateLabel(entity.last_seen)}</small>
+						</span>
+					</div>
+				{:else}
+					<div class="empty">
+						<span class="empty-icon" aria-hidden="true"><Icon name="speakers" size={30} /></span>
+						<strong>No entities extracted yet</strong>
+						<small>Run the pipeline on tagged recordings to populate the roster.</small>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<section class="digest-recess" aria-label={`Digest · ${tag}`}>
+				<header class="digest-header">
+					<span class="digest-title">
+						<Icon name="summary" size={11} />
+						Digest
+						<span class="digest-tag-name">{tag}</span>
+					</span>
+					<button type="button" class="digest-regen" disabled={digestGenerating} onclick={() => void regenerateDigestNow()}>
+						<Icon name="refresh" size={11} strokeWidth={1.5} />
+						Regenerate
+					</button>
+				</header>
+				{#if digestLoading}
+					<p class="tab-placeholder">Retrieving digest…</p>
+				{:else if digestGenerating}
+					<p class="tab-placeholder">Generating…</p>
+				{:else if digestError}
+					<p class="tab-error" role="alert">{digestError}</p>
+				{:else if digestNote}
+					<p class="tab-placeholder">{digestNote}</p>
+				{:else if digestMissing}
+					<p class="tab-placeholder">No digest yet — generate first.</p>
+				{:else if digestText !== null}
+					<div class="digest-body"><Markdown text={digestText} /></div>
+				{/if}
+			</section>
+		{/if}
+	{/if}
+</section>
+
+<style>
+	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
+	.tag-header { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
+	.tag-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
+	.back-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
+	.back-button:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
+	.tag-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
+	.tag-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
+	.tag-error span { color: #c6baaa; }
+	/* Brass underline tabs: the same control idiom as the digest-button
+	   family (brass border/underline for the selected control). */
+	.tag-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+	.tag-tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8e857b; font-size: 11px; font-weight: 650; cursor: pointer; transition: color 120ms ease, border-color 120ms ease; }
+	.tag-tab:hover { color: var(--bone); }
+	.tag-tab.active { color: var(--brass); border-bottom-color: var(--brass); }
+	.session-list { display: grid; }
+	.session-card { transition: background 120ms ease; }
+	.session-card:not(:last-child) { border-bottom: 1px solid var(--line); }
+	.session-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+	.session-heading:hover { background: rgba(255,255,255,.02); }
+	.session-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 0 3px rgba(215,167,71,.12); }
+	.session-name { min-width: 0; }
+	.session-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #ded3c4; }
+	.session-name small { display: block; margin-top: 4px; font-size: 10px; color: #8b8278; }
+	.session-chevron { display: grid; place-items: center; color: #6f685f; line-height: 0; transition: transform 120ms ease; }
+	.session-heading[aria-expanded='true'] .session-chevron { transform: rotate(180deg); color: var(--brass); }
+	.event-list { display: grid; padding: 0 11px 8px 27px; }
+	.event-line { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+	.event-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
+	.event-kind { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+	.event-summary { color: #c7bbad; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+	.event-mentions { grid-column: 3; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
+	.event-empty { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ash); font-size: 11px; }
+	.entity-list { display: grid; }
+	.entity-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; padding: 9px 4px; }
+	.entity-row:not(:last-child) { border-bottom: 1px solid var(--line); }
+	.entity-name { min-width: 0; }
+	.entity-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
+	.entity-name small { display: block; margin-top: 3px; font-size: 9px; color: #8b8278; text-transform: capitalize; }
+	.entity-meta { display: grid; justify-items: end; gap: 2px; }
+	.entity-meta small { font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; white-space: nowrap; }
+	/* Digest recess: same material cut as the detail page's digest panel. */
+	.digest-recess { flex: 1 1 auto; min-height: 160px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
+	.digest-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-bottom: 1px solid var(--line); }
+	.digest-title { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+	.digest-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--bone); font-size: 10px; letter-spacing: 0.02em; }
+	.digest-regen { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.digest-regen:hover:not(:disabled) { background: rgba(215,167,71,.2); }
+	.digest-regen:disabled { opacity: 0.6; cursor: default; }
+	.digest-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 8px; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
+	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
+	.notice-panel { display: grid; justify-items: start; gap: 6px; padding: 18px 14px; }
+	.notice-panel strong { color: #b5aa9c; font-size: 13px; }
+	.notice-panel small { color: #746d64; font-size: 11px; }
+	.back-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--brass); font-size: 11px; font-weight: 650; text-decoration: none; }
+	.back-link:hover { color: var(--bone); }
+	.empty { display: grid; justify-items: center; gap: 5px; padding: 28px 16px; color: #746d64; text-align: center; }
+	.empty-icon { display: grid; place-items: center; color: var(--brass); line-height: 0; }
+	.empty strong { color: #b5aa9c; font-size: 13px; }
+	.empty small { font-size: 11px; }
+	.skeleton-panel { display: grid; gap: 10px; padding: 0; }
+	.skeleton-bar { display: block; border-radius: 2px; background: var(--iron-raised); animation: skeleton-pulse 150ms ease-in-out infinite alternate; }
+	.skeleton-heading { width: 55%; height: 18px; }
+	.skeleton-strip { width: 82%; height: 18px; }
+	.skeleton-body { width: 100%; height: 90px; }
+	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
+	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } .session-chevron { transition: none; } }
+</style>

@@ -674,6 +674,7 @@ def serialize_recording(rec: Recording) -> dict:
                 "attempts": s.attempts,
                 "last_error": s.last_error,
                 "updated_at": s.updated_at.isoformat(),
+                "details": s.details or {},
             }
             for s in rec.stages
         ],

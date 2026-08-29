@@ -25,7 +25,7 @@ export const recorder = $state({
 
 export const preflight = $state<{ current: PreFlightReport | null }>({ current: null });
 
-export type ArtifactTabKey = 'transcript' | 'speakers' | 'summary' | 'json';
+export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 'json';
 
 /** Active artifact tab on the recording detail page. The rail tab buttons
  * (layout) write this; the detail page reads it and loads the artifact. */

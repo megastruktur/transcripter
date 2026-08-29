@@ -2,7 +2,11 @@
 
 Wave C: POST /tags/{tag}/digest builds a markdown digest note of the
 last N done recordings carrying the tag; GET /tags/{tag}/digest serves
-the generated note back as text/markdown.
+the generated note back as text/markdown. Phase 3: GET
+/tags/{tag}/timeline returns the tag's done sessions (newest first)
+with their meta/events.json events, aggregated entities and the
+digest-generated flag — served from Postgres + events.json only, no
+graph session.
 
 Tag normalization mirrors recordings.py: trim + lowercase. After that the
 regex pins down file-system-safe forms (the digest activity writes
@@ -17,7 +21,6 @@ import logging
 import re
 from typing import Annotated
 
-import yaml
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -27,15 +30,12 @@ from sqlalchemy.orm import Session
 from app import temporal_client
 from app.config import ServerConfig
 from app.db import get_session
+from app.vault import find_digest, scan_timeline
 
 router = APIRouter(prefix="/tags")
 
 _LOG = logging.getLogger("transcripter.api.tags")
 
-# Skip oversized files instead of yaml-parsing garbage/oddball notes.
-_MAX_DIGEST_BYTES = 1024 * 1024
-
-_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
 # After trim+lowercase: must start with a word character (Unicode letter,
 # digit or underscore), then word chars, spaces, dots, underscores, dashes
@@ -77,6 +77,27 @@ def _validate_tag(tag: str) -> None:
         )
 
 
+
+
+@router.get("/{tag}/timeline")
+def get_timeline(
+    tag: Annotated[str, Path()],
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase 3: per-tag session timeline (newest first) + aggregated
+    entities + whether a digest note exists. Postgres + events.json
+    artifacts only — no graph session, so a timeline renders with the
+    graph profile off."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    payload = scan_timeline(cfg, session, norm)
+    if not payload["sessions"]:
+        raise HTTPException(404, detail=f"no recordings for tag {norm}")
+    return payload
+
+
 @router.post("/{tag}/digest", status_code=202)
 async def post_digest(
     body: DigestRequest,
@@ -115,36 +136,18 @@ def get_digest(tag: Annotated[str, Path()], request: Request) -> FileResponse:
     """Serve the generated digest note for a tag (Phase 1).
 
     The worker names files by slug, so the API cannot reconstruct the
-    filename from the raw tag — instead every ``*.md`` under
-    ``<transcripts>/digests/`` is checked for frontmatter whose ``tag:``
-    equals the normalized tag (sorted, first match wins). No graph
-    required: reading a note must work even with the graph profile off.
+    filename from the raw tag — lookup is frontmatter matching, shared
+    with the vault scan (app.vault.find_digest). No graph required:
+    reading a note must work even with the graph profile off.
     """
     norm = _normalize_tag(tag)
     _validate_tag(norm)
-    digests = request.app.state.config.transcripts.path / "digests"
-    if not digests.is_dir():
+    md = find_digest(request.app.state.config, norm)
+    if md is None:
         raise HTTPException(
             status_code=404, detail=f"digest not generated yet for tag {norm}"
         )
-    for md in sorted(digests.glob("*.md")):
-        try:
-            if md.stat().st_size > _MAX_DIGEST_BYTES:
-                continue
-            m = _FRONTMATTER_RE.match(md.read_text(encoding="utf-8"))
-        except OSError:
-            continue  # unreadable/racy file — not this tag's problem
-        if not m:
-            continue
-        try:
-            fm = yaml.safe_load(m.group(1))
-        except yaml.YAMLError:
-            continue  # malformed frontmatter — skip, don't 500
-        if isinstance(fm, dict) and fm.get("tag") == norm:
-            return FileResponse(md, media_type="text/markdown")
-    raise HTTPException(
-        status_code=404, detail=f"digest not generated yet for tag {norm}"
-    )
+    return FileResponse(md, media_type="text/markdown")
 
 
 class TagCount(BaseModel):

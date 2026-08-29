@@ -30,11 +30,40 @@ PROFILE_SYSTEM_PROMPT = "Follow the user's instructions."
 _TRANSCRIPT_LIMIT = 100_000  # legacy truncate cap (unchanged)
 
 
+def build_recap(tag: str, transcripts_root: Path, max_chars: int = 4000) -> str | None:
+    """Recap context for the summarize prompt: the tag's digest note body.
+
+    Reads the digest note the SAME way digest._existing_digest_for_tag
+    does (frontmatter ``tag:`` match under ``<root>/digests/*.md``), then
+    strips the frontmatter. Returns None when no note carries this tag or
+    none of them is readable — a missing knowledge base is normal (first
+    session of a series), so that path only logs at info.
+    Pure function: no LLM, no graph, no writes.
+    """
+    from .digest import _FRONTMATTER_RE, _existing_digest_for_tag
+
+    digests_dir = transcripts_root / "digests"
+    path = _existing_digest_for_tag(digests_dir, tag)
+    if path is None:
+        log.info("no digest note for tag %r — summarize runs without recap", tag)
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        log.info("digest note %s unreadable — summarize runs without recap", path)
+        return None
+    body = _FRONTMATTER_RE.sub("", text, count=1).lstrip("\n")
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip() + "\n…(truncated)"
+    return body
+
+
 def summarize_transcript(
     meta: Path,
     cfg,
     prompt_template: str | None = None,
     title: str = "",
+    recap_block: str | None = None,
 ) -> str:
     transcript = (meta / "transcript.md").read_text(encoding="utf-8")
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
@@ -45,16 +74,28 @@ def summarize_transcript(
         # Profile mode: single user message with substitution; fixed system.
         # Apply the same truncate cap to keep the wire shape stable.
         user_content = _render_profile_prompt(prompt_template, title, transcript)
-        messages = [
-            {"role": "system", "content": PROFILE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content[:_TRANSCRIPT_LIMIT]},
-        ]
+        system = PROFILE_SYSTEM_PROMPT
+        user = user_content[:_TRANSCRIPT_LIMIT]
     else:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": transcript[:_TRANSCRIPT_LIMIT]},
-        ]
-
+        system = SYSTEM_PROMPT
+        user = transcript[:_TRANSCRIPT_LIMIT]
+    # Recap rides INSIDE the single system message (appended after the
+    # fixed instruction). NEVER a second system entry: llama-server's
+    # Jinja chat template for this model rejects a system message in
+    # the middle ("System message must be at the beginning", HTTP 500,
+    # verified live 2026-08-29). Already capped by build_recap, never
+    # truncated here — and it must NOT eat into the user-side cap.
+    if recap_block:
+        system = (
+            system
+            + "\n\nPrior context from this series' knowledge base "
+            + "(digest of earlier sessions):\n\n"
+            + recap_block
+        )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
     r = httpx.post(
         cfg.summarize.base_url.rstrip("/") + "/chat/completions",
         headers=headers,
