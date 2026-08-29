@@ -53,6 +53,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libasound2-dev
+      - name: Stub frontend dist for generate_context!
+        # The Android support commit enabled tauri's `custom-protocol`
+        # feature on every target, which makes `tauri::generate_context!()`
+        # embed `frontendDist` ("../build") at COMPILE time and panic when
+        # the dir is absent (release.yml is fine — beforeBuildCommand runs
+        # `pnpm build` first). This job never builds the web bundle; a stub
+        # is enough for check/clippy/test (no artifacts are produced).
+        run: mkdir -p client/build && touch client/build/index.html
+        shell: bash
       - name: Check, lint, and test
         working-directory: client/src-tauri
         run: |
