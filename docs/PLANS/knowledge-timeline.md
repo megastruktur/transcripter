@@ -299,13 +299,14 @@ CancelledError обошёл `except Exception`, строка стадии зас
 в `running`. Это устраняет класс багов «застряла навсегда», какой бы
 таймаут ни стрельнул.
 
-**F2. Retry-политика enrich: `_no_retry` → `RetryPolicy(maximum_attempts=3,
-non_retryable_error_types=["ApplicationError: enrich skipped"])`,
-backoff 5 мин ×3.** Волна B в workflow уже глотает провал enrich
-(recording остаётся done) — ретраи просто дают FIFO шанс рассосаться.
-Заголовок workflow-таймаута волн: 2400 → 3×(2400+300) + бюджет соседей
-(чанк ~2×duration+300, diarize `_ml_budget`); проверить, что общий
-workflow timeout не режет волну B раньше ретраев.
+**F2. Retry-политика enrich: `_no_retry` → `RetryPolicy(maximum_attempts=3),
+backoff 5 мин.** Волна B уже глотает провал enrich (recording остаётся
+done) — ретраи просто дают FIFO шанс рассосаться. Workflow-потолок
+проверен 2026-08-29: `execution_timeout` не задан ни в `@workflow.defn`,
+ни в `start_workflow` (Temporal-дефолт = без лимита) — 3×(2400+300)
+ни во что не упирается, расширять нечего. Из ретраев исключить
+осознанные skip-провалы (нет профиля/тегов) — они не лечатся
+повтором; маркер — ApplicationError с non-retryable типом.
 
 **F3. Мягкий gate для дедуп-вопросов**: перед батчем `resolve_slugs`
 один пробный Y/N с `timeout=30` (см. _dedup_verdict → ask_same_entity);
