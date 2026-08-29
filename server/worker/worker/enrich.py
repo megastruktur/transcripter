@@ -43,6 +43,8 @@ from typing import Any, cast
 import httpx
 from neo4j import GraphDatabase
 
+from .embeddings import _embedder, ensure_vector_index, same_entity_decision
+
 log = logging.getLogger("transcripter.enrich")
 
 # Wire shape is locked (see wave-B contract §4): events + entities +
@@ -387,6 +389,38 @@ def ask_same_entity(
     return verdict
 
 
+def _dedup_verdict(
+    new_label: str,
+    new_type: str,
+    existing_label: str,
+    existing_type: str,
+    cfg: Any,
+    new_vec: Any,
+    existing_vec: Any,
+) -> bool:
+    """Phase 2.5 prefilter + LLM fallback for ONE collision pair.
+
+    Both vectors present: cosine >= ``graph.embed_tau_high`` → same and
+    cosine <= ``graph.embed_tau_low`` → distinct, with NO LLM call. The
+    gray zone in between — and every missing-vector case — falls through
+    to the classic ``ask_same_entity`` Y/N (errors → same, best-effort).
+    """
+    decision = same_entity_decision(
+        new_label,
+        new_type,
+        existing_label,
+        existing_type,
+        cfg,
+        new_vec,
+        existing_vec,
+    )
+    if decision == "same":
+        return True
+    if decision == "distinct":
+        return False
+    return ask_same_entity(new_label, new_type, existing_label, existing_type, cfg)
+
+
 def _safe_label(label: str) -> str:
     """Return ``label`` iff it matches Cypher label grammar, else "Entity".
 
@@ -413,6 +447,7 @@ def write_to_graph(
     purge_origin: bool = True,
     recording_date: str = "",
     recording_title: str = "",
+    embeddings: dict[str, list[float]] | None = None,
 ) -> int:
     """Single transaction, writing the extraction into the ONE namespace
     ``tag`` (the activity calls this once per namespace):
@@ -445,6 +480,13 @@ def write_to_graph(
     4. ``MERGE`` ``(:Event)-[:MENTIONS]->(:Entity)`` and
        ``(:Entity)-[:REL {type}]->(Entity)``.
 
+    Phase 2.5: when ``embeddings`` (FINAL slug → vector) is given, every
+    entity MERGE sets ``e.embedding`` ON CREATE only — a node merged
+    from a previous recording keeps its original vector (recurrence
+    doesn't change identity). ``ensure_vector_index`` runs first
+    (cheap IF NOT EXISTS) so fresh installs self-provision the ANN
+    index the next embedder batch will query.
+
     Returns the count of entity rows written. Errors propagate — the
     activity marks the stage failed.
     """
@@ -458,10 +500,24 @@ def write_to_graph(
 
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
     try:
+        if embeddings is not None:
+            # Idempotent (IF NOT EXISTS) and outside the write
+            # transaction: self-provisions the ANN index on fresh
+            # installs; a no-op on the live graph (index already ONLINE).
+            ensure_vector_index(driver, graph_database)
         with (
             driver.session(database=graph_database) as session,
             session.begin_transaction() as tx,
         ):
+            # Phase 2.5: the embedding clause exists ONLY when the
+            # caller passed vectors — with ``embeddings=None`` (model
+            # off/unavailable) the property is never touched at all.
+            # Frozen at first sight: ON CREATE only, ON MATCH
+            # deliberately leaves the existing vector — a recurring
+            # entity keeps the embedding its node was born with.
+            embed_clause = (
+                "ON CREATE SET e.embedding = $embedding " if embeddings is not None else ""
+            )
             entity_query = cast(
                 "Any",
                 (
@@ -469,6 +525,7 @@ def write_to_graph(
                     "ON CREATE SET e.label = $label, e.type = $type, "
                     "e.origin_recording_id = $rec, e.first_seen_recording = $rec, "
                     "e.recording_ids = [$rec] "
+                    + embed_clause +
                     # Multi-recording provenance: a shared entity MERGEs onto
                     # one node, so origin_recording_id alone can never show
                     # recurrence — digests read recording_ids instead.
@@ -509,14 +566,18 @@ def write_to_graph(
             # the second pass (relations) can refer to them by key.
             slug_to_node: dict[str, str] = {}
             for ent in graph.entities:
-                node = tx.run(
-                    entity_query,
-                    tag=tag,
-                    slug=ent.slug,
-                    label=ent.label,
-                    type=ent.type,
-                    rec=rec_id,
-                ).single()
+                entity_params: dict[str, Any] = {
+                    "tag": tag,
+                    "slug": ent.slug,
+                    "label": ent.label,
+                    "type": ent.type,
+                    "rec": rec_id,
+                }
+                if embeddings is not None:
+                    # Missing key → None → Cypher drops any stale property
+                    # instead of writing a corrupt vector.
+                    entity_params["embedding"] = embeddings.get(ent.slug)
+                node = tx.run(entity_query, **entity_params).single()
                 if node is not None:
                     slug_to_node[ent.slug] = node[0]
             # Second pass: events.
@@ -674,10 +735,40 @@ def resolve_slugs(
     into the first). NO → re-slug the candidate with ``-2``, ``-3``,
     ... until it stops colliding.
 
+    Phase 2.5 embedding prefilter: when ``graph.embed_enabled`` and the
+    ONNX model is available, each collision first consults
+    ``same_entity_decision`` — cosine >= tau_high merges without the
+    LLM, cosine <= tau_low splits without it, and only the gray zone
+    (or a missing vector) reaches the LLM Y/N call. All labels are
+    embedded in ONE batch up front; live-graph comparison vectors come
+    from the existing node's stored ``embedding`` (read by the same
+    MATCH in ``ExistingEntityLookup``).
+
     ``existing_lookup(slug)`` lets the caller pre-seed collisions with
     entities already in the graph from previous recordings — same
     question, same answer.
     """
+    # One batched inference for the whole extraction, in entity ORDER
+    # (slugs collide, positions don't). ``local_vecs`` answers
+    # within-extraction comparisons; ``seen_vecs`` remembers the vector
+    # of each surviving canonical so later collisions of the same slug
+    # compare against it.
+    local_vecs: list[list[float]] = []
+    seen_vecs: dict[str, list[float]] = {}
+    # Config-level off → the singleton machinery is not even consulted
+    # (and MagicMock test configs, whose attributes are not literally
+    # True, take the pure-LLM path).
+    embedder = _embedder(cfg) if getattr(cfg.graph, "embed_enabled", None) is True else None
+    if embedder is not None:
+        try:
+            matrix = embedder.embed([ent.label for ent in graph.entities])
+            local_vecs = [
+                row.tolist() if hasattr(row, "tolist") else list(row)
+                for row in matrix
+            ]
+        except Exception:
+            log.exception("enrich: embedding batch failed; falling back to LLM dedup")
+            local_vecs = []
     seen: dict[str, ExtractedEntity] = {}
     out: list[ExtractedEntity] = []
     # Pre-resolution slug → resolved slug, so relations (authored against
@@ -685,30 +776,35 @@ def resolve_slugs(
     # Keyed by SLUG, not label: labels are not slug-safe (case, punct,
     # spaces) and two entities may share one label.
     remap: dict[str, str] = {}
-    for ent in graph.entities:
+    for idx, ent in enumerate(graph.entities):
         # Re-slug up front so labels differing only in case/punct join
         # the same group cheaply.
         slug = ent.slug
         orig_slug = ent.slug
+        vec = local_vecs[idx] if idx < len(local_vecs) else None
         same = None
         if slug in seen:
             existing = seen[slug]
-            same = ask_same_entity(
+            same = _dedup_verdict(
                 ent.label,
                 ent.type,
                 existing.label,
                 existing.type,
                 cfg,
+                vec,
+                seen_vecs.get(slug),
             )
         elif existing_lookup is not None:
             existing = existing_lookup(slug)
             if existing is not None:
-                same = ask_same_entity(
+                same = _dedup_verdict(
                     ent.label,
                     ent.type,
                     existing["label"],
                     existing["type"],
                     cfg,
+                    vec,
+                    existing.get("embedding"),
                 )
                 if same:
                     seen[slug] = ExtractedEntity(
@@ -716,6 +812,10 @@ def resolve_slugs(
                     )
                     out.append(seen[slug])
                     remap.setdefault(orig_slug, existing["slug"])
+                    # The canonical lives in the GRAPH: its stored vector
+                    # is the one future same-slug candidates compare to.
+                    if existing.get("embedding"):
+                        seen_vecs[slug] = existing["embedding"]
                     continue
                 # Step past every existing collision in the live graph
                 # AND every reserved slug inside this extraction. Both
@@ -734,6 +834,8 @@ def resolve_slugs(
         seen[slug] = ent
         out.append(ent)
         remap.setdefault(orig_slug, slug)
+        if vec is not None:
+            seen_vecs[slug] = vec
     # Re-anchor relations to the resolved slugs (pre-resolution slug ->
     # resolved slug); relations referencing dropped/renamed duplicates
     # follow their entity's final slug, unknown slugs pass through.
@@ -800,7 +902,7 @@ class ExistingEntityLookup:
         never by reaching into ``_driver`` directly."""
         self._driver.close()
 
-    def __call__(self, slug: str) -> dict[str, str] | None:
+    def __call__(self, slug: str) -> dict[str, Any] | None:
         with self._driver.session(database=self._database) as session:
             row = session.run(
                 "MATCH (e {tag: $tag, slug: $slug}) "
@@ -808,14 +910,22 @@ class ExistingEntityLookup:
                 # a null origin_recording_id (foreign/manually created node)
                 # must not silently opt out of dedup either.
                 "WHERE $rec = '' OR coalesce(e.origin_recording_id, '') <> $rec "
-                "RETURN e.label AS label, e.type AS type, e.slug AS slug LIMIT 1",
+                "RETURN e.label AS label, e.type AS type, e.slug AS slug, "
+                "e.embedding AS embedding LIMIT 1",
                 tag=self._tag,
                 slug=slug,
                 rec=self._exclude_rec,
             ).single()
         if row is None:
             return None
-        return {"label": row["label"], "type": row["type"], "slug": row["slug"]}
+        return {
+            "label": row["label"],
+            "type": row["type"],
+            "slug": row["slug"],
+            # Phase 2.5: the live-graph side of the cosine prefilter —
+            # None on nodes written before the embedding phase.
+            "embedding": row["embedding"],
+        }
 
 
 def pre_existing_lookup(

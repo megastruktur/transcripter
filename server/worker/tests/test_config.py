@@ -105,3 +105,36 @@ def test_graph_phase2_from_yaml(tmp_path, monkeypatch):
     assert cfg.graph.enrich_all is False
     assert cfg.graph.auto_digest is False
     assert cfg.graph.auto_digest_window_sec == 60
+
+
+# --- Phase 2.5: embedding prefilter knobs -------------------------------------
+
+
+def test_graph_embed_defaults(tmp_path, monkeypatch):
+    """Phase 2.5: prefilter on by default, model at /models/bge-m3-int8,
+    tau_high 0.90 / tau_low 0.75."""
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.embed_enabled is True
+    assert str(cfg.graph.embed_model_path) == "/models/bge-m3-int8"
+    assert cfg.graph.embed_tau_high == 0.90
+    assert cfg.graph.embed_tau_low == 0.75
+
+
+def test_graph_embed_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "graph:\n"
+        "  uri: bolt://neo4j:7687\n"
+        "  embed_enabled: false\n"
+        "  embed_model_path: /data/my-model\n"
+        "  embed_tau_high: 0.95\n"
+        "  embed_tau_low: 0.80\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.embed_enabled is False
+    assert str(cfg.graph.embed_model_path) == "/data/my-model"
+    assert cfg.graph.embed_tau_high == 0.95
+    assert cfg.graph.embed_tau_low == 0.80

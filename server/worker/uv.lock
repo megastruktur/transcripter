@@ -870,11 +870,14 @@ dependencies = [
     { name = "faster-whisper" },
     { name = "httpx" },
     { name = "neo4j" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
+    { name = "tokenizers" },
 ]
 
 [package.dev-dependencies]
@@ -890,11 +893,14 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "neo4j", specifier = ">=5.20" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "onnxruntime", specifier = ">=1.20" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "temporalio", specifier = ">=1.7" },
+    { name = "tokenizers", specifier = ">=0.20" },
 ]
 
 [package.metadata.requires-dev]

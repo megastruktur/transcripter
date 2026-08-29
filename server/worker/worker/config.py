@@ -91,6 +91,18 @@ class GraphConfig(BaseModel):
     # enrich run"; switch auto_digest off to stop auto-refresh entirely.
     auto_digest: bool = True
     auto_digest_window_sec: int = 3600
+    # Phase 2.5 — bge-m3 embedding prefilter for entity dedup. When ON
+    # and the ONNX model loads, slug collisions with cosine >=
+    # embed_tau_high are auto-merged, cosine <= embed_tau_low auto-split,
+    # and only the gray zone reaches the LLM Y/N call. Vectors ride on
+    # entity nodes (embedding property + embedding_bge_m3 vector index).
+    # A missing model path or failed ONNX session latches the prefilter
+    # OFF for the process (one warning) and dedup behaves exactly as
+    # before — embeddings never crash the stage.
+    embed_enabled: bool = True
+    embed_model_path: Path = Path("/models/bge-m3-int8")
+    embed_tau_high: float = 0.90
+    embed_tau_low: float = 0.75
 
     @property
     def enabled(self) -> bool:

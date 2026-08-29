@@ -12,6 +12,10 @@ dependencies = [
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "neo4j>=5.20",
+    # Phase 2.5: bge-m3 ONNX embedder — direct API use (not transitive).
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
+    "numpy>=1.26",
 ]
 
 [dependency-groups]

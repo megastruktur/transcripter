@@ -402,3 +402,88 @@ def test_known_entities_lookup_runs_for_first_namespace(
     assert captured["limit"] == 25  # known_entities: true → default cap
     assert captured["uri"] == "bolt://n"
     assert "- galahad — Galahad (character)" in sent["block"]
+
+
+# --- Phase 2.5: embedding vectors threaded to the graph write ------------------
+
+
+def _extracted_graph() -> Any:
+    from worker.enrich import ExtractedEntity, ExtractedEvent, ExtractedGraph
+
+    return ExtractedGraph(
+        events=[ExtractedEvent(ts="00:01", kind="info", summary="s")],
+        entities=[
+            ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ExtractedEntity(slug="orc", label="Orc", type="npc"),
+        ],
+        relations=[],
+    )
+
+
+def test_done_passes_final_slug_vectors_to_write(recording_id: str, tmp_path: Path) -> None:
+    """The enrich activity embeds the RESOLVED entities once per
+    namespace and hands write_to_graph the FINAL-slug → vector dict.
+    Graph/LLM stubbed; the embedder is faked at the activity boundary."""
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    cfg.graph.embed_enabled = True
+    cfg.graph.embed_model_path = "/models/bge-m3-int8"
+    extraction = _extracted_graph()
+    captured: dict[str, Any] = {}
+
+    def fake_wtg(rec_id, tag, graph, node_labels, *args, **kwargs):
+        captured["tag"] = tag
+        captured["embeddings"] = kwargs.get("embeddings")
+        return 1
+
+    fake_embedder = MagicMock()
+    fake_embedder.embed.side_effect = lambda texts: [
+        [float(len(t)), 1.0, 0.0] for t in texts
+    ]
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=True)),
+        patch("worker.enrich.extract_from_transcript", return_value=extraction),
+        patch("worker.enrich.resolve_slugs", side_effect=lambda g, c, t, lookup=None: g),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", side_effect=fake_wtg) as wtg,
+        patch("worker.embeddings._embedder", return_value=fake_embedder) as emb,
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        _run(activities.enrich(recording_id))
+
+    # entity_vectors consulted the singleton with the activity config.
+    emb.assert_called_once()
+    # write_to_graph got the vectors keyed by FINAL slug.
+    assert wtg.call_count == 1
+    embeddings = captured["embeddings"]
+    assert embeddings is not None
+    assert set(embeddings) == {e.slug for e in extraction.entities}
+    assert all(len(v) == 3 for v in embeddings.values())
+    assert captured["tag"] == "pathfinder"
+
+
+def test_done_skips_embeddings_when_model_unavailable(recording_id: str, tmp_path: Path) -> None:
+    """Model unavailable → write_to_graph called with embeddings=None;
+    the stage still completes (graceful degradation)."""
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    cfg.graph.embed_enabled = True
+    captured: dict[str, Any] = {}
+
+    def fake_wtg(rec_id, tag, graph, node_labels, *args, **kwargs):
+        captured["embeddings"] = kwargs.get("embeddings")
+        return 0
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=True)),
+        patch("worker.enrich.extract_from_transcript", return_value=_extracted_graph()),
+        patch("worker.enrich.resolve_slugs", side_effect=lambda g, c, t, lookup=None: g),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", side_effect=fake_wtg),
+        patch("worker.embeddings._embedder", return_value=None),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        _run(activities.enrich(recording_id))
+
+    assert captured["embeddings"] is None

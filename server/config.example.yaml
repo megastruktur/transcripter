@@ -87,3 +87,16 @@ graph:
   # trigger a refresh.
   auto_digest: true
   auto_digest_window_sec: 3600
+  # Phase 2.5 — bge-m3 embedding prefilter for entity dedup. When the
+  # ONNX int8 model (mounted at /models in the worker) loads, slug
+  # collisions with cosine >= embed_tau_high are merged WITHOUT the LLM,
+  # cosine <= embed_tau_low are kept distinct WITHOUT it, and only the
+  # gray zone between the thresholds gets an LLM Y/N call. Entity nodes
+  # also gain an `embedding` property + a Neo4j vector index
+  # (embedding_bge_m3) created automatically. A missing model or failed
+  # load disables the prefilter (one warning) and dedup stays pure-LLM —
+  # nothing else changes.
+  embed_enabled: true
+  embed_model_path: /models/bge-m3-int8
+  embed_tau_high: 0.90
+  embed_tau_low: 0.75

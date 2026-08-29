@@ -569,6 +569,7 @@ async def enrich(rec_id: str) -> dict:
         return {"skipped": "no profile with enrich"}
     graph_tags = tags or ["untagged"]
     try:
+        from .embeddings import _embedder, entity_vectors
         from .enrich import (
             _FALLBACK_ENRICH_PROMPT,
             extract_from_transcript,
@@ -649,6 +650,7 @@ async def enrich(rec_id: str) -> dict:
         # deduped against that namespace's own entities — namespaces are
         # deliberately independent groups).
         resolved_by_tag: dict[str, Any] = {}
+        resolved_vecs: dict[str, dict[str, list[float]] | None] = {}
         for graph_tag in graph_tags:
             lookup = pre_existing_lookup(
                 c.graph.uri,
@@ -678,6 +680,11 @@ async def enrich(rec_id: str) -> dict:
                     resolved_by_tag[graph_tag] = extracted
             finally:
                 lookup.close()
+            # Phase 2.5: FINAL-slug → vector dict for the graph write
+            # (one batched embedder call per namespace; None when the
+            # model is off/unavailable — write_to_graph then skips the
+            # embedding property entirely).
+            resolved_vecs[graph_tag] = entity_vectors(_embedder(c), resolved_by_tag[graph_tag])
         # Write to graph (sync neo4j driver via to_thread); heartbeat-
         # wrapped for the same reason as resolve_slugs above. The FIRST
         # namespace call purges this recording's stale nodes in every
@@ -698,6 +705,7 @@ async def enrich(rec_id: str) -> dict:
                     purge_origin=idx == 0,
                     recording_date=recording_date,
                     recording_title=title,
+                    embeddings=resolved_vecs.get(graph_tag),
                 )
             )
         # Phase 1 timeline artifact: meta/events.json from the FIRST

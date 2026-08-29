@@ -23,6 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from worker.embeddings import embedder_reset_for_tests
 from worker.enrich import (
     _FALLBACK_ENRICH_PROMPT,
     ExistingEntityLookup,
@@ -577,13 +578,13 @@ class TestExistingEntityLookup:
         session.__enter__ = MagicMock(return_value=session)
         session.__exit__ = MagicMock(return_value=False)
         row = MagicMock()
-        row.single = MagicMock(return_value={"label": "Galahad", "type": "character", "slug": "galahad"})
+        row.single = MagicMock(return_value={"label": "Galahad", "type": "character", "slug": "galahad", "embedding": None})
         session.run = MagicMock(return_value=row)
         driver = MagicMock()
         driver.session = MagicMock(return_value=session)
         lookup = ExistingEntityLookup(driver, "neo4j", "pathfinder")
         out = lookup("galahad")
-        assert out == {"label": "Galahad", "type": "character", "slug": "galahad"}
+        assert out == {"label": "Galahad", "type": "character", "slug": "galahad", "embedding": None}
         # The query filters by tag AND slug, and EXCLUDES the current
         # recording's own nodes (origin_recording_id <> rec) so a
         # regenerate reclaims its own slugs instead of drifting -2/-3.
@@ -927,3 +928,318 @@ class TestFallbackEnrichPrompt:
 
         spec = EnrichSpec(prompt=_FALLBACK_ENRICH_PROMPT, known_entities=True)
         assert spec.known_entities is True
+
+
+# --- Phase 2.5: embedding prefilter -------------------------------------------
+
+
+def _vec(cos: float, base: list[float] | None = None) -> list[float]:
+    """Unit vector at exactly ``cos`` cosine to ``base`` (or e0)."""
+    if base is None:
+        base = [1.0, 0.0]
+    n = sum(x * x for x in base) ** 0.5
+    base = [x / n for x in base]
+    perp = [base[1], -base[0]]
+    return [cos * base[0] + (1 - cos * cos) ** 0.5 * perp[0],
+            cos * base[1] + (1 - cos * cos) ** 0.5 * perp[1]]
+
+
+def _embed_cfg(taus: bool = True) -> Any:
+    """Config whose graph knobs claim embed_enabled=True; the EMBEDDER
+    itself is monkeypatched per test — no model files involved."""
+    cfg = _ok_cfg()
+    cfg.graph.embed_enabled = True
+    cfg.graph.embed_model_path = "/models/bge-m3-int8"
+    if taus:
+        cfg.graph.embed_tau_high = 0.90
+        cfg.graph.embed_tau_low = 0.75
+    return cfg
+
+
+class _FakeEmbedder:
+    """Deterministic label → vector map pretending to be the ONNX
+    singleton. Keys not in the mapping → None-vector behavior (raise:
+    tests declare every label they expect embedded)."""
+
+    def __init__(self, table: dict[str, list[float]]) -> None:
+        self.table = table
+        self.batches: list[list[str]] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self.batches.append(list(texts))
+        return [self.table[t] for t in texts]
+
+
+class TestResolveSlugsPrefilter:
+    def setup_method(self) -> None:
+        embedder_reset_for_tests()
+
+    def test_tau_high_skips_llm(self):
+        """cosine >= tau_high → merged WITHOUT any LLM call."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        fake = _FakeEmbedder({
+            "Sir Galahad": _vec(1.0),
+            "Galahad": _vec(0.95),
+        })
+        with (
+            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.enrich.httpx.post") as p,
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        p.assert_not_called()
+        assert len(out.entities) == 1
+        assert out.entities[0].label == "Sir Galahad"
+
+    def test_tau_low_skips_llm_and_disambiguates(self):
+        """cosine <= tau_low → DISTINCT without the LLM; the candidate
+        gets -2 and survives as its own entity."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        fake = _FakeEmbedder({
+            "Sir Galahad": _vec(1.0),
+            "Galahad": _vec(0.3),
+        })
+        with (
+            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.enrich.httpx.post") as p,
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        p.assert_not_called()
+        assert sorted(e.slug for e in out.entities) == ["galahad", "galahad-2"]
+
+    def test_gray_zone_still_asks_llm(self):
+        """0.75 < cosine < 0.90 → 'ask' → the LLM Y/N call happens."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        fake = _FakeEmbedder({
+            "Sir Galahad": _vec(1.0),
+            "Galahad": _vec(0.8),
+        })
+        with (
+            patch("worker.enrich._embedder", return_value=fake),
+            patch(
+                "worker.enrich.httpx.post",
+                return_value=_mock_post_text("Y"),
+            ),
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        # The LLM WAS consulted (gray zone) and said yes → merged.
+        assert len(out.entities) == 1
+        assert out.entities[0].label == "Sir Galahad"
+
+    def test_missing_vector_falls_back_to_llm(self):
+        """No embedder (unavailable model) → behavior identical to the
+        pre-2.5 pure-LLM loop: httpx consulted for the collision."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad the Brave", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        with (
+            patch("worker.enrich._embedder", return_value=None),
+            patch(
+                "worker.enrich.httpx.post",
+                return_value=_mock_post_text("Y"),
+            ),
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        assert len(out.entities) == 1
+
+    def test_embedder_batch_failure_falls_back_to_llm(self):
+        """A dying model mid-batch must not fail dedup — pure-LLM path."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        boom = MagicMock()
+        boom.embed.side_effect = RuntimeError("onnx exploded")
+        with (
+            patch("worker.enrich._embedder", return_value=boom),
+            patch(
+                "worker.enrich.httpx.post",
+                return_value=_mock_post_text("Y"),
+            ),
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        assert len(out.entities) == 1
+
+    def test_live_graph_embedding_used_for_comparison(self):
+        """Live-graph collision: the existing node's stored embedding is
+        the comparison vector; tau_high merge happens with no LLM call."""
+        graph = ExtractedGraph(
+            entities=[ExtractedEntity(slug="galahad", label="Galahad", type="character")],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        fake = _FakeEmbedder({"Galahad": _vec(0.95)})
+        lookup_rows = {
+            "galahad": {
+                "slug": "galahad",
+                "label": "Sir Galahad",
+                "type": "character",
+                "embedding": _vec(1.0),
+            },
+        }
+        lookup = MagicMock(side_effect=lookup_rows.get)
+        with (
+            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.enrich.httpx.post") as p,
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder", existing_lookup=lookup)
+        p.assert_not_called()
+        assert [e.slug for e in out.entities] == ["galahad"]
+        assert out.entities[0].label == "Sir Galahad"
+
+    def test_embed_disabled_never_touches_embedder(self):
+        """Config-level off → _embedder not even consulted; LLM decides."""
+        graph = ExtractedGraph(
+            entities=[
+                ExtractedEntity(slug="galahad", label="Sir Galahad", type="character"),
+                ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ],
+            relations=[],
+        )
+        cfg = _embed_cfg()
+        cfg.graph.embed_enabled = False
+        with (
+            patch("worker.enrich._embedder") as emb,
+            patch(
+                "worker.enrich.httpx.post",
+                return_value=_mock_post_text("Y"),
+            ) as p,
+        ):
+            out = resolve_slugs(graph, cfg, tag="pathfinder")
+        emb.assert_not_called()
+        assert len(out.entities) == 1
+        assert p.call_count == 1
+
+
+class TestWriteToGraphEmbeddings:
+    def test_embedding_written_when_dict_present(self):
+        driver, runs = _tx_recorder()
+        vec = [0.1, 0.2, 0.3]
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                entities=[ExtractedEntity(slug="galahad", label="Galahad", type="character")],
+                relations=[],
+            )
+            write_to_graph(
+                rec_id="rec-e1",
+                tag="pathfinder",
+                graph=graph,
+                node_labels=MagicMock(event="Event", entity="Entity"),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+                embeddings={"galahad": vec},
+            )
+        # ensure_vector_index ran BEFORE the transaction, through its own
+        # driver.session() call (the tx-recorder only sees tx.run rows).
+        assert driver.session.call_count == 2
+        index_session = driver.session.call_args_list[0]
+        assert index_session.kwargs["database"] == "neo4j"
+        merge_runs = [(q, p) for q, p in runs if "MERGE" in q]
+        assert any("e.embedding = $embedding" in q for q, _ in merge_runs)
+        params = merge_runs[0][1]
+        assert params["embedding"] == vec
+
+    def test_no_dict_no_embedding_clause_no_index(self):
+        """embeddings=None → the property is NEVER in the Cypher text and
+        ensure_vector_index is not called (pre-2.5 behavior intact)."""
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                entities=[ExtractedEntity(slug="x", label="X", type="thing")],
+                relations=[],
+            )
+            write_to_graph(
+                rec_id="rec-e2",
+                tag="t",
+                graph=graph,
+                node_labels=MagicMock(event="Event", entity="Entity"),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+            )
+        assert not any("embedding" in q for q, _ in runs)
+        merge_qs = [q for q, _ in runs if "MERGE" in q]
+        assert all("$embedding" not in q for q in merge_qs)
+
+    def test_missing_key_writes_null(self):
+        """A FINAL slug absent from the dict (entity_vectors failure
+        recovery) → embedding=None → no corrupt partial vector."""
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                entities=[
+                    ExtractedEntity(slug="a", label="A", type="t"),
+                    ExtractedEntity(slug="b", label="B", type="t"),
+                ],
+                relations=[],
+            )
+            write_to_graph(
+                rec_id="rec-e3",
+                tag="t",
+                graph=graph,
+                node_labels=MagicMock(event="Event", entity="Entity"),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+                embeddings={"a": [1.0, 0.0]},
+            )
+        by_slug = {p["slug"]: p for _, p in runs if "slug" in p}
+        assert by_slug["a"]["embedding"] == [1.0, 0.0]
+        assert by_slug["b"]["embedding"] is None
+
+
+class TestExistingEntityLookupEmbedding:
+    def test_row_carries_embedding(self):
+        session = MagicMock()
+        session.__enter__ = MagicMock(return_value=session)
+        session.__exit__ = MagicMock(return_value=False)
+        row = MagicMock()
+        row.single = MagicMock(
+            return_value={
+                "label": "Galahad",
+                "type": "character",
+                "slug": "galahad",
+                "embedding": [0.5, 0.5],
+            }
+        )
+        session.run = MagicMock(return_value=row)
+        driver = MagicMock()
+        driver.session = MagicMock(return_value=session)
+        lookup = ExistingEntityLookup(driver, "neo4j", "pathfinder")
+        out = lookup("galahad")
+        assert out["embedding"] == [0.5, 0.5]
+        q = session.run.call_args.args[0]
+        assert "e.embedding AS embedding" in q
