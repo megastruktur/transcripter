@@ -15,6 +15,8 @@ from pathlib import Path
 
 import httpx
 
+from .llm_payload import system_first_messages
+
 log = logging.getLogger("transcripter.summarize")
 
 SYSTEM_PROMPT = (
@@ -92,10 +94,12 @@ def summarize_transcript(
             + "(digest of earlier sessions):\n\n"
             + recap_block
         )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
+    messages = system_first_messages(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+    )
     r = httpx.post(
         cfg.summarize.base_url.rstrip("/") + "/chat/completions",
         headers=headers,

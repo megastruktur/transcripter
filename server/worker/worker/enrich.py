@@ -44,6 +44,7 @@ import httpx
 from neo4j import GraphDatabase
 
 from .embeddings import _embedder, ensure_vector_index, same_entity_decision
+from .llm_payload import system_first_messages
 
 log = logging.getLogger("transcripter.enrich")
 
@@ -280,10 +281,12 @@ def extract_from_transcript(
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
 
-    messages = [
-        {"role": "system", "content": "Follow the user's instructions."},
-        {"role": "user", "content": user_content},
-    ]
+    messages = system_first_messages(
+        [
+            {"role": "system", "content": "Follow the user's instructions."},
+            {"role": "user", "content": user_content},
+        ]
+    )
 
     last_err: Exception | None = None
     for attempt in range(_MAX_LLM_ATTEMPTS):
@@ -370,10 +373,12 @@ def ask_same_entity(
             headers=headers,
             json={
                 "model": cfg.summarize.model,
-                "messages": [
-                    {"role": "system", "content": "Answer with a single Y or N."},
-                    {"role": "user", "content": prompt},
-                ],
+                "messages": system_first_messages(
+                    [
+                        {"role": "system", "content": "Answer with a single Y or N."},
+                        {"role": "user", "content": prompt},
+                    ]
+                ),
             },
             timeout=30.0,
         )
