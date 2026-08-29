@@ -989,7 +989,7 @@ class TestResolveSlugsPrefilter:
             "Galahad": _vec(0.95),
         })
         with (
-            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.embeddings._embedder", return_value=fake),
             patch("worker.enrich.httpx.post") as p,
         ):
             out = resolve_slugs(graph, cfg, tag="pathfinder")
@@ -1013,7 +1013,7 @@ class TestResolveSlugsPrefilter:
             "Galahad": _vec(0.3),
         })
         with (
-            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.embeddings._embedder", return_value=fake),
             patch("worker.enrich.httpx.post") as p,
         ):
             out = resolve_slugs(graph, cfg, tag="pathfinder")
@@ -1035,7 +1035,7 @@ class TestResolveSlugsPrefilter:
             "Galahad": _vec(0.8),
         })
         with (
-            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.embeddings._embedder", return_value=fake),
             patch(
                 "worker.enrich.httpx.post",
                 return_value=_mock_post_text("Y"),
@@ -1058,7 +1058,7 @@ class TestResolveSlugsPrefilter:
         )
         cfg = _embed_cfg()
         with (
-            patch("worker.enrich._embedder", return_value=None),
+            patch("worker.embeddings._embedder", return_value=None),
             patch(
                 "worker.enrich.httpx.post",
                 return_value=_mock_post_text("Y"),
@@ -1080,7 +1080,7 @@ class TestResolveSlugsPrefilter:
         boom = MagicMock()
         boom.embed.side_effect = RuntimeError("onnx exploded")
         with (
-            patch("worker.enrich._embedder", return_value=boom),
+            patch("worker.embeddings._embedder", return_value=boom),
             patch(
                 "worker.enrich.httpx.post",
                 return_value=_mock_post_text("Y"),
@@ -1108,7 +1108,7 @@ class TestResolveSlugsPrefilter:
         }
         lookup = MagicMock(side_effect=lookup_rows.get)
         with (
-            patch("worker.enrich._embedder", return_value=fake),
+            patch("worker.embeddings._embedder", return_value=fake),
             patch("worker.enrich.httpx.post") as p,
         ):
             out = resolve_slugs(graph, cfg, tag="pathfinder", existing_lookup=lookup)
@@ -1128,7 +1128,7 @@ class TestResolveSlugsPrefilter:
         cfg = _embed_cfg()
         cfg.graph.embed_enabled = False
         with (
-            patch("worker.enrich._embedder") as emb,
+            patch("worker.embeddings._embedder") as emb,
             patch(
                 "worker.enrich.httpx.post",
                 return_value=_mock_post_text("Y"),

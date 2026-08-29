@@ -44,7 +44,7 @@ from typing import Any, cast
 import httpx
 from neo4j import GraphDatabase
 
-from .embeddings import _embedder, ensure_vector_index, same_entity_decision
+from .embeddings import ensure_vector_index, same_entity_decision
 from .llm_payload import system_first_messages
 
 log = logging.getLogger("transcripter.enrich")
@@ -851,17 +851,17 @@ def resolve_slugs(
     # compare against it.
     local_vecs: list[list[float]] = []
     seen_vecs: dict[str, list[float]] = {}
-    # Config-level off → the singleton machinery is not even consulted
+    # Config-level off → the embedding machinery is not even consulted
     # (and MagicMock test configs, whose attributes are not literally
-    # True, take the pure-LLM path).
-    embedder = _embedder(cfg) if getattr(cfg.graph, "embed_enabled", None) is True else None
-    if embedder is not None:
+    # True, take the pure-LLM path). Phase 3.5: the batch goes through
+    # the single embed_texts client — local ONNX or http backend alike.
+    if getattr(cfg.graph, "embed_enabled", None) is True:
         try:
-            matrix = embedder.embed([ent.label for ent in graph.entities])
-            local_vecs = [
-                row.tolist() if hasattr(row, "tolist") else list(row)
-                for row in matrix
-            ]
+            from .embeddings import embed_texts
+
+            vecs = embed_texts([ent.label for ent in graph.entities], cfg)
+            if vecs is not None:
+                local_vecs = vecs
         except Exception:
             log.exception("enrich: embedding batch failed; falling back to LLM dedup")
             local_vecs = []

@@ -299,7 +299,7 @@ def test_resolve_slugs_llm_disabled_merges_gray_zone() -> None:
     )
     fake = _FakeEmbedder({"Sir Galahad": [1.0, 0.0], "Galahad": [0.8, 0.6]})
     with (
-        patch("worker.enrich._embedder", return_value=fake),
+        patch("worker.embeddings._embedder", return_value=fake),
         patch("worker.enrich.httpx.post") as p,
     ):
         out = resolve_slugs(graph, _vec_cfg(), tag="t", llm_enabled=False)
@@ -328,7 +328,7 @@ def test_resolve_slugs_llm_disabled_keeps_prefilter_zones() -> None:
         }
     )
     with (
-        patch("worker.enrich._embedder", return_value=fake),
+        patch("worker.embeddings._embedder", return_value=fake),
         patch("worker.enrich.httpx.post") as p,
     ):
         out = resolve_slugs(graph, _vec_cfg(), tag="t", llm_enabled=False)
@@ -347,7 +347,7 @@ def test_resolve_slugs_llm_disabled_merges_missing_vectors() -> None:
         relations=[],
     )
     with (
-        patch("worker.enrich._embedder", return_value=None),
+        patch("worker.embeddings._embedder", return_value=None),
         patch("worker.enrich.httpx.post") as p,
     ):
         out = resolve_slugs(graph, _vec_cfg(), tag="t", llm_enabled=False)

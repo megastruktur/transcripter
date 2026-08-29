@@ -92,16 +92,37 @@ graph:
   # trigger a refresh.
   auto_digest: true
   auto_digest_window_sec: 3600
-  # Phase 2.5 — bge-m3 embedding prefilter for entity dedup. When the
-  # ONNX int8 model (mounted at /models in the worker) loads, slug
-  # collisions with cosine >= embed_tau_high are merged WITHOUT the LLM,
-  # cosine <= embed_tau_low are kept distinct WITHOUT it, and only the
-  # gray zone between the thresholds gets an LLM Y/N call. Entity nodes
-  # also gain an `embedding` property + a Neo4j vector index
-  # (embedding_bge_m3) created automatically. A missing model or failed
-  # load disables the prefilter (one warning) and dedup stays pure-LLM —
-  # nothing else changes.
+  # Phase 2.5 embedding prefilter for entity dedup (see graph.embed below
+  # for the backend): when vectors are available, slug collisions with
+  # cosine >= embed_tau_high are merged WITHOUT the LLM, cosine <=
+  # embed_tau_low are kept distinct WITHOUT it, and only the gray zone
+  # between the thresholds gets an LLM Y/N call. A missing model or
+  # failed load disables the prefilter (one warning) and dedup stays
+  # pure-LLM — nothing else changes.
   embed_enabled: true
-  embed_model_path: /models/bge-m3-int8
   embed_tau_high: 0.90
   embed_tau_low: 0.75
+  # Phase 3.5 — pluggable embedding backend (the speaches pattern).
+  # backend local (default): bge-m3 ONNX int8 in-process in the worker
+  # (mounted at /models; fixed 1024-d; serves dedup prefilter AND the
+  # per-tag semantic index). backend http: any OpenAI-compatible
+  # POST {base_url}/embeddings — LiteLLM route, Infinity, Ollama, OpenAI;
+  # `model` is the remote id, `api_key_env` names the env var with the
+  # key, `dimensions` is REQUIRED for http (remote dimensionality is not
+  # knowable offline). The worker honors EMBED_BACKEND / EMBED_BASE_URL /
+  # EMBED_MODEL env overrides (see .env.example) — provider switches
+  # without touching this file.
+  # TRAP: switching backend/model changes the vector space — semantic
+  # index files record {backend, model, dimensions} and a mismatch
+  # triggers a rebuild (or a 503 + "run backfill" on search); the dedup
+  # taus above were calibrated on bge-m3 and need recalibration for a
+  # different model.
+  embed:
+    backend: local
+    model_path: /models/bge-m3-int8
+    # http backend example:
+    # backend: http
+    # base_url: http://infinity:7000/v1
+    # model: bge-m3
+    # api_key_env: EMBED_API_KEY
+    # dimensions: 1024

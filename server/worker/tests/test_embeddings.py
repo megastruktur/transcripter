@@ -180,8 +180,16 @@ class TestEmbedderSingleton:
 
 def _graph_cfg(**kw: Any) -> Any:
     """WorkerConfig-shaped namespace: the decision/singleton API reads
-    ``cfg.graph.*`` (the activity passes the FULL config)."""
-    return SimpleNamespace(graph=GraphConfig(**kw))
+    ``cfg.graph.*`` (the activity passes the FULL config). Phase 3.5:
+    ``embed_model_path`` migrated into ``graph.embed.model_path``."""
+    from worker.config import EmbedConfig
+
+    embed_kw = {}
+    if "embed_model_path" in kw:
+        embed_kw["model_path"] = kw.pop("embed_model_path")
+    return SimpleNamespace(
+        graph=GraphConfig(embed=EmbedConfig(**embed_kw), **kw)
+    )
 
 
 def _cfg_taus(high: float, low: float) -> Any:

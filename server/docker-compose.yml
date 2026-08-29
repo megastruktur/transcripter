@@ -49,6 +49,12 @@ services:
       SPEACHES_API_KEY: ${SPEACHES_API_KEY:-}
       # LiteLLM virtual key for the summarize stage (summarize.api_key_env).
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # Phase 3.5: embedding backend overrides (win over config.yaml
+      # graph.embed.*) — switch the embedder provider without touching
+      # the mounted config.
+      EMBED_BACKEND: ${EMBED_BACKEND:-}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_MODEL: ${EMBED_MODEL:-}
       # Summarize model id override (wins over config.yaml summarize.model).
       SUMMARIZE_MODEL: ${SUMMARIZE_MODEL:-}
       # Neo4j password for the optional graph profile (graph.password_env

@@ -65,6 +65,39 @@ class ProfilesConfig(BaseModel):
 
     path: Path = Path("/etc/transcripter/profiles")
 
+class EmbedConfig(BaseModel):
+    """Phase 3.5 — pluggable embedding backend (speaches pattern).
+
+    ``local`` (default): the phase-2.5 bge-m3 ONNX int8 model in-process
+    in the worker (fixed 1024-d; ``model_path`` is the export dir).
+    ``http``: any OpenAI-compatible ``POST {base_url}/v1/embeddings``
+    (LiteLLM route, Infinity, Ollama, OpenAI) — ``model`` and
+    ``api_key_env`` name the remote model and the env var with the key,
+    ``dimensions`` is required (the local export's 1024 is not knowable
+    from a remote endpoint).
+
+    Migration (2026-08-29): the flat phase-2.5 keys ``embed_enabled``,
+    ``embed_model_path`` moved here as ``enabled``/``model_path``; the
+    tau thresholds stay on GraphConfig (they calibrate DEDUP decisions,
+    not the embedder). Switching the backend or model requires
+    re-indexing + re-calibrating tau — index files carry {backend,
+    model, dimensions} meta so mismatches are caught, not mixed.
+    """
+
+    backend: str = "local"
+    model_path: Path = Path("/models/bge-m3-int8")
+    # http backend
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    dimensions: int = 0
+
+    @property
+    def configured_dimensions(self) -> int:
+        """Local export dimensionality is fixed by the bge-m3 CLS pool;
+        http backends report what the config declares (0 = unset)."""
+        return 1024 if self.backend == "local" else self.dimensions
+
 
 class GraphConfig(BaseModel):
     """Optional Neo4j knowledge-graph backend (wave B).
@@ -106,9 +139,11 @@ class GraphConfig(BaseModel):
     # OFF for the process (one warning) and dedup behaves exactly as
     # before — embeddings never crash the stage.
     embed_enabled: bool = True
-    embed_model_path: Path = Path("/models/bge-m3-int8")
     embed_tau_high: float = 0.90
     embed_tau_low: float = 0.75
+    # Phase 3.5: backend selection + model coordinates live here; the
+    # flat embed_model_path migrated into embed.model_path.
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
 
     @property
     def enabled(self) -> bool:
@@ -140,6 +175,12 @@ def load_config() -> WorkerConfig:
         raise ValueError(
             "transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)"
         )
+    # Phase 3.5: backend must be one of the two implementations, and the
+    # http one needs an endpoint (env overrides re-checked after they run).
+    if cfg.graph.embed.backend not in ("local", "http"):
+        raise ValueError(
+            f"graph.embed.backend must be 'local' or 'http' (got {cfg.graph.embed.backend!r})"
+        )
     if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
         cfg.storage.path = Path(env_storage)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
@@ -153,4 +194,24 @@ def load_config() -> WorkerConfig:
         cfg.summarize.model = env_model
     if env_profiles := os.environ.get("PROFILES_DIR"):
         cfg.profiles.path = Path(env_profiles)
+    # Phase 3.5: same pattern as SUMMARIZE_MODEL — compose passes
+    # EMBED_BACKEND/EMBED_BASE_URL/EMBED_MODEL from .env so switching the
+    # embedding provider never touches the mounted config.yaml.
+    if env_backend := os.environ.get("EMBED_BACKEND"):
+        if env_backend not in ("local", "http"):
+            raise ValueError(
+                f"EMBED_BACKEND must be 'local' or 'http' (got {env_backend!r})"
+            )
+        cfg.graph.embed.backend = env_backend
+    if env_base := os.environ.get("EMBED_BASE_URL"):
+        cfg.graph.embed.base_url = env_base
+    if env_embed_model := os.environ.get("EMBED_MODEL"):
+        cfg.graph.embed.model = env_embed_model
+    # Post-override consistency: an env-driven backend switch to http must
+    # still carry a base_url (the yaml check above ran before overrides).
+    if cfg.graph.embed.backend == "http" and not cfg.graph.embed.base_url:
+        raise ValueError(
+            "graph.embed.backend=http requires graph.embed.base_url "
+            "(config.yaml or EMBED_BASE_URL)"
+        )
     return cfg

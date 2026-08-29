@@ -22,6 +22,7 @@ per 32 texts on CPU): tokenizer padding to batch-max, truncation at
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -142,6 +143,69 @@ class Embedder:
         return (vectors / norms).astype(np.float32)
 
 
+class HttpEmbedder:
+    """Phase 3.5 — OpenAI-compatible ``POST {base_url}/embeddings``.
+
+    Stateless (nothing to lazy-load or latch): every call carries its own
+    60 s timeout and the failures propagate to the caller — the semantic
+    index treats them as best-effort (indexing skips, search 503s), and
+    the dedup prefilter degrades exactly like a missing local model.
+    """
+
+    def __init__(self, base_url: str, model: str, api_key_env: str) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._model = model
+        self._api_key_env = api_key_env
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        import httpx
+
+        api_key = os.environ.get(self._api_key_env, "") if self._api_key_env else ""
+        headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+        r = httpx.post(
+            f"{self._base_url}/embeddings",
+            headers=headers,
+            json={"model": self._model, "input": texts},
+            timeout=60.0,
+        )
+        r.raise_for_status()
+        data = sorted(r.json()["data"], key=lambda d: d["index"])
+        return [row["embedding"] for row in data]
+
+
+def embed_texts(texts: list[str], cfg: Any) -> list[list[float]] | None:
+    """Phase 3.5 single embedding client — the ONE call both consumers
+    (dedup prefilter, semantic index) route through.
+
+    Dispatches on ``cfg.graph.embed.backend``:
+
+    - ``local``: the process-singleton ONNX Embedder (1024-d). Returns
+      None when the model is off/unavailable — callers degrade, never
+      crash.
+    - ``http``: the OpenAI-compatible endpoint (batch in ONE request).
+      Raises httpx errors on failure — indexing/search handle them.
+
+    An empty ``texts`` returns [] on either backend without I/O.
+    """
+    graph = getattr(cfg, "graph", None)
+    if graph is None:
+        return None
+    embed_cfg = getattr(graph, "embed", None)
+    backend = getattr(embed_cfg, "backend", "local")
+    if backend == "http":
+        if embed_cfg is None:  # pragma: no cover — backend implies embed_cfg
+            return None
+        return HttpEmbedder(
+            embed_cfg.base_url, embed_cfg.model, embed_cfg.api_key_env
+        ).embed(texts)
+    embedder = _embedder(cfg)
+    if embedder is None:
+        return None
+    matrix = embedder.embed(texts)
+    return [row.tolist() if hasattr(row, "tolist") else list(row) for row in matrix]
+
 # --- process-wide singleton (lazy, failure-latched) ---------------------------
 
 _EMBEDDERS: dict[str, Embedder] = {}
@@ -150,18 +214,24 @@ _SINGLETON_LOCK = threading.Lock()
 
 
 def _embedder(cfg: Any) -> Embedder | None:
-    """Singleton ``Embedder`` for ``cfg.graph.embed_model_path`` or None.
+    """Singleton ``Embedder`` for ``cfg.graph.embed.model_path`` or None.
 
     The ``embed_enabled is True`` gate is deliberate: real configs carry
     a real bool (default True), while test configs are MagicMocks whose
     auto-created attribute is truthy-but-not-True — those must take the
     pure-LLM path, never attempt an ONNX load. First load failure latches
     the path dead for the whole process (one warning, then None forever).
+    Phase 3.5: the model path moved into ``graph.embed.model_path``; a
+    cfg still carrying the old flat attr (tests) falls back to it.
     """
     graph = getattr(cfg, "graph", None)
     if graph is None or graph.embed_enabled is not True:
         return None
-    path = str(graph.embed_model_path)
+    embed_cfg = getattr(graph, "embed", None)
+    if embed_cfg is not None and getattr(embed_cfg, "model_path", None):
+        path = str(embed_cfg.model_path)
+    else:
+        path = str(graph.embed_model_path)
     with _SINGLETON_LOCK:
         if path in _DEAD_PATHS:
             return None
