@@ -40,6 +40,7 @@ from sqlalchemy import text
 
 from .db import Recording, RecordingState, session
 from .enrich import slugify
+from .llm_payload import system_first_messages
 
 log = logging.getLogger("transcripter.digest")
 
@@ -418,10 +419,12 @@ def _call_llm(prompt: str, cfg: Any) -> str:
         headers=headers,
         json={
             "model": cfg.summarize.model,
-            "messages": [
-                {"role": "system", "content": "Follow the user's instructions."},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": system_first_messages(
+                [
+                    {"role": "system", "content": "Follow the user's instructions."},
+                    {"role": "user", "content": prompt},
+                ]
+            ),
         },
         timeout=_HTTP_TIMEOUT_SEC,
     )
