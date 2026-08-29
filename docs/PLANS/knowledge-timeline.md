@@ -282,17 +282,109 @@ Recap — внутри ЕДИНОГО system message (второй system в с�
 конвертации отклоняется Jinja-шаблоном llama-server, ловили live 500).
 Timeline/Vault — только Postgres + events.json. Клиент: Vault-навигация,
 страница тега (3 таба), Events-таб с click-to-seek, чип «Memory applied».
-Гейты: worker 345+4s, api 173, pnpm 0/0. Известная живая проблема
-(вне этой фазы): повторный enrich 82-мин записи умер от голода в
-FIFO общего LLM-шлюза → Temporal cancel на 2400s; строка стадии
-застревает в running (починено вручную; кандидаты на отдельный фикс:
-retry политику enrich или отдельную очередь под дедуп-вопросы).
+Гейты: worker 345+4s, api 173, pnpm 0/0.
 
-## Фаза 3.5 — семантический поиск (после)
+### Фаза 3-F — фикс голодающего enrich (2026-08-29)
 
-Эмбеддинги сегментов (та же bge-m3) → sqlite-vec рядом с events.json или
-векторный индекс Neo4j → «когда мы обсуждали X» по неймспейсу. База для
-recap-ретрива.
+Живой инцидент: второй прогон enrich 82-мин записи. Извлечение
+(1 вызов, таймаут 2370 с) простояло в FIFO-очереди общего LiteLLM
+(параллельные потребители Megaserver ~10 req/мин; тривиальный Y/N
+таймаутился на 60 с) — Temporal отменил активность на 2400 с,
+CancelledError обошёл `except Exception`, строка стадии застряла в
+`running` (починено вручную). План фикса, три независимых слоя:
+
+**F1. Строки стадии — except CancelledError рядом с except Exception**
+(activities.py, все ML-активности; паттерн уже известен в чанке).
+Инвариант: любой выход из активности обязан оставить строку стадии не
+в `running`. Это устраняет класс багов «застряла навсегда», какой бы
+таймаут ни стрельнул.
+
+**F2. Retry-политика enrich: `_no_retry` → `RetryPolicy(maximum_attempts=3,
+non_retryable_error_types=["ApplicationError: enrich skipped"])`,
+backoff 5 мин ×3.** Волна B в workflow уже глотает провал enrich
+(recording остаётся done) — ретраи просто дают FIFO шанс рассосаться.
+Заголовок workflow-таймаута волн: 2400 → 3×(2400+300) + бюджет соседей
+(чанк ~2×duration+300, diarize `_ml_budget`); проверить, что общий
+workflow timeout не режет волну B раньше ретраев.
+
+**F3. Мягкий gate для дедуп-вопросов**: перед батчем `resolve_slugs`
+один пробный Y/N с `timeout=30` (см. _dedup_verdict → ask_same_entity);
+ReadTimeout/429/5xx → лог + короткий backoff (60 с, ×2) и повтор
+пробы; после 3 неудач — пропуск LLM-дедупа (префильтр 2.5 остаётся,
+серая зона мёрджится как "same", как сегодня при ошибке). Защищает
+длинный хвост, НЕ extraction.
+
+НЕ делаем: отдельная очередь/инстанс llama-server под транскриптер —
+порог сложности для одного пользователя; отдельные retry для
+extraction внутри enrich (риск 3×2400 с на один вызов).
+
+### Фаза 3.5 — семантический поиск (спроектирована 2026-08-29)
+
+Ответ на «каким образом создаются вектора»: **та же bge-m3 ONNX int8
+(CLS, L2-norm, 1024-d), тот же worker-процесс, тот же вызов
+`embeddings.embed()`, что уже работает в дедупе фазы 2.5.** Никакой
+новой модели, никакого нового рантайма, никакого GPU — CPU-инференс
+~0.08 с/батч-32 уже измерен живьём. Вектора НЕ сущностей —
+**сегментов transcripts**. Нового LLM-трафика нет вообще.
+
+**Что сегментируется** (порядок выбора, дешёвое → точное):
+1. diarized-transcript.md существует (диаризация была) → сегменты =
+   спикер-ходы из merge (`[mm:ss – mm:ss]` в начале каждого хода).
+   Существующие данные, нулевая стоимость.
+2. Нет диаризации → скользящие окна по transcript.md: ~300 токенов,
+   шаг 50 (соседние окна перекрываются, чтобы hit не разрезал
+   тему). Прагматично; главная цель фазы — диаризованные сессии.
+
+**Где живут вектора — sqlite-vec, НЕ Neo4j** (решение 6, общая
+линейка: артефакты-файлы + Postgres, из api никакого живого Neo4j):
+`<transcripts>/indexes/<tag-slug>.sqlite` рядом с digests/. Одна БД
+на неймспейс (тег) — изоляция и GC в один движок. Схема: `CREATE
+VIRTUAL TABLE segments USING vec0(embedding float[1024])` + обычная
+таблица `segments_meta(recording_id, session_title, ts_start,
+ts_end, speaker, text, indexed_at)` rowid-join. KNN-запрос:
+`SELECT m.*, distance FROM segments JOIN segments_meta ON
+segments.rowid = segments_meta.rowid WHERE embedding MATCH ? AND k = ?
+ORDER BY distance`. Пакет `sqlite-vec` в оба uv-проекта (tokenizers,
+onnxruntime уже есть в worker; api получит их транзитивно или
+строчкой — их уже несёт api для тестов graphs).
+
+**Когда строятся**: в конце enrich (после write_events_json, до
+`set_stage done`) — сегменты уже есть (transcript.md/диаризация),
+embedder уже загружен в процессе, один asyncio.to_thread-вызов
+`index_segments(rec_id, tags[0], …)`. Строки stage-details:
+`indexed_segments: N`. Перестройка: DELETE by recording_id → INSERT
+(идемпотентно для regenerate; purge-цикл enrich уже гарантирует
+«одна запись = её актуальные строки»). Backfill старых записей —
+единый скрипт `python -m worker.backfill_index` (обходит recordings
+с transcript.md, тот же index_segments; без Temporal, без LLM).
+
+**GC**: graph_gc.py уже знает список живых тегов/записей; расширить —
+при GC дропать index-файлы исчезнувших тегов. Удаление записи —
+сегменты этой записи в её тегах (DELETE by recording_id во всех
+валидных тегах записи).
+
+**API**: `GET /tags/{tag}/search?q=…&k=20` — embed(q) в api-процессе
+(модель в /models volume; api-контейнеру добавить volume `models:/models:ro`
+— сегодня его нет), KNN по sqlite-vec, ответ:
+`{tag, query, hits: [{recording_id, session_title, ts_start, ts_end,
+speaker, snippet, distance}]}`. client → клик = переход в запись с
+seek по ts_start (parseTs уже есть из фазы 3).
+
+**Пайплайн-хук**: маркер `graph.embed_search: true` (GraphConfig,
+дефолт true при наличии модели; выкл — index_segments становится
+no-op, как embeddings-off в 2.5). Деградация та же: нет модели →
+один warning, поиск 501/`available: false`.
+
+Границы фазы: ищем только по сессиям тега (неймспейса); никакого
+глобального кросс-тегового поиска (в планах 3.75+); никакой замены
+digest/recap — это независимая поверхность.
+
+Порядок работ: (a) worker `index_segments` + hook в enrich + тесты;
+(b) backfill-скрипт; (c) api search-роут + volume models:ro + тесты;
+(d) клиент: строка поиска на /vault/[tag] (recess, brass-контролы),
+результаты — список hit-строк с ts → seek; (e) live: backfill
+daily blob (82 мин, ~150 ходов) + пара пробных запросов, RU/EN
+микст; (f) гейты + commit.
 
 ---
 
