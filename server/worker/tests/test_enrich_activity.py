@@ -500,3 +500,71 @@ def test_done_skips_embeddings_when_model_unavailable(recording_id: str, tmp_pat
         _run(activities.enrich(recording_id))
 
     assert captured["embeddings"] is None
+
+
+# --- Phase 3.5: semantic index hook at the end of enrich ------------------------
+
+
+def test_done_indexes_segments(recording_id: str, tmp_path: Path) -> None:
+    """A successful enrich runs index_segments per namespace and the
+    details payload carries indexed_segments."""
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    cfg.transcripts.path = tmp_path / "transcripts"
+    profile = _make_profile(has_enrich=True)
+    extracted_graph = MagicMock()
+    extracted_graph.events = []
+    extracted_graph.entities = []
+    extracted_graph.relations = []
+    calls: list[str] = []
+
+    def fake_index(rec_id, tag, title, meta_dir, root, c):
+        calls.append(tag)
+        return 3
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
+        patch("worker.enrich.extract_from_transcript", return_value=extracted_graph),
+        patch("worker.enrich.resolve_slugs", return_value=extracted_graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch("worker.semantic_index.index_segments", side_effect=fake_index),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        result = _run(activities.enrich(recording_id))
+    assert calls == ["pathfinder"]
+    assert result["indexed_segments"] == 3
+    with session() as s:
+        st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
+        assert st.details["indexed_segments"] == 3
+
+
+def test_indexing_failure_never_fails_enrich(recording_id: str, tmp_path: Path) -> None:
+    """Best-effort contract: a dead embedder logs and reports 0 — the
+    stage still completes."""
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    cfg.transcripts.path = tmp_path / "transcripts"
+    profile = _make_profile(has_enrich=True)
+    extracted_graph = MagicMock()
+    extracted_graph.events = []
+    extracted_graph.entities = []
+    extracted_graph.relations = []
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
+        patch("worker.enrich.extract_from_transcript", return_value=extracted_graph),
+        patch("worker.enrich.resolve_slugs", return_value=extracted_graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch(
+            "worker.semantic_index.index_segments",
+            side_effect=RuntimeError("embedder down"),
+        ),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        result = _run(activities.enrich(recording_id))
+    assert result["indexed_segments"] == 0
+    with session() as s:
+        st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
+        assert st.status == StageStatus.done

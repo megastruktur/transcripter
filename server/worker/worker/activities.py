@@ -806,12 +806,41 @@ async def enrich(rec_id: str) -> dict:
                 resolved=resolved_by_tag[graph_tags[0]],
             )
         )
+        # Phase 3.5 semantic index: index this recording's segments in
+        # EVERY namespace (copies, like the graph write). BEST-EFFORT —
+        # a failing embedder must never fail enrich; details report how
+        # many segments landed (0 + a warning when the backend is down).
+        # Placed after write_events_json and before set_stage(done) so
+        # the details payload can carry indexed_segments.
+        from .semantic_index import index_segments
+
+        indexed = 0
+        for graph_tag in graph_tags:
+            try:
+                indexed += await _heartbeat_while(
+                    asyncio.to_thread(
+                        index_segments,
+                        rec_id,
+                        graph_tag,
+                        title,
+                        meta_dir(rec_id),
+                        c.transcripts.path,
+                        c,
+                    )
+                )
+            except Exception:
+                log.exception(
+                    "enrich: semantic indexing failed for %s (tag %r)",
+                    rec_id,
+                    graph_tag,
+                )
         details = {
             "events": len(extracted.events),
             "entities": len(extracted.entities),
             "relations": len(extracted.relations),
             "profile_id": profile_id,
             "namespaces": graph_tags,
+            "indexed_segments": indexed,
         }
         set_stage(rec_id, "enrich", StageStatus.done, details=details)
         # Phase 2 auto-digest — ONLY on success (never after a skip or

@@ -97,7 +97,8 @@ def test_graph_gc_deletes_stale_nodes() -> None:
         patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
     ):
         result = run_graph_gc(_cfg(graph_enabled=True))
-    assert result == {"deleted": 5}
+    # Phase 3.5: the payload also reports dropped index files.
+    assert result == {"deleted": 5, "dropped_indexes": 0}
     driver.close.assert_called_once()
     # The sweep received the LIVE catalog ids as the keep-list.
     assert runs[0]["ids"] == ["keep-1", "keep-2"]
@@ -119,7 +120,11 @@ def test_graph_gc_sweeps_query_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         patch("worker.graph_gc.GraphDatabase.driver", return_value=driver),
         patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
     ):
-        assert run_graph_gc(_cfg(graph_enabled=True)) == {"deleted": 0}
+        # Phase 3.5: payload carries the index-file drop count too.
+            assert run_graph_gc(_cfg(graph_enabled=True)) == {
+                "deleted": 0,
+                "dropped_indexes": 0,
+            }
     assert "origin_recording_id IS NOT NULL" in captured["query"]
     assert "DETACH DELETE" in captured["query"]
     assert "$ids" in captured["query"]

@@ -46,6 +46,26 @@ def _recording_ids() -> list[str]:
         return [row.id for row in s.execute(text("SELECT id FROM recordings"))]
 
 
+def _live_tags() -> list[str]:
+    """Distinct free tags across the catalog (the index namespaces).
+    Recordings with no tags live in the built-in ``untagged`` namespace,
+    so it is always live. Dialect-portable: pg unnest vs sqlite json_each
+    (same shape as digest._select_recordings)."""
+    with session() as s:
+        if s.get_bind().dialect.name == "postgresql":
+            rows = s.execute(
+                text("SELECT DISTINCT unnest(tags) FROM recordings")
+            ).fetchall()
+        else:
+            rows = s.execute(
+                text(
+                    "SELECT DISTINCT value FROM recordings, "
+                    "json_each(recordings.tags)"
+                )
+            ).fetchall()
+    return [row[0] for row in rows]
+
+
 def run_graph_gc(cfg: Any) -> dict:
     """One GC pass. Returns ``{"deleted": N}``, or
     ``{"skipped": "graph disabled"}`` when the graph backend is off
@@ -72,6 +92,18 @@ def run_graph_gc(cfg: Any) -> dict:
                     break
     finally:
         driver.close()
-    if total:
-        log.info("graph_gc: deleted %d stale node(s)", total)
-    return {"deleted": total}
+    # Phase 3.5: semantic index files of tags that vanished from the
+    # catalog are dead weight — drop them in the same sweep. Best-effort
+    # (a failure here must not fail the graph GC pass).
+    dropped_indexes: list[str] = []
+    try:
+        from .semantic_index import drop_dead_tag_indexes
+
+        dropped_indexes = drop_dead_tag_indexes(
+            cfg.transcripts.path, _live_tags() + ["untagged"]
+        )
+        if dropped_indexes:
+            log.info("graph_gc: dropped %d dead index file(s)", len(dropped_indexes))
+    except Exception:
+        log.exception("graph_gc: semantic index sweep failed")
+    return {"deleted": total, "dropped_indexes": len(dropped_indexes)}
