@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -315,6 +316,10 @@ def _safe_label(label: str) -> str:
     match = _SAFE_LABEL.match(label)
     return match.group(0) if match is not None else "Entity"
 
+
+_SAFE_LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def write_to_graph(
     rec_id: str,
     tag: str,
@@ -325,6 +330,8 @@ def write_to_graph(
     graph_password: str,
     graph_database: str,
     purge_origin: bool = True,
+    recording_date: str = "",
+    recording_title: str = "",
 ) -> int:
     """Single transaction, writing the extraction into the ONE namespace
     ``tag`` (the activity calls this once per namespace):
@@ -348,9 +355,12 @@ def write_to_graph(
        candidate (``-2``, ``-3`` suffix). Carry ``origin_recording_id``
        on every node for the same reason: the next run can purge them
        cleanly.
-    3. ``CREATE`` events with origin + tag. Events are NOT merged — each
-       recording's events are unique by construction, and a new run
-       replaces the previous batch (the DETACH DELETE above).
+    3. ``CREATE`` events with origin + tag + ``recording_date`` (ISO-8601
+       UTC string from coalesce(recorded_at, created_at)) +
+       ``recording_title`` — the timeline keys Phase 1 digests/clients
+       read. Events are NOT merged — each recording's events are unique
+       by construction, and a new run replaces the previous batch (the
+       DETACH DELETE above).
     4. ``MERGE`` ``(:Event)-[:MENTIONS]->(:Entity)`` and
        ``(:Entity)-[:REL {type}]->(Entity)``.
 
@@ -392,6 +402,7 @@ def write_to_graph(
                 (
                     f"CREATE (e:`{safe_event_label}` {{"
                     "ts: $ts, kind: $kind, summary: $summary, "
+                    "recording_date: $recording_date, recording_title: $recording_title, "
                     # Not an f-string: a single closing brace is literal here
                     # ("}}" would survive verbatim and break Cypher — caught
                     # by scripts/graph_probe.py against a live Neo4j).
@@ -437,6 +448,8 @@ def write_to_graph(
                     summary=ev.summary,
                     tag=tag,
                     rec=rec_id,
+                    recording_date=recording_date,
+                    recording_title=recording_title,
                 ).single()
                 if node is not None:
                     event_ids.append(node[0])
@@ -482,7 +495,85 @@ def write_to_graph(
         driver.close()
 
 
-_SAFE_LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+def _event_mentions(event: ExtractedEvent, entities: list[ExtractedEntity]) -> list[str]:
+    """Slugs of entities whose label occurs in the event summary.
+
+    Word-boundary, case-insensitive — EXACTLY the same heuristic
+    ``write_to_graph`` applies when it creates the
+    ``(:Event)-[:MENTIONS]->(:Entity)`` edges, so the JSON artifact and
+    the graph never disagree. Phase 2 will replace this with
+    model-declared mentions; until then this is the honest
+    approximation.
+    """
+    summary_lower = event.summary.lower()
+    return [
+        ent.slug
+        for ent in entities
+        if ent.label
+        and re.search(r"\b" + re.escape(ent.label.lower()) + r"\b", summary_lower)
+    ]
+
+
+def write_events_json(
+    path: Path,
+    *,
+    recording_id: str,
+    recording_date: str,
+    recording_title: str,
+    profile_id: str,
+    namespaces: list[str],
+    resolved: ExtractedGraph,
+) -> None:
+    """Write the recording's timeline artifact ``meta/events.json``.
+
+    Atomic (unique-tmp + ``os.replace`` — the same idiom as the digest
+    note and export artifacts) so a regenerate can never serve a torn
+    file. The shape is the locked Phase 1 client contract:
+
+    ``{recording_id, recording_date (ISO-8601 UTC),
+    recording_title, profile_id, namespaces,
+    events: [{ts, kind, summary, mentions}],
+    entities: [{slug, label, type}],
+    relations: [{from, to, type}]}``
+
+    ``mentions`` per event: slugs whose label the summary references —
+    see ``_event_mentions`` (mirrors the graph's MENTIONS edges).
+    ``entities``/``relations`` come from the FIRST namespace's resolved
+    extraction (namespaces are copies; the first write also purged).
+    """
+    payload = {
+        "recording_id": recording_id,
+        "recording_date": recording_date,
+        "recording_title": recording_title,
+        "profile_id": profile_id,
+        "namespaces": list(namespaces),
+        "events": [
+            {
+                "ts": ev.ts,
+                "kind": ev.kind,
+                "summary": ev.summary,
+                "mentions": _event_mentions(ev, resolved.entities),
+            }
+            for ev in resolved.events
+        ],
+        "entities": [
+            {"slug": e.slug, "label": e.label, "type": e.type}
+            for e in resolved.entities
+        ],
+        "relations": [
+            {"from": r.from_slug, "to": r.to_slug, "type": r.type}
+            for r in resolved.relations
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def resolve_slugs(

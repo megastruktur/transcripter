@@ -241,3 +241,29 @@ class TagDigest:
             retry_policy=_no_retry(),
             heartbeat_timeout=timedelta(seconds=120),
         )
+
+
+@workflow.defn
+class GraphGc:
+    """Phase 1: periodic knowledge-graph GC (Temporal Schedule action).
+
+    Schedule actions can only start WORKFLOWS, so this thin wrapper
+    exists to carry the single ``graph_gc`` activity. The schedule is
+    registered in ``main.amain`` when ``graph.enabled`` and
+    ``graph.gc_interval_sec > 0``; CANCEL_OTHER overlap means a slow
+    pass never stacks with the next one — the newer run cancels the
+    older. The sweep itself is read-Postgres + delete-Neo4j and returns
+    a count; there is no per-recording state to finalize.
+    """
+
+    @workflow.run
+    async def run(self, args: dict | None = None) -> dict:
+        return await workflow.execute_activity(
+            "graph_gc",
+            args or {},
+            start_to_close_timeout=timedelta(minutes=10),
+            # A failed sweep is simply retried on the next tick — but a
+            # transient Neo4j hiccup should not burn the tick silently.
+            retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_timeout=timedelta(seconds=120),
+        )

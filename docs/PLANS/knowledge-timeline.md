@@ -180,18 +180,19 @@ fallback — tauri-plugin-dialog).
 - **Detail**: бейдж типа у заголовка; PATCH тегов уже есть, добавить тип
   (+ редактирование `recorded_at`, то же поле).
 
-### 0.6 Верификация фазы 0
+### 0.6 Верификация фазы 0 — ВЫПОЛНЕНО (2026-08-29, коммит 7eee78e)
 
-- uv pytest: (1) direct-upload с `type`+`recorded_at` (бэкидейт);
-  (2) `GET /tags` — счётчики, порядок; (3) PATCH `type` → колонка + enrich
-  regenerate; (4) PATCH тегов → enrich regenerate (не только export);
-  (5) digest: тег с пробелом 202 + слаг-файл + frontmatter `tag:`;
-  коллизия `dnd dark castle` vs `dnd-dark-castle` → разные файлы;
-  (6) match_profile_by_type (meeting/ttrpg/None-запись/unknown-type);
-  (7) untagged-запись → namespace `untagged`.
-- e2e GRAPH=1: upload `type=meeting` + тег с пробелом → enrich done →
-  digest 202/файл со слагом.
-- pnpm check/build.
+- uv pytest: api 138 passed, worker 234 passed + 4 skipped; ruff/pyright
+  clean; pnpm check 0/0, pnpm build ok.
+- Live (prod-стек): миграция + бэкфилл 14 pathfinder → ttrpg; upload с
+  `type=meeting`, тегами `e2e phase 0` + `проба кириллица` и бэкидейтом →
+  конвейер done; PATCH `type=meeting` на реальной 82-мин записи → enrich
+  66 сущностей / 34 связи профилем meeting-notes в ОБА неймспейса
+  (`daily blob`, `проба`); digest: слаг-файлы `e2e-phase-0.md` +
+  `проба-кириллица.md`, frontmatter `tag:` verbatim, мусорный тег 400.
+- Найдено попутно: записи, созданные до появления enrich, не имеют
+  enrich-стадии — regenerate её создаёт не во всех путях (backfill
+  вручную через regenerate enrich; кандидат в Phase 1 GC-обход).
 
 ---
 
@@ -212,12 +213,20 @@ fallback — tauri-plugin-dialog).
    призраков (delete без чистки работал с самого появления enrich) — те же
    MINUS + DETACH DELETE, просто первый прогон не пустой. Отдельного
    инструмента не нужно: расписание само схлопывает backlog.
-5. **Digest UI**: кнопка в Vault, `GET /tags/{tag}/digest` (чтение заметки),
-   просмотр через `Markdown.svelte`.
+5. **Digest UI (сдвиг сужен 2026-08-29)**: per-tag digest кнопки +
+   просмотр на СТРАНИЦЕ ЗАПИСИ (Detail, recess + Markdown.svelte,
+   регенерация с поллингом) + `GET /tags/{tag}/digest` (чтение заметки
+   по frontmatter-матчу). Полноценный «Vault»-экран с манифестом тегов —
+   фаза 3 (там же Timeline/Entities табы).
 6. **`untagged`-digest gap**: `_select_recordings('untagged')` с
    `tags.contains(['untagged'])` не матчит пустые `tags = []`. Спец-ветка:
    `untagged` → `array_length(tags,1) IS NULL` (pg) / `json_array_length
    (tags) = 0` (sqlite). Иначе digest по untagged навсегда пуст.
+
+Статус (2026-08-29): пункты 1–6 реализованы; гейты — api 149 passed /
+worker 244 passed, ruff+pyright clean, pnpm check 0/0 + build. GC
+включается `graph.gc_interval_sec` (по умолчанию 0 = off; в прод
+выставить, напр. 3600). Live-проверка — ниже по ходу работ.
 
 ## Фаза 2 — активная память (1–2 дня)
 

@@ -1,7 +1,8 @@
 """Tag-scoped endpoints.
 
 Wave C: POST /tags/{tag}/digest builds a markdown digest note of the
-last N done recordings carrying the tag.
+last N done recordings carrying the tag; GET /tags/{tag}/digest serves
+the generated note back as text/markdown.
 
 Tag normalization mirrors recordings.py: trim + lowercase. After that the
 regex pins down file-system-safe forms (the digest activity writes
@@ -16,7 +17,9 @@ import logging
 import re
 from typing import Annotated
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -28,6 +31,11 @@ from app.db import get_session
 router = APIRouter(prefix="/tags")
 
 _LOG = logging.getLogger("transcripter.api.tags")
+
+# Skip oversized files instead of yaml-parsing garbage/oddball notes.
+_MAX_DIGEST_BYTES = 1024 * 1024
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
 # After trim+lowercase: must start with a word character (Unicode letter,
 # digit or underscore), then word chars, spaces, dots, underscores, dashes
@@ -100,6 +108,43 @@ async def post_digest(
             status_code=503, detail="temporal unavailable; try again later"
         )
     return {"workflow_id": workflow_id, "tag": norm, "last_n": body.last_n}
+
+
+@router.get("/{tag}/digest")
+def get_digest(tag: Annotated[str, Path()], request: Request) -> FileResponse:
+    """Serve the generated digest note for a tag (Phase 1).
+
+    The worker names files by slug, so the API cannot reconstruct the
+    filename from the raw tag — instead every ``*.md`` under
+    ``<transcripts>/digests/`` is checked for frontmatter whose ``tag:``
+    equals the normalized tag (sorted, first match wins). No graph
+    required: reading a note must work even with the graph profile off.
+    """
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    digests = request.app.state.config.transcripts.path / "digests"
+    if not digests.is_dir():
+        raise HTTPException(
+            status_code=404, detail=f"digest not generated yet for tag {norm}"
+        )
+    for md in sorted(digests.glob("*.md")):
+        try:
+            if md.stat().st_size > _MAX_DIGEST_BYTES:
+                continue
+            m = _FRONTMATTER_RE.match(md.read_text(encoding="utf-8"))
+        except OSError:
+            continue  # unreadable/racy file — not this tag's problem
+        if not m:
+            continue
+        try:
+            fm = yaml.safe_load(m.group(1))
+        except yaml.YAMLError:
+            continue  # malformed frontmatter — skip, don't 500
+        if isinstance(fm, dict) and fm.get("tag") == norm:
+            return FileResponse(md, media_type="text/markdown")
+    raise HTTPException(
+        status_code=404, detail=f"digest not generated yet for tag {norm}"
+    )
 
 
 class TagCount(BaseModel):

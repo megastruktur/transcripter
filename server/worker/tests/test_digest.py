@@ -226,22 +226,37 @@ class TestAtomicWrite:
 # ---------- _render_prompt -----------------------------------------------------
 
 
-def test_render_prompt_includes_tag_and_recording_ids() -> None:
-    rows = [DigestRow("r1", "T1", datetime.now(UTC))]
+def test_render_prompt_shows_title_date_not_raw_uuids() -> None:
+    """Phase 1: session lines are 'title (YYYY-MM-DD)' — raw recording
+    UUIDs must not leak into the prompt (only mapped via origin)."""
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC)),
+        DigestRow("r2", "T2", datetime(2026, 8, 2, tzinfo=UTC),
+                  datetime(2026, 8, 2, tzinfo=UTC)),
+    ]
     graph = _make_graph_slice()
     prompt = _render_prompt("pathfinder", 3, rows, graph)
     assert "Tag: pathfinder" in prompt
-    assert "r1" in prompt
+    # Sessions header lists title (date) pairs, not UUIDs.
+    assert "Sessions: T1 (2026-08-01), T2 (2026-08-02)" in prompt
+    # Event lines carry session title (date), not the raw origin id.
+    assert "T1 (2026-08-01) [combat @ 2026-08-01T00:00:00Z] ambush" in prompt
+    assert "T2 (2026-08-02) [rp @ 2026-08-02T00:00:00Z] tavern chat" in prompt
     assert "Ameiko" in prompt
-    assert "ambush" in prompt
     assert "Sandpoint" in prompt
+    # Raw recording ids must NOT appear anywhere in the rendered prompt.
+    assert "r1" not in prompt
+    assert "r2" not in prompt
 
 
 def test_render_prompt_says_none_when_empty() -> None:
-    rows = [DigestRow("r1", "T1", datetime.now(UTC))]
+    rows = [DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                      datetime(2026, 8, 1, tzinfo=UTC))]
     graph = DigestGraphSlice(entities=[], events=[], relations=[])
     prompt = _render_prompt("pathfinder", 1, rows, graph)
     assert "(none)" in prompt
+    assert "Sessions: T1 (2026-08-01)" in prompt
 
 
 # ---------- build_digest_input (Postgres + Neo4j) -----------------------------
@@ -317,8 +332,8 @@ def test_build_digest_input_handles_no_rows(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_write_digest_emits_frontmatter_and_body(tmp_path: Path) -> None:
     rows = [
-        DigestRow("r1", "T1", datetime.now(UTC)),
-        DigestRow("r2", "T2", datetime.now(UTC)),
+        DigestRow("r1", "T1", datetime.now(UTC), datetime.now(UTC)),
+        DigestRow("r2", "T2", datetime.now(UTC), datetime.now(UTC)),
     ]
     inp = DigestInput(
         tag="pathfinder",

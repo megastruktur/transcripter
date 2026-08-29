@@ -34,6 +34,7 @@ from .db import (
     session,
     set_stage,
 )
+from .graph_gc import run_graph_gc as run_graph_gc_impl
 from .transcribe import (
     ApiTranscriber,
     LocalTranscriber,
@@ -493,8 +494,9 @@ async def enrich(rec_id: str) -> dict:
     it did nothing.
 
     Otherwise: extract (json_object, ×3 attempts), dedup with slug+LLM,
-    write one transaction PER NAMESPACE (see below), and report the
-    entity count.
+    write one transaction PER NAMESPACE (see below), write the
+    ``meta/events.json`` timeline artifact (Phase 1 client contract —
+    see ``enrich.write_events_json``), and report the entity count.
 
     Phase 0 namespaces: the extraction is written as a COPY into EVERY
     free tag of the recording (tags are pure user grouping now); a
@@ -511,11 +513,16 @@ async def enrich(rec_id: str) -> dict:
         return {"skipped": "graph disabled"}
     profile = None
     title = ""
+    recording_date = ""
     tags: list[str] = []
     with session() as s:
         rec = s.get(Recording, rec_id)
         assert rec is not None, f"recording {rec_id} not found"
         title = rec.title or ""
+        # Phase 1 timeline key: coalesce(recorded_at, created_at) as an
+        # ISO-8601 UTC string (recorded_at is the import backdate).
+        stamp = rec.recorded_at or rec.created_at
+        recording_date = stamp.isoformat()
         tags = list(rec.tags or [])
         # Phase 0: profile routing by recording.type; the TAGS are the
         # graph namespaces (every tag gets a copy; empty → ["untagged"]).
@@ -531,6 +538,7 @@ async def enrich(rec_id: str) -> dict:
             extract_from_transcript,
             pre_existing_lookup,
             resolve_slugs,
+            write_events_json,
             write_to_graph,
         )
 
@@ -597,8 +605,27 @@ async def enrich(rec_id: str) -> dict:
                     os.environ.get(c.graph.password_env, ""),
                     c.graph.database,
                     purge_origin=idx == 0,
+                    recording_date=recording_date,
+                    recording_title=title,
                 )
             )
+        # Phase 1 timeline artifact: meta/events.json from the FIRST
+        # namespace's resolved extraction (namespaces are copies;
+        # identical content). Written after the graph loop so a graph
+        # failure never leaves a file describing nodes that were never
+        # committed. Atomic — see write_events_json.
+        await _heartbeat_while(
+            asyncio.to_thread(
+                write_events_json,
+                meta_dir(rec_id) / "events.json",
+                recording_id=rec_id,
+                recording_date=recording_date,
+                recording_title=title,
+                profile_id=profile.id,
+                namespaces=graph_tags,
+                resolved=resolved_by_tag[graph_tags[0]],
+            )
+        )
         details = {
             "events": len(extracted.events),
             "entities": len(extracted.entities),
@@ -767,3 +794,21 @@ async def tag_digest(args: dict) -> dict:
     except Exception:
         log.exception("tag_digest failed for tag=%s", tag)
         raise
+
+
+@activity.defn
+async def graph_gc(_: dict) -> dict:
+    """Phase 1 graph GC sweep (not a pipeline stage — no stage rows).
+
+    Deletes every graph node whose ``origin_recording_id`` no longer
+    exists in the recordings catalog (recording deleted in the API →
+    its nodes would otherwise live in Neo4j forever, since enrich only
+    purges a recording's nodes when THAT recording re-writes itself).
+
+    Invoked by the ``GraphGc`` workflow on a Temporal Schedule
+    (``graph.gc_interval_sec``); also safe to call ad hoc. Graph
+    disabled → ``{"skipped": "graph disabled"}`` so a scheduled run on
+    a graph-less deployment is a clean no-op, not an error storm.
+    """
+    c = cfg()
+    return await _heartbeat_while(asyncio.to_thread(run_graph_gc_impl, c))

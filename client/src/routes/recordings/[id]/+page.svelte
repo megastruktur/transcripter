@@ -11,7 +11,9 @@
 		deleteRecording,
 		audioUrl,
 		fetchArtifact,
+		fetchDigest,
 		regenerate,
+		regenerateDigest,
 		loadApiConfig,
 		type Recording,
 		type Stage
@@ -48,6 +50,19 @@
 	let tagError = $state('');
 	let tagSaving = $state(false);
 	let tagSuggestions = $derived(tagSuggestionsCache.items);
+
+	/** Per-tag digest viewer: one viewer at a time; regeneration is async,
+	 * so the GET is polled every 10s for up to 2min after a 202. */
+	const DIGEST_POLL_MS = 10_000;
+	const DIGEST_POLL_BUDGET_MS = 120_000;
+	let digestTag = $state<string | null>(null);
+	let digestText = $state<string | null>(null);
+	let digestLoading = $state(false);
+	let digestMissing = $state(false);
+	let digestError = $state('');
+	let digestGenerating = $state(false);
+	let digestNote = $state('');
+	let digestPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
 	/** Pipeline-type editor state: null = editing closed; string = draft value. */
 	let typeDraft = $state<string | null>(null);
 	let typeSaving = $state(false);
@@ -144,6 +159,7 @@
 		})();
 		return () => {
 			stopPoll();
+			stopDigestPoll();
 			stageRetry.stages = [];
 			stageRetry.enabled = false;
 			stageRetry.rerun = null;
@@ -211,6 +227,7 @@
 		tagError = '';
 		try {
 			applyRecording(await updateRecording(loadApiConfig(), recording.id, { tags: next }));
+			if (digestTag && !next.includes(digestTag)) closeDigest();
 		} catch (caught) {
 			recording = { ...recording, tags: previous };
 			tagError = `Tag update failed: ${caught instanceof Error ? caught.message : String(caught)}`;
@@ -311,6 +328,100 @@
 		} finally {
 			tabInflight.delete(tab);
 			if (generation === tabGeneration) tabLoading = false;
+		}
+	}
+
+	function stopDigestPoll(): void {
+		if (digestPoll) {
+			globalThis.clearTimeout(digestPoll);
+			digestPoll = null;
+		}
+	}
+
+	function scheduleDigestPoll(tag: string, startedAt: number): void {
+		digestPoll = globalThis.setTimeout(() => void pollDigestOnce(tag, startedAt), DIGEST_POLL_MS);
+	}
+
+	async function pollDigestOnce(tag: string, startedAt: number): Promise<void> {
+		digestPoll = null;
+		if (digestTag !== tag) return;
+		try {
+			const text = await fetchDigest(loadApiConfig(), tag);
+			if (digestTag !== tag) return;
+			digestText = text;
+			digestGenerating = false;
+			digestMissing = false;
+			digestNote = '';
+		} catch (caught) {
+			if (digestTag !== tag) return;
+			const status = (caught as { status?: number }).status;
+			if (status === 404) {
+				if (Date.now() - startedAt >= DIGEST_POLL_BUDGET_MS) {
+					digestGenerating = false;
+					digestNote = 'Still generating — check again in a minute.';
+					return;
+				}
+				scheduleDigestPoll(tag, startedAt);
+				return;
+			}
+			digestGenerating = false;
+			digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+		}
+	}
+
+	async function openDigest(tag: string): Promise<void> {
+		stopDigestPoll();
+		digestTag = tag;
+		digestText = null;
+		digestMissing = false;
+		digestError = '';
+		digestNote = '';
+		digestGenerating = false;
+		digestLoading = true;
+		try {
+			const text = await fetchDigest(loadApiConfig(), tag);
+			if (digestTag !== tag) return;
+			digestText = text;
+		} catch (caught) {
+			if (digestTag !== tag) return;
+			const status = (caught as { status?: number }).status;
+			if (status === 404) {
+				digestMissing = true;
+			} else {
+				digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+			}
+		} finally {
+			if (digestTag === tag) digestLoading = false;
+		}
+	}
+
+	function closeDigest(): void {
+		stopDigestPoll();
+		digestTag = null;
+		digestText = null;
+		digestLoading = false;
+		digestMissing = false;
+		digestError = '';
+		digestGenerating = false;
+		digestNote = '';
+	}
+
+	async function regenerateDigestNow(): Promise<void> {
+		if (!digestTag || digestGenerating) return;
+		const tag = digestTag;
+		stopDigestPoll();
+		digestText = null;
+		digestMissing = false;
+		digestNote = '';
+		digestError = '';
+		digestGenerating = true;
+		try {
+			await regenerateDigest(loadApiConfig(), tag);
+			scheduleDigestPoll(tag, Date.now());
+		} catch (caught) {
+			if (digestTag !== tag) return;
+			digestGenerating = false;
+			digestError = `Digest request failed: ${caught instanceof Error ? caught.message : String(caught)}`;
 		}
 	}
 
@@ -471,6 +582,53 @@
 	{:else if recording.tags.length > 0}
 		<p class="tags-hint">Tag changes re-run memory extraction automatically.</p>
 	{/if}
+	{#if recording.state === 'done' && recording.tags.length > 0}
+		<div class="digest-row" role="group" aria-label="Tag digests">
+			{#each recording.tags as tag (tag)}
+				<button
+					type="button"
+					class="digest-button"
+					class:active={digestTag === tag}
+					aria-pressed={digestTag === tag}
+					onclick={() => (digestTag === tag ? closeDigest() : void openDigest(tag))}
+				>
+					<Icon name="summary" size={11} />
+					{tag}
+				</button>
+			{/each}
+		</div>
+		{#if digestTag}
+			<section class="digest-panel" aria-label={`Digest · ${digestTag}`}>
+				<header class="digest-header">
+					<span class="digest-title" title={digestTag}>
+						<Icon name="summary" size={11} />
+						Digest
+						<span class="digest-tag-name">{digestTag}</span>
+					</span>
+					<button type="button" class="digest-regen" disabled={digestGenerating} onclick={() => void regenerateDigestNow()}>
+						<Icon name="refresh" size={11} strokeWidth={1.5} />
+						Regenerate
+					</button>
+					<button type="button" class="digest-close" aria-label="Close digest" title="Close digest" onclick={closeDigest}>
+						<Icon name="close" size={11} />
+					</button>
+				</header>
+				{#if digestLoading}
+					<p class="tab-placeholder">Retrieving digest…</p>
+				{:else if digestGenerating}
+					<p class="tab-placeholder">Generating…</p>
+				{:else if digestError}
+					<p class="tab-error" role="alert">{digestError}</p>
+				{:else if digestNote}
+					<p class="tab-placeholder">{digestNote}</p>
+				{:else if digestMissing}
+					<p class="tab-placeholder">No digest yet — generate first.</p>
+				{:else if digestText !== null}
+					<Markdown text={digestText} />
+				{/if}
+			</section>
+		{/if}
+	{/if}
 	{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
 		<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
 	{/each}
@@ -555,6 +713,19 @@
 	.tags-row.saving { opacity: 0.65; }
 	.tags-label { padding-top: 5px; font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
 	.tags-hint { margin: 0; color: var(--ash); font-size: 10px; }
+	.digest-row { display: flex; flex-wrap: wrap; gap: 6px; }
+	.digest-button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 10px; font-weight: 650; cursor: pointer; }
+	.digest-button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
+	.digest-button.active { border-color: var(--brass); background: rgba(215,167,71,.16); }
+	.digest-panel { flex: 1 1 auto; min-height: 160px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
+	.digest-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-bottom: 1px solid var(--line); }
+	.digest-title { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+	.digest-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--bone); font-size: 10px; letter-spacing: 0.02em; }
+	.digest-regen { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.digest-regen:hover:not(:disabled) { background: rgba(215,167,71,.2); }
+	.digest-regen:disabled { opacity: 0.6; cursor: default; }
+	.digest-close { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
+	.digest-close:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
 	.artifact-panel { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }

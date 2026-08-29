@@ -14,6 +14,9 @@ services:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
       - ./profiles:/etc/transcripter/profiles:ro
+      # Read-only: the API only serves generated digests; the worker owns
+      # writes to the transcripts dir.
+      - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts:ro
     depends_on:
       postgres:
         condition: service_healthy

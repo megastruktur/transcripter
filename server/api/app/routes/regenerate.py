@@ -20,7 +20,7 @@ ARTIFACTS: dict[str, list[str]] = {
     "diarize": ["meta/diarization.json"],
     "merge_speakers": ["meta/diarized-transcript.md"],
     "summarize": ["meta/summary.md"],
-    "enrich": [],  # graph-only; no file artifact in the recording folder
+    "enrich": ["meta/events.json"],  # graph (Neo4j) + file artifact
 }
 
 

@@ -142,6 +142,24 @@ export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
 	return body.items;
 }
 
+/** Per-tag digest note (markdown with frontmatter) produced by the enrich
+ * workflow. Throws with .status 404 when the digest is not generated yet. */
+export async function fetchDigest(cfg: ApiConfig, tag: string): Promise<string> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest`);
+	if (!resp.ok) throw Object.assign(new Error(`digest ${resp.status}`), { status: resp.status });
+	return resp.text();
+}
+
+/** Trigger digest (re)generation: the server replies 202 and runs the
+ * workflow asynchronously — poll fetchDigest until the note appears. */
+export async function regenerateDigest(cfg: ApiConfig, tag: string): Promise<void> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest`, { method: 'POST' });
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw new Error(detail.detail ?? `digest ${resp.status}`);
+	}
+}
+
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
 	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });

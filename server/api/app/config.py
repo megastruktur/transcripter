@@ -57,6 +57,17 @@ class GraphConfig(BaseModel):
         return bool(self.uri)
 
 
+class TranscriptsConfig(BaseModel):
+    """Note-export dir (mirrors worker config). The API only READS the
+    exported notes (digests) — the compose bind for api is read-only;
+    the worker owns writes. Container path is FIXED (/transcripts)."""
+
+    path: Path = Path("/transcripts")
+    # Kept for parity with the worker's TranscriptsConfig: the same yaml
+    # section feeds both processes (sentinel is a worker-only knob).
+    sentinel: str = ""
+
+
 class ServerConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
@@ -65,6 +76,7 @@ class ServerConfig(BaseModel):
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     graph: GraphConfig = Field(default_factory=GraphConfig)
+    transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
 
     @property
     def recordings_root(self) -> Path:

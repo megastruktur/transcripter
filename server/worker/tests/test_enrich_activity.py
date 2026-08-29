@@ -42,8 +42,11 @@ def _make_cfg(tmp_path: Path) -> Any:
     cfg.graph.password_env = "NEO4J_PASSWORD"
     cfg.graph.database = "neo4j"
     cfg.profiles.path = tmp_path / "profiles"
+    # REAL paths under tmp: the fixture writes a real transcript.md into
+    # the meta dir and the enrich stage writes a real meta/events.json —
+    # both must survive actual filesystem calls.
     cfg.storage.path = tmp_path / "storage"
-    cfg.recordings_root = cfg.storage.path / "recordings"
+    cfg.recordings_root = tmp_path / "storage" / "recordings"
     return cfg
 
 
@@ -93,14 +96,18 @@ def _make_profile(has_enrich: bool) -> Profile:
     )
 
 
-def _cfg(graph_enabled: bool) -> Any:
+def _cfg(graph_enabled: bool, tmp_path: Path) -> Any:
     cfg = MagicMock()
     cfg.graph.enabled = graph_enabled
     cfg.graph.uri = "bolt://n" if graph_enabled else ""
     cfg.graph.user = "neo4j"
     cfg.graph.password_env = "NEO4J_PASSWORD"
     cfg.graph.database = "neo4j"
-    cfg.profiles.path = Path("/nonexistent")
+    cfg.profiles.path = tmp_path / "profiles"
+    # Real paths: the done-path tests let the activity write
+    # meta/events.json for real (write_events_json uses os.replace).
+    cfg.storage.path = tmp_path / "storage"
+    cfg.recordings_root = tmp_path / "storage" / "recordings"
     return cfg
 
 
@@ -108,8 +115,8 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def test_skipped_when_graph_disabled(recording_id: str) -> None:
-    cfg = _cfg(graph_enabled=False)
+def test_skipped_when_graph_disabled(recording_id: str, tmp_path: Path) -> None:
+    cfg = _cfg(graph_enabled=False, tmp_path=tmp_path)
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=True)),
@@ -121,8 +128,8 @@ def test_skipped_when_graph_disabled(recording_id: str) -> None:
         assert st.status == StageStatus.skipped
 
 
-def test_skipped_when_no_profile_with_enrich(recording_id: str) -> None:
-    cfg = _cfg(graph_enabled=True)
+def test_skipped_when_no_profile_with_enrich(recording_id: str, tmp_path: Path) -> None:
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=_make_profile(has_enrich=False)),
@@ -134,8 +141,8 @@ def test_skipped_when_no_profile_with_enrich(recording_id: str) -> None:
         assert st.status == StageStatus.skipped
 
 
-def test_skipped_when_no_profile_at_all(recording_id: str) -> None:
-    cfg = _cfg(graph_enabled=True)
+def test_skipped_when_no_profile_at_all(recording_id: str, tmp_path: Path) -> None:
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=None),
@@ -144,8 +151,8 @@ def test_skipped_when_no_profile_at_all(recording_id: str) -> None:
     assert result == {"skipped": "no profile with enrich"}
 
 
-def test_done_when_extraction_and_write_succeed(recording_id: str) -> None:
-    cfg = _cfg(graph_enabled=True)
+def test_done_when_extraction_and_write_succeed(recording_id: str, tmp_path: Path) -> None:
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     profile = _make_profile(has_enrich=True)
     extracted_graph = MagicMock()
     extracted_graph.events = []
@@ -182,8 +189,8 @@ def test_done_when_extraction_and_write_succeed(recording_id: str) -> None:
         assert st.details["profile_id"] == "pathfinder"
 
 
-def test_failed_when_extraction_raises(recording_id: str) -> None:
-    cfg = _cfg(graph_enabled=True)
+def test_failed_when_extraction_raises(recording_id: str, tmp_path: Path) -> None:
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     profile = _make_profile(has_enrich=True)
     with (
         patch("worker.activities.cfg", return_value=cfg),
@@ -200,11 +207,11 @@ def test_failed_when_extraction_raises(recording_id: str) -> None:
         assert "LLM gave up" in st.last_error
 
 
-def test_done_when_dedup_fails_falls_back_to_raw(recording_id: str) -> None:
+def test_done_when_dedup_fails_falls_back_to_raw(recording_id: str, tmp_path: Path) -> None:
     """Dedup is best-effort: a flakey LLM or lookup must never kill the
     stage. The activity falls back to the raw extraction graph and
     still marks the stage done."""
-    cfg = _cfg(graph_enabled=True)
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     profile = _make_profile(has_enrich=True)
     extracted_graph = MagicMock()
     extracted_graph.events = []
@@ -240,3 +247,68 @@ def test_done_when_dedup_fails_falls_back_to_raw(recording_id: str) -> None:
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.done
+
+
+def test_done_writes_events_json(recording_id: str, tmp_path: Path) -> None:
+    """Phase 1 contract: a successful enrich run writes meta/events.json
+    with the locked client shape — recording identity, profile, the tag
+    namespaces, per-event mentions (label-occurrence approximation),
+    and the FIRST namespace's entities/relations."""
+    import json as json_mod
+
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    profile = _make_profile(has_enrich=True)
+
+    from worker.enrich import ExtractedEntity, ExtractedEvent, ExtractedGraph, ExtractedRelation
+
+    extraction = ExtractedGraph(
+        events=[
+            ExtractedEvent(ts="00:42:13", kind="decision", summary="Release Q3 postponed"),
+            ExtractedEvent(ts="00:50:00", kind="note", summary="nothing referenced"),
+        ],
+        entities=[
+            ExtractedEntity(slug="release-q3", label="Release Q3", type="project"),
+        ],
+        relations=[
+            ExtractedRelation(from_slug="release-q3", to_slug="release-q3", type="SELF"),
+        ],
+    )
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
+        patch("worker.enrich.extract_from_transcript", return_value=extraction),
+        patch("worker.enrich.resolve_slugs", return_value=extraction),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=1) as wtg,
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        result = _run(activities.enrich(recording_id))
+    assert result["profile_id"] == "pathfinder"
+    # write_to_graph received the timeline keys from the recording row.
+    assert wtg.call_count == 1  # single namespace: tags=["pathfinder"]
+
+    events_path = activities.meta_dir(recording_id) / "events.json"
+    assert events_path.exists(), "meta/events.json must be written on success"
+    data = json_mod.loads(events_path.read_text(encoding="utf-8"))
+    assert data["recording_id"] == recording_id
+    assert data["recording_title"] == "Session 1"
+    assert data["recording_date"]  # ISO string from recorded_at/created_at
+    assert data["profile_id"] == "pathfinder"
+    assert data["namespaces"] == ["pathfinder"]
+    assert data["events"] == [
+        {
+            "ts": "00:42:13",
+            "kind": "decision",
+            "summary": "Release Q3 postponed",
+            "mentions": ["release-q3"],  # label "Release Q3" occurs in summary
+        },
+        {
+            "ts": "00:50:00",
+            "kind": "note",
+            "summary": "nothing referenced",
+            "mentions": [],
+        },
+    ]
+    assert data["entities"] == [{"slug": "release-q3", "label": "Release Q3", "type": "project"}]
+    assert data["relations"] == [{"from": "release-q3", "to": "release-q3", "type": "SELF"}]

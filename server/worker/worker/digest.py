@@ -106,10 +106,8 @@ _DIGEST_PROMPT_HEADER = (
     "no frontmatter — the host prepends its own.\n\n"
     "---\n\n"
     "Tag: {tag}\n"
-    "Sessions (id, title, count): {count}\n"
-    "Recording ids: {rec_ids}\n\n"
-    "Entities (label — type — sessions):\n{entities}\n\n"
-    "Events (recording_id — kind — ts — summary):\n{events}\n\n"
+    "Sessions: {sessions} (count: {count})\n"
+    "Events (session title — date — kind — ts — summary):\n{events}\n\n"
     "Relations (from — rel — to):\n{relations}\n"
 )
 
@@ -124,6 +122,9 @@ class DigestRow:
     recording_id: str
     title: str
     created_at: datetime
+    # Timeline key: coalesce(recorded_at, created_at) — the date the
+    # session HAPPENED (an import backdate), falling back to catalog time.
+    recording_date: datetime
 
 
 @dataclass(frozen=True)
@@ -221,15 +222,27 @@ def _frontmatter(recording_ids: list[str], tag: str, count: int) -> str:
 
 
 def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
-    """Last N *done* recordings carrying ``tag`` (already normalized)."""
+    """Last N *done* recordings carrying ``tag`` (already normalized).
+
+    ``tag == "untagged"`` is the built-in catch-all namespace: it matches
+    recordings whose ``tags`` array is EMPTY (pg: ``array_length(tags,1)
+    IS NULL``; sqlite: ``json_array_length(tags) = 0``), not rows that
+    literally carry the word. Ordering and limit are the same as for a
+    regular tag: newest first by ``created_at DESC, id DESC``.
+    """
     with session() as s:
         dialect_name = s.get_bind().dialect.name
         if dialect_name == "postgresql":
+            tag_filter = (
+                Recording.tags.contains([tag])
+                if tag != "untagged"
+                else text("array_length(tags, 1) IS NULL")
+            )
             rows = (
                 s.query(Recording)
                 .filter(
                     Recording.state == RecordingState.done,
-                    Recording.tags.contains([tag]),
+                    tag_filter,
                 )
                 .order_by(Recording.created_at.desc(), Recording.id.desc())
                 .limit(last_n)
@@ -237,22 +250,31 @@ def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
             )
         else:
             # SQLite: ``tags`` is JSON; ``EXISTS`` with json_each is portable.
-            tag_json = tag.replace("\\", "\\\\").replace('"', '\\"')
+            if tag == "untagged":
+                tag_filter = text("json_array_length(recordings.tags) = 0")
+            else:
+                tag_json = tag.replace("\\", "\\\\").replace('"', '\\"')
+                tag_filter = text(
+                    f"EXISTS (SELECT 1 FROM json_each(recordings.tags) "
+                    f"WHERE value = '{tag_json}')"
+                )
             rows = (
                 s.query(Recording)
                 .filter(
                     Recording.state == RecordingState.done,
-                    text(
-                        f"EXISTS (SELECT 1 FROM json_each(recordings.tags) "
-                        f"WHERE value = '{tag_json}')"
-                    ),
+                    tag_filter,
                 )
                 .order_by(Recording.created_at.desc(), Recording.id.desc())
                 .limit(last_n)
                 .all()
             )
     return [
-        DigestRow(recording_id=r.id, title=r.title or "", created_at=r.created_at)
+        DigestRow(
+            recording_id=r.id,
+            title=r.title or "",
+            created_at=r.created_at,
+            recording_date=r.recorded_at or r.created_at,
+        )
         for r in rows
     ]
 
@@ -354,23 +376,30 @@ def _render_prompt(
     rows: list[DigestRow],
     graph: DigestGraphSlice,
 ) -> str:
+    # Session identity for the LLM: "title (YYYY-MM-DD)" keyed by the
+    # recording id — the graph slice's event "origin" values are raw ids,
+    # and they get mapped through this before rendering.
+    sessions: dict[str, str] = {
+        r.recording_id: f"{r.title or '(untitled)'} ({r.recording_date.date().isoformat()})"
+        for r in rows
+    }
     entities_text = "\n".join(
         f"- {e['label']} ({e['type']}) — {e['session_count']} session(s)"
         for e in graph.entities
     ) or "- (none)"
     events_text = "\n".join(
-        f"- {e['origin']} [{e['kind']} @ {e['ts']}] {e['summary']}"
+        f"- {sessions.get(str(e['origin']), e['origin'])} "
+        f"[{e['kind']} @ {e['ts']}] {e['summary']}"
         for e in graph.events
     ) or "- (none)"
     rels_text = "\n".join(
         f"- {r['from']} --[{r['rel']}]--> {r['to']}" for r in graph.relations
     ) or "- (none)"
-    rec_ids = [r.recording_id for r in rows]
     return _DIGEST_PROMPT_HEADER.format(
         tag=tag,
         last_n=last_n,
         count=len(rows),
-        rec_ids=", ".join(rec_ids),
+        sessions=", ".join(sessions[id_] for id_ in sessions),
         entities=entities_text,
         events=events_text,
         relations=rels_text,

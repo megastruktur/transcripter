@@ -75,6 +75,11 @@ class GraphConfig(BaseModel):
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
     database: str = "neo4j"
+    # Periodic graph GC interval in seconds (0 = off): every tick a
+    # Temporal Schedule runs the GraphGc workflow, which deletes graph
+    # nodes whose recording no longer exists in the catalog. The first
+    # scheduled run naturally cleans any backlog.
+    gc_interval_sec: int = 0
 
     @property
     def enabled(self) -> bool:

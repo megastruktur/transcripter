@@ -60,3 +60,22 @@ def test_transcripts_sentinel_from_yaml(tmp_path, monkeypatch):
     cfg = load_config()
     assert cfg.transcripts.sentinel == ".obsidian"
     assert str(cfg.transcripts.path) == "/transcripts"
+
+
+def test_graph_gc_interval_default_off(tmp_path, monkeypatch):
+    """gc_interval_sec defaults to 0 (schedule never registered)."""
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.gc_interval_sec == 0
+
+
+def test_graph_gc_interval_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "graph:\n  uri: bolt://neo4j:7687\n  gc_interval_sec: 3600\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.gc_interval_sec == 3600
+    assert cfg.graph.enabled is True

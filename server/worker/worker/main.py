@@ -3,8 +3,18 @@
 import asyncio
 import logging
 import os
+from datetime import timedelta
 
-from temporalio.client import Client
+from temporalio.client import (
+    Client,
+    Schedule,
+    ScheduleActionStartWorkflow,
+    ScheduleAlreadyRunningError,
+    ScheduleIntervalSpec,
+    ScheduleOverlapPolicy,
+    SchedulePolicy,
+    ScheduleSpec,
+)
 from temporalio.worker import Worker
 
 from .activities import (
@@ -13,6 +23,7 @@ from .activities import (
     enrich,
     export_transcript,
     finalize_recording,
+    graph_gc,
     merge_speakers,
     preload_local,
     summarize,
@@ -21,12 +32,12 @@ from .activities import (
 )
 from .config import load_config
 from .db import init_engine
-from .workflows import ExportRecording, ProcessRecording, TagDigest
+from .workflows import ExportRecording, GraphGc, ProcessRecording, TagDigest
 
 # Module-level so tests can assert it matches every @activity.defn
+ACTIVITIES = [chunk, transcribe, diarize, merge_speakers, summarize, enrich, finalize_recording, export_transcript, tag_digest, graph_gc]
 # (an unregistered activity fails workflows at runtime with NotFoundError
 # while the stage row sits pending — observed 2026-08-27 on enrich).
-ACTIVITIES = [chunk, transcribe, diarize, merge_speakers, summarize, enrich, finalize_recording, export_transcript, tag_digest]
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("transcripter.worker")
@@ -75,10 +86,40 @@ async def amain() -> None:
 
     client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"))
 
+    # Phase 1: periodic knowledge-graph GC. A Temporal Schedule starts the
+    # tiny GraphGc workflow every gc_interval_sec; CANCEL_OTHER keeps a slow
+    # pass from stacking with the next tick. Created best-effort at startup
+    # (schedule persists server-side; "already running" = a previous worker
+    # created it — log and continue). Interval 0 disables registration.
+    if cfg.graph.enabled and cfg.graph.gc_interval_sec > 0:
+        try:
+            await client.create_schedule(
+                id="graph-gc",
+                schedule=Schedule(
+                    action=ScheduleActionStartWorkflow(
+                        GraphGc.run,
+                        {},
+                        id="graph-gc-workflow",
+                        task_queue=TASK_QUEUE,
+                    ),
+                    spec=ScheduleSpec(
+                        intervals=[ScheduleIntervalSpec(
+                            every=timedelta(seconds=cfg.graph.gc_interval_sec)
+                        )],
+                    ),
+                    policy=SchedulePolicy(
+                        overlap=ScheduleOverlapPolicy.CANCEL_OTHER,
+                    ),
+                ),
+            )
+            log.info("graph GC scheduled every %ds", cfg.graph.gc_interval_sec)
+        except ScheduleAlreadyRunningError:
+            log.info("graph GC schedule already exists; leaving it as is")
+
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[ProcessRecording, ExportRecording, TagDigest],
+        workflows=[ProcessRecording, ExportRecording, TagDigest, GraphGc],
         activities=ACTIVITIES,
     )
     log.info("worker started on queue %s", TASK_QUEUE)

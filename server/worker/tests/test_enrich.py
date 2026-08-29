@@ -527,6 +527,39 @@ class TestWriteToGraph:
         assert any("Thing" in q for q in merged_qs)
         assert not any("`Event`" in q for q in merged_qs)
 
+    def test_event_props_carry_recording_date_and_title(self):
+        """Phase 1: every CREATE Event statement receives
+        recording_date (ISO-8601 UTC) and recording_title params, and the
+        Cypher sets both as node properties."""
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                events=[
+                    ExtractedEvent(ts="00:42:13", kind="decision", summary="release postponed"),
+                ],
+                entities=[],
+                relations=[],
+            )
+            write_to_graph(
+                rec_id="rec-9",
+                tag="daily blob",
+                graph=graph,
+                node_labels=MagicMock(event="Event", entity="Entity"),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+                recording_date="2026-08-29T09:00:00+00:00",
+                recording_title="Daily Blob Aug 26",
+            )
+        event_runs = [(q, p) for q, p in runs if "recording_date" in q]
+        assert event_runs, "event CREATE query must set recording_date"
+        _q, params = event_runs[0]
+        assert params["recording_date"] == "2026-08-29T09:00:00+00:00"
+        assert params["recording_title"] == "Daily Blob Aug 26"
+        assert params["rec"] == "rec-9"
+        assert params["tag"] == "daily blob"
+
 
 # --- pre_existing_lookup (uses real driver) ----------------------------------
 

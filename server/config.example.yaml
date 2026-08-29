@@ -68,3 +68,8 @@ graph:
   user: neo4j
   password_env: NEO4J_PASSWORD
   database: neo4j
+  # Periodic graph GC (seconds, 0 = off): sweeps graph nodes whose
+  # recording no longer exists in the catalog (deleted recordings would
+  # otherwise leave orphaned nodes forever). The first tick after startup
+  # cleans any backlog.
+#  gc_interval_sec: 3600
