@@ -358,6 +358,33 @@ def test_write_digest_emits_frontmatter_and_body(tmp_path: Path) -> None:
     assert "# My digest" in content[end + 5 :]
 
 
+def test_write_digest_overwrites_existing_tag_file_in_place(tmp_path: Path) -> None:
+    """Regeneration must refresh the tag's EXISTING note (frontmatter
+    match, even under a -N collision name), not pile up -2/-3 copies —
+    the auto-digest path would otherwise mint a new file every window
+    (observed live: untagged.md + untagged-2.md for the same tag)."""
+    transcripts = tmp_path / "transcripts"
+    inp = DigestInput(
+        tag="untagged",
+        last_n=1,
+        rows=[DigestRow("r1", "T1", datetime.now(UTC), datetime.now(UTC))],
+        graph=DigestGraphSlice(entities=[], events=[], relations=[]),
+    )
+    first = write_digest(transcripts, inp, "first body")
+    # Simulate a slug-collision rename from another tag: same tag under -2.
+    second = first.with_name("untagged-2.md")
+    second.write_text(first.read_text(encoding="utf-8"), encoding="utf-8")
+    first.unlink()
+
+    path = write_digest(transcripts, inp, "second body")
+    assert path == second, "must overwrite the existing -2 file for the tag"
+    assert "second body" in path.read_text(encoding="utf-8")
+    # No new files minted.
+    assert sorted(p.name for p in (transcripts / "digests").glob("*.md")) == [
+        "untagged-2.md"
+    ]
+
+
 # ---------- run_digest ----------------------------------------------------------
 
 

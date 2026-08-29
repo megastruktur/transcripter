@@ -73,3 +73,17 @@ graph:
   # otherwise leave orphaned nodes forever). The first tick after startup
   # cleans any backlog.
 #  gc_interval_sec: 3600
+  # Phase 2: when NO profile matches the recording's type, enrich anyway
+  # with the built-in fallback prompt (minimal generic ontology,
+  # profile_id "builtin-fallback"). A profile that MATCHED but has no
+  # enrich section still means opted out — only the no-match case falls
+  # back. false → no-match recordings report stage skipped (pre-phase-2
+  # behavior).
+  enrich_all: true
+  # Phase 2 auto-digest: after a successful enrich, refresh each affected
+  # namespace's digest note (digests/<slug>.md) when the file is older
+  # than auto_digest_window_sec or missing (last_n=5, best-effort — a
+  # digest failure never fails the recording). Skipped stages never
+  # trigger a refresh.
+  auto_digest: true
+  auto_digest_window_sec: 3600

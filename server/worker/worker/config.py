@@ -80,6 +80,17 @@ class GraphConfig(BaseModel):
     # nodes whose recording no longer exists in the catalog. The first
     # scheduled run naturally cleans any backlog.
     gc_interval_sec: int = 0
+    # Phase 2: when NO profile matches the recording's type, enrich with
+    # the built-in fallback prompt (minimal generic ontology) instead of
+    # skipping. A profile that MATCHED but has no enrich section still
+    # means opted out — only the no-match case falls back.
+    enrich_all: bool = True
+    # Phase 2: after a successful enrich, auto-refresh each affected
+    # namespace's digest note (digests/<slug>.md) when it is older than
+    # this window (or missing). A window of 0 means "refresh on every
+    # enrich run"; switch auto_digest off to stop auto-refresh entirely.
+    auto_digest: bool = True
+    auto_digest_window_sec: int = 3600
 
     @property
     def enabled(self) -> bool:

@@ -380,3 +380,66 @@ class TestProfileEnrich:
         assert len(profiles) == 1
         assert profiles[0].enrich.node_labels.event == "CampaignEvent"
         assert profiles[0].enrich.node_labels.entity == "Thing"
+
+
+# --- EnrichSpec.known_entities (Phase 2) -------------------------------------
+
+
+class TestEnrichKnownEntities:
+    def test_default_off(self, tmp_path):
+        _write_profile(
+            tmp_path, "p.yaml", _valid_yaml() + "\nenrich:\n  prompt: |\n    e {transcript}\n"
+        )
+        profiles = load_profiles(tmp_path)
+        assert profiles[0].enrich.known_entities is False
+
+    def test_enabled_requires_placeholder(self, tmp_path):
+        """known_entities: true without {known_entities} in the prompt →
+        the file is invalid and warn+skipped."""
+        _write_profile(
+            tmp_path,
+            "p.yaml",
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    e {transcript}\n  known_entities: true\n",
+        )
+        assert load_profiles(tmp_path) == []
+
+    def test_enabled_with_placeholder_loads(self, tmp_path):
+        _write_profile(
+            tmp_path,
+            "p.yaml",
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    e {transcript}\n    {known_entities}\n  known_entities: true\n",
+        )
+        profiles = load_profiles(tmp_path)
+        assert len(profiles) == 1
+        assert profiles[0].enrich.known_entities is True
+        assert "{known_entities}" in profiles[0].enrich.prompt
+
+    def test_integer_n_loads(self, tmp_path):
+        _write_profile(
+            tmp_path,
+            "p.yaml",
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    e {transcript}\n    {known_entities}\n  known_entities: 10\n",
+        )
+        profiles = load_profiles(tmp_path)
+        assert profiles[0].enrich.known_entities == 10
+
+    def test_non_positive_integer_invalid(self, tmp_path):
+        _write_profile(
+            tmp_path,
+            "p.yaml",
+            _valid_yaml()
+            + "\nenrich:\n  prompt: |\n    e {transcript}\n    {known_entities}\n  known_entities: 0\n",
+        )
+        assert load_profiles(tmp_path) == []
+
+    def test_placeholder_without_enabled_renders_empty(self):
+        """A prompt carrying {known_entities} with the lookup off is LEGAL
+        (the host renders '' — zero lookup cost); only the enabled-without-
+        placeholder direction is an author error."""
+        from worker.profiles import EnrichSpec
+
+        spec = EnrichSpec(prompt="e {transcript} {known_entities}")
+        assert spec.known_entities is False

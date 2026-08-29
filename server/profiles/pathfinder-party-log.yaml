@@ -31,15 +31,23 @@ summarize:
   output_artifact: session-log.md
 # Wave B: extract campaign entities/events into the knowledge graph.
 enrich:
+  # Phase 2: the prompt carries {known_entities} — the host renders the
+  # target namespace's top-25 known entities there so the party's NPC,
+  # item and location slugs stay stable across sessions.
+  known_entities: true
   prompt: |
     Ты извлекаешь структурированные данные из транскрипта настольной
     RPG-сессии «{title}». Верни JSON-объект:
-    {"events": [{"ts": "…", "kind": "…", "summary": "…"}],
+    {"events": [{"ts": "…", "kind": "…", "summary": "…", "entities": ["…"]}],
      "entities": [{"slug": "…", "label": "…", "type": "character|npc|item|location|faction"}],
      "relations": [{"from_slug": "…", "to_slug": "…", "type": "…"}]}
     Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
     имя; events — ключевые игровые события в хронологическом порядке;
-    relations — связи между сущностями (owns, met, located_in, member_of…).
+    relations — связи между сущностями (owns, met, located_in, member_of…);
+    entities у события — slug'и персонажей/предметов/мест, которых оно
+    касается (известные slug'и переиспользуй).
     Пустые разделы — пустые списки.
+    Известные сущности этого пространства (переиспользуй их slug, если упоминаешь):
+    {known_entities}
     ТРАНСКРИПТ:
     {transcript}

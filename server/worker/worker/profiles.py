@@ -89,10 +89,30 @@ class EnrichSpec(BaseModel):
     prompt. ``prompt`` must contain ``{transcript}``; ``{title}`` is
     optional. ``node_labels`` lets a profile rename the default node
     labels without forking the extraction pipeline.
+
+    ``known_entities`` (Phase 2) opts the profile into the known-entities
+    block: ``false`` (default) = no lookup, zero cost; ``true`` = the
+    activity renders the target namespace's top-25 entities; an integer
+    N = top-N. Enabling it requires the ``{known_entities}`` placeholder
+    in the prompt (validated on load — a prompt that asks for a block it
+    never receives would render stale text). The placeholder WITHOUT the
+    lookup is legal: it simply renders as an empty string.
     """
 
     prompt: str = Field(min_length=1)
     node_labels: EnrichNodeLabels = Field(default_factory=EnrichNodeLabels)
+    known_entities: bool | int = False
+
+    @field_validator("known_entities")
+    @classmethod
+    def _known_entities_sane(cls, v: bool | int) -> bool | int:
+        # bool is an int subclass — reject 0/True-as-int misuse: only
+        # False, True, or a positive integer are valid.
+        if isinstance(v, bool):
+            return v
+        if v <= 0:
+            raise ValueError("enrich.known_entities integer must be >= 1")
+        return v
 
     @field_validator("prompt")
     @classmethod
@@ -100,6 +120,18 @@ class EnrichSpec(BaseModel):
         if "{transcript}" not in v:
             raise ValueError("enrich.prompt must contain {transcript}")
         return v
+
+    @model_validator(mode="after")
+    def _known_entities_needs_placeholder(self) -> EnrichSpec:
+        # Cross-field: enabling the lookup without the placeholder would
+        # pay the graph query and drop the block. Reject on load (the
+        # profile file is then warn+skipped like any invalid profile).
+        if self.known_entities is not False and "{known_entities}" not in self.prompt:
+            raise ValueError(
+                "enrich.known_entities is enabled but the prompt lacks the "
+                "{known_entities} placeholder"
+            )
+        return self
 
 
 class Profile(BaseModel):

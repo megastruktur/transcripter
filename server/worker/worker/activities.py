@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from collections.abc import Awaitable
 from pathlib import Path
 from typing import Any
@@ -487,16 +488,40 @@ BEST_EFFORT_STAGES = frozenset({"diarize", "merge_speakers", "enrich"})
 async def enrich(rec_id: str) -> dict:
     """Wave-B knowledge-graph extraction stage (best-effort).
 
-    Skipped when EITHER (a) no profile with an ``enrich`` section
-    matches the recording's type, OR (b) the graph backend is not
-    configured (empty ``graph.uri``). The same shape as
-    ``diarize``/``merge_speakers`` so the activity is honest about WHY
-    it did nothing.
+    Skipped when EITHER (a) no profile matches the recording's type AND
+    ``graph.enrich_all`` is off, (b) a profile matched but carries no
+    ``enrich`` section (the author opted out — a match means domain
+    steering exists, its absence in an enrich block is deliberate), OR
+    (c) the graph backend is not configured (empty ``graph.uri``). The
+    same shape as ``diarize``/``merge_speakers`` so the activity is
+    honest about WHY it did nothing.
+
+    Phase 2 — no match + ``enrich_all`` → the built-in fallback prompt
+    (``enrich._FALLBACK_ENRICH_PROMPT``, minimal generic ontology,
+    ``profile_id='builtin-fallback'``).
 
     Otherwise: extract (json_object, ×3 attempts), dedup with slug+LLM,
     write one transaction PER NAMESPACE (see below), write the
     ``meta/events.json`` timeline artifact (Phase 1 client contract —
     see ``enrich.write_events_json``), and report the entity count.
+
+    Phase 2 known-entities: when the profile enables
+    ``enrich.known_entities``, a PRE-extraction snapshot of the target
+    namespace (top-N entities, the recording's own nodes excluded — same
+    rule as the dedup lookup) is rendered into the ``{known_entities}``
+    prompt block so the model reuses established slugs. The snapshot
+    comes from the FIRST namespace only: extraction is ONE LLM call, and
+    per-namespace re-extraction would multiply the cost by the tag
+    count. Mention consistency comes from slug reuse; dedup is already
+    per-namespace downstream.
+
+    Phase 2 auto-digest: AFTER a successful enrich, each affected
+    namespace's digest note is refreshed INLINE (best-effort) when it is
+    older than ``graph.auto_digest_window_sec`` or missing. Inline
+    rather than signal-based: keeps ordering (the digest sees the
+    just-written graph) and needs no signal infrastructure we don't
+    have; the cost is enrich latency bounded by last_n=5 and the stale
+    window. Failures log and continue — never fail enrich.
 
     Phase 0 namespaces: the extraction is written as a COPY into EVERY
     free tag of the recording (tags are pure user grouping now); a
@@ -529,18 +554,83 @@ async def enrich(rec_id: str) -> dict:
         from .profiles import match_profile_by_type
 
         profile = match_profile_by_type(rec.type, c.profiles.path)
-    if profile is None or profile.enrich is None:
+    from .profiles import EnrichSpec
+
+    # Local binding so the fallback branch below can narrow: a matched
+    # profile without an enrich section = the author opted out (domain
+    # steering exists) → skip EVEN with enrich_all on. Only the no-match
+    # case consults enrich_all.
+    enrich = profile.enrich if profile is not None else None
+    if profile is not None and enrich is None:
+        set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
+        return {"skipped": "no profile with enrich"}
+    if profile is None and not c.graph.enrich_all:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
         return {"skipped": "no profile with enrich"}
     graph_tags = tags or ["untagged"]
     try:
         from .enrich import (
+            _FALLBACK_ENRICH_PROMPT,
             extract_from_transcript,
+            list_known_entities,
             pre_existing_lookup,
+            render_known_entities,
             resolve_slugs,
             write_events_json,
             write_to_graph,
         )
+
+        # Phase 2: no profile matched + enrich_all → the built-in
+        # fallback prompt (generic ontology). A matched profile without
+        # an enrich section never reaches here (skipped above); the
+        # assert re-establishes that invariant for the type checker
+        # across the try boundary.
+        if profile is None:
+            profile_id = "builtin-fallback"
+            enrich_spec = EnrichSpec(
+                prompt=_FALLBACK_ENRICH_PROMPT, known_entities=True
+            )
+        else:
+            profile_id = profile.id
+            enrich_spec = profile.enrich
+            assert enrich_spec is not None
+
+        # Phase 2 known-entities: pre-extraction snapshot of the FIRST
+        # namespace (see docstring for why only the first). The
+        # placeholder guard makes the lookup zero-cost when the prompt
+        # doesn't use it; profile validation already guarantees the
+        # placeholder whenever known_entities is enabled.
+        known_entities_block = ""
+        if (
+            enrich_spec.known_entities is not False
+            and "{known_entities}" in enrich_spec.prompt
+        ):
+            limit = (
+                _KNOWN_ENTITIES_DEFAULT
+                if enrich_spec.known_entities is True
+                else int(enrich_spec.known_entities)
+            )
+            try:
+                rows = await _heartbeat_while(
+                    asyncio.to_thread(
+                        list_known_entities,
+                        c.graph.uri,
+                        c.graph.user,
+                        os.environ.get(c.graph.password_env, ""),
+                        c.graph.database,
+                        graph_tags[0],
+                        rec_id,
+                        limit,
+                    )
+                )
+            except Exception:
+                # Best-effort prompt enhancement: a flakey neo4j must not
+                # fail the stage — render an empty namespace instead.
+                log.exception(
+                    "enrich: known-entities lookup failed; continuing without"
+                )
+                rows = []
+            known_entities_block = render_known_entities(rows)
 
         # Extract (json_object + ×3 attempts) — synchronous LLM call.
         extracted = await _heartbeat_while(
@@ -548,8 +638,9 @@ async def enrich(rec_id: str) -> dict:
                 extract_from_transcript,
                 meta_dir(rec_id) / "transcript.md",
                 title,
-                profile.enrich.prompt,
+                enrich_spec.prompt,
                 c,
+                known_entities_block,
             )
         )
         # Two-level dedup: slug collisions across the local extraction
@@ -599,7 +690,7 @@ async def enrich(rec_id: str) -> dict:
                     rec_id,
                     graph_tag,
                     resolved_by_tag[graph_tag],
-                    profile.enrich.node_labels,
+                    enrich_spec.node_labels,
                     c.graph.uri,
                     c.graph.user,
                     os.environ.get(c.graph.password_env, ""),
@@ -621,7 +712,7 @@ async def enrich(rec_id: str) -> dict:
                 recording_id=rec_id,
                 recording_date=recording_date,
                 recording_title=title,
-                profile_id=profile.id,
+                profile_id=profile_id,
                 namespaces=graph_tags,
                 resolved=resolved_by_tag[graph_tags[0]],
             )
@@ -630,15 +721,61 @@ async def enrich(rec_id: str) -> dict:
             "events": len(extracted.events),
             "entities": len(extracted.entities),
             "relations": len(extracted.relations),
-            "profile_id": profile.id,
+            "profile_id": profile_id,
             "namespaces": graph_tags,
         }
         set_stage(rec_id, "enrich", StageStatus.done, details=details)
+        # Phase 2 auto-digest — ONLY on success (never after a skip or
+        # failure). Best-effort per tag; see _auto_digest_tags.
+        if c.graph.auto_digest:
+            await _auto_digest_tags(graph_tags, c)
         return details
     except Exception as e:
         log.exception("enrich failed for %s", rec_id)
         set_stage(rec_id, "enrich", StageStatus.failed, error=str(e))
         raise
+
+
+# Phase 2: top-N known entities rendered for ``known_entities: true``
+# (an integer in the profile overrides the default cap).
+_KNOWN_ENTITIES_DEFAULT = 25
+
+_AUTO_DIGEST_LAST_N = 5
+
+
+async def _auto_digest_tags(tags: list[str], c: WorkerConfig) -> None:
+    """Refresh each tag's digest note when stale (Phase 2 auto-digest).
+
+    ``digests/<slug>.md`` under the transcripts root — mtime older than
+    ``graph.auto_digest_window_sec``, or missing → run
+    ``digest.run_digest`` INLINE (heartbeat-wrapped to_thread) with
+    ``last_n=5``. Inline rather than signal- or workflow-based: keeps
+    ordering (the digest reads the graph the same activity just wrote)
+    and needs no signal infrastructure; the price is enrich latency,
+    bounded by last_n=5 and the stale window.
+
+    Best-effort per tag: any failure is logged and the remaining tags
+    still get their turn — enrich already succeeded and must never be
+    retro-failed by a digest refresh.
+    """
+    from .digest import run_digest, safe_filename
+
+    digests_dir = c.transcripts.path / "digests"
+    now = time.time()
+    for tag in tags:
+        digest_file = digests_dir / safe_filename(tag)
+        try:
+            age = now - digest_file.stat().st_mtime
+        except OSError:
+            age = None  # missing (or unreadable) → treat as stale
+        if age is not None and age < c.graph.auto_digest_window_sec:
+            continue
+        try:
+            await _heartbeat_while(
+                asyncio.to_thread(run_digest, tag, _AUTO_DIGEST_LAST_N, c, c.transcripts.path)
+            )
+        except Exception:
+            log.exception("enrich: auto-digest failed for tag %r", tag)
 
 
 @activity.defn

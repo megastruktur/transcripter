@@ -24,18 +24,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from worker.enrich import (
+    _FALLBACK_ENRICH_PROMPT,
     ExistingEntityLookup,
     ExtractedEntity,
     ExtractedEvent,
     ExtractedGraph,
     ExtractedRelation,
+    _coerce_event,
+    _event_mentions,
     _parse_extraction,
     _parse_yes_no,
+    _render_prompt,
     ask_same_entity,
     extract_from_transcript,
     pre_existing_lookup,
+    render_known_entities,
     resolve_slugs,
     slugify,
+    write_events_json,
     write_to_graph,
 )
 
@@ -639,3 +645,285 @@ def test_pre_existing_lookup_instantiates_driver(monkeypatch):
     assert calls["uri"] == "bolt://x:7687" and calls["auth"] == ("neo4j", "pw")
     lookup.close()
     assert calls.get("closed") is True
+
+
+# --- Phase 2: known_entities -------------------------------------------------
+
+
+class TestRenderKnownEntities:
+    def test_empty_is_none_literal(self):
+        assert render_known_entities([]) == "(none)"
+
+    def test_one_row_per_line(self):
+        rows = [
+            {"slug": "galahad", "label": "Galahad", "type": "character"},
+            {"slug": "orcus", "label": "Orcus", "type": "npc"},
+        ]
+        out = render_known_entities(rows)
+        assert out == "- galahad — Galahad (character)\n- orcus — Orcus (npc)"
+
+
+class TestRenderPromptKnownEntities:
+    def test_placeholder_replaced(self):
+        out = _render_prompt(
+            "Known: {known_entities} | {transcript}", "t", "BODY", "- a — A (thing)"
+        )
+        assert "Known: - a — A (thing)" in out
+        assert "{known_entities}" not in out
+
+    def test_default_is_empty_string(self):
+        """Legacy calls (no block) render the placeholder as ''."""
+        out = _render_prompt("K:{known_entities} {transcript}", "t", "B")
+        assert "K: B" in out
+
+    def test_json_braces_still_safe(self):
+        out = _render_prompt(
+            '{"events": []} {known_entities} {transcript}', "t", "B", "X"
+        )
+        assert '{"events": []}' in out and "X" in out
+
+
+class TestExtractKnownEntitiesThreading:
+    def test_block_reaches_http_body(self, tmp_path: Path):
+        transcript = _write_transcript(tmp_path)
+        payload: dict = {"events": [], "entities": [], "relations": []}
+        post = MagicMock(return_value=_mock_post_json(payload))
+        with patch("worker.enrich.httpx.post", post):
+            extract_from_transcript(
+                transcript, "T", "K:{known_entities} {transcript}", _ok_cfg(), "BLK"
+            )
+        sent = post.call_args.kwargs["json"]["messages"][1]["content"]
+        assert "K:BLK" in sent
+
+    def test_no_block_when_prompt_lacks_placeholder(self, tmp_path: Path):
+        """The contract: placeholder absent → NO lookup happens (zero cost).
+        At this layer: an empty block is passed and nothing renders."""
+        transcript = _write_transcript(tmp_path)
+        payload: dict = {"events": [], "entities": [], "relations": []}
+        post = MagicMock(return_value=_mock_post_json(payload))
+        with patch("worker.enrich.httpx.post", post):
+            extract_from_transcript(
+                transcript, "T", "plain {transcript}", _ok_cfg(), ""
+            )
+        sent = post.call_args.kwargs["json"]["messages"][1]["content"]
+        assert "BLK" not in sent
+
+
+# --- Phase 2: model-declared mentions ----------------------------------------
+
+
+class TestCoerceEventMentions:
+    def test_parses_entities_list(self):
+        ev = _coerce_event(
+            {"ts": "t", "kind": "k", "summary": "s", "entities": ["Galahad", "orc"]}
+        )
+        assert ev is not None and ev.mentions == ["galahad", "orc"]
+
+    def test_dedupes_and_slugifies(self):
+        ev = _coerce_event(
+            {"ts": "t", "kind": "k", "summary": "s", "entities": ["Galahad", "galahad!"]}
+        )
+        assert ev is not None and ev.mentions == ["galahad"]
+
+    def test_unknown_slugs_dropped(self):
+        ev = _coerce_event(
+            {
+                "ts": "t",
+                "kind": "k",
+                "summary": "s",
+                "entities": ["galahad", "ghost-slug"],
+            },
+            known_slugs={"galahad"},
+        )
+        assert ev is not None and ev.mentions == ["galahad"]
+
+    def test_no_entities_field_defaults_empty(self):
+        ev = _coerce_event({"ts": "t", "kind": "k", "summary": "s"})
+        assert ev is not None and ev.mentions == []
+
+    def test_non_list_entities_ignored(self):
+        ev = _coerce_event(
+            {"ts": "t", "kind": "k", "summary": "s", "entities": "galahad"}
+        )
+        assert ev is not None and ev.mentions == []
+
+
+class TestParseExtractionMentions:
+    def test_declared_mentions_kept_when_slug_extracted(self):
+        g = _parse_extraction(
+            {
+                "events": [
+                    {
+                        "ts": "t",
+                        "kind": "k",
+                        "summary": "s",
+                        "entities": ["galahad"],
+                    }
+                ],
+                "entities": [
+                    {"slug": "galahad", "label": "Galahad", "type": "character"}
+                ],
+                "relations": [],
+            }
+        )
+        assert g.events[0].mentions == ["galahad"]
+
+    def test_declared_mentions_dropped_when_slug_unknown(self):
+        g = _parse_extraction(
+            {
+                "events": [
+                    {
+                        "ts": "t",
+                        "kind": "k",
+                        "summary": "s",
+                        "entities": ["ghost-slug"],
+                    }
+                ],
+                "entities": [
+                    {"slug": "galahad", "label": "Galahad", "type": "character"}
+                ],
+                "relations": [],
+            }
+        )
+        assert g.events[0].mentions == []
+
+
+class TestEventMentions:
+    def test_declared_wins_over_heuristic(self):
+        ev = ExtractedEvent(
+            ts="t", kind="k", summary="nothing matching here", mentions=["galahad"]
+        )
+        ents = [ExtractedEntity(slug="galahad", label="Galahad", type="character")]
+        assert _event_mentions(ev, ents) == ["galahad"]
+
+    def test_fallback_heuristic_when_no_declared(self):
+        ev = ExtractedEvent(ts="t", kind="k", summary="Galahad attacked the orc")
+        ents = [
+            ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+            ExtractedEntity(slug="orc", label="Orc", type="npc"),
+        ]
+        assert _event_mentions(ev, ents) == ["galahad", "orc"]
+
+    def test_declared_not_revalidated_against_entities(self):
+        """The resolver is intentionally dumb about re-validation: coerce
+        already filtered against the extraction's entity set."""
+        ev = ExtractedEvent(ts="t", kind="k", summary="s", mentions=["kept-slug"])
+        assert _event_mentions(ev, []) == ["kept-slug"]
+
+
+class TestWriteToGraphDeclaredMentions:
+    def test_mentions_edges_follow_declared(self):
+        """Declared mentions produce MENTIONS edges; the heuristic is NOT
+        consulted (the summary deliberately contains no labels)."""
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                events=[
+                    ExtractedEvent(
+                        ts="00:05",
+                        kind="combat",
+                        summary="the duel concluded",
+                        mentions=["galahad"],
+                    ),
+                ],
+                entities=[
+                    ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+                    ExtractedEntity(slug="orc", label="Orc", type="npc"),
+                ],
+                relations=[],
+            )
+            from worker.profiles import EnrichNodeLabels
+
+            write_to_graph(
+                rec_id="rec-m",
+                tag="pathfinder",
+                graph=graph,
+                node_labels=EnrichNodeLabels(),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+            )
+        mentions = [(q, p) for q, p in runs if "MENTIONS" in q]
+        assert len(mentions) == 1
+        # The single edge is galahad's node id.
+        assert mentions[0][1]["b"] == "node-id"
+
+    def test_heuristic_fallback_when_no_declared(self):
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            graph = ExtractedGraph(
+                events=[
+                    ExtractedEvent(
+                        ts="00:05", kind="combat", summary="Galahad attacked"
+                    ),
+                ],
+                entities=[
+                    ExtractedEntity(slug="galahad", label="Galahad", type="character"),
+                    ExtractedEntity(slug="orc", label="Orc", type="npc"),
+                ],
+                relations=[],
+            )
+            from worker.profiles import EnrichNodeLabels
+
+            write_to_graph(
+                rec_id="rec-h",
+                tag="pathfinder",
+                graph=graph,
+                node_labels=EnrichNodeLabels(),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+            )
+        mentions = [p for q, p in runs if "MENTIONS" in q]
+        # Heuristic: only "Galahad" occurs in the summary.
+        assert len(mentions) == 1
+
+    def test_events_json_uses_declared_mentions(self, tmp_path: Path):
+        """events.json and the graph share one resolver — declared
+        mentions flow through to the artifact verbatim."""
+        path = tmp_path / "events.json"
+        resolved = ExtractedGraph(
+            events=[
+                ExtractedEvent(
+                    ts="t", kind="k", summary="no labels here", mentions=["a", "b"]
+                ),
+            ],
+            entities=[
+                ExtractedEntity(slug="a", label="A", type="thing"),
+                ExtractedEntity(slug="b", label="B", type="thing"),
+            ],
+            relations=[],
+        )
+        write_events_json(
+            path,
+            recording_id="r",
+            recording_date="2026-08-29T00:00:00+00:00",
+            recording_title="T",
+            profile_id="p",
+            namespaces=["n"],
+            resolved=resolved,
+        )
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        assert data["events"][0]["mentions"] == ["a", "b"]
+
+
+# --- Phase 2: fallback prompt constant ---------------------------------------
+
+
+class TestFallbackEnrichPrompt:
+    def test_carries_all_three_placeholders(self):
+        assert "{title}" in _FALLBACK_ENRICH_PROMPT
+        assert "{transcript}" in _FALLBACK_ENRICH_PROMPT
+        assert "{known_entities}" in _FALLBACK_ENRICH_PROMPT
+
+    def test_valid_with_known_entities_true(self):
+        """The fallback prompt must satisfy the EnrichSpec cross-field
+        validation used by the activity (known_entities=True)."""
+        from worker.profiles import EnrichSpec
+
+        spec = EnrichSpec(prompt=_FALLBACK_ENRICH_PROMPT, known_entities=True)
+        assert spec.known_entities is True

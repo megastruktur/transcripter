@@ -79,3 +79,29 @@ def test_graph_gc_interval_from_yaml(tmp_path, monkeypatch):
     cfg = load_config()
     assert cfg.graph.gc_interval_sec == 3600
     assert cfg.graph.enabled is True
+
+
+def test_graph_phase2_defaults(tmp_path, monkeypatch):
+    """Phase 2: enrich_all and auto_digest default ON, window 3600."""
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.enrich_all is True
+    assert cfg.graph.auto_digest is True
+    assert cfg.graph.auto_digest_window_sec == 3600
+
+
+def test_graph_phase2_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "graph:\n"
+        "  uri: bolt://neo4j:7687\n"
+        "  enrich_all: false\n"
+        "  auto_digest: false\n"
+        "  auto_digest_window_sec: 60\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.graph.enrich_all is False
+    assert cfg.graph.auto_digest is False
+    assert cfg.graph.auto_digest_window_sec == 60

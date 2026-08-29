@@ -77,12 +77,45 @@ _MULTI_DASH = re.compile(r"-{2,}")
 _DEDUP_AFFIRMATIVE = {"y", "yes", "true", "same", "да", "是的"}
 _DEDUP_NEGATIVE = {"n", "no", "false", "different", "нет", "不"}
 
+# Phase 2: built-in fallback extraction prompt. Used by the enrich
+# activity ONLY when no profile matches the recording's type AND
+# ``graph.enrich_all`` is on — a profile that matched but has no enrich
+# section still means the author opted out. Russian like the shipped
+# profiles; deliberately minimal ontology because a domain profile
+# always beats it. MUST keep all three placeholders ({title},
+# {transcript}, {known_entities}): the activity always renders the
+# known-entities block for it, and the same literal-.replace() rules
+# apply (JSON braces below are safe).
+_FALLBACK_ENRICH_PROMPT = """\
+Ты извлекаешь структурированные данные из транскрипта записи «{title}».
+Верни JSON-объект:
+{"events": [{"ts": "…", "kind": "…", "summary": "…"}],
+ "entities": [{"slug": "…", "label": "…", "type": "person|org|project|place|thing"}],
+ "relations": [{"from_slug": "…", "to_slug": "…", "type": "…"}]}
+Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
+kind — один из: milestone (веха), change (изменение), decision (решение), meeting (встреча);
+type — один из: person (человек), org (организация), project (проект),
+place (место), thing (предмет);
+events — ключевые моменты в хронологическом порядке;
+relations — связи между сущностями (например: works_on, member_of, located_in);
+событие может нести "entities": [slug, …] — упомянутые сущности;
+Пустые разделы — пустые списки.
+Известные сущности этого пространства (переиспользуй их slug, если упоминаешь):
+{known_entities}
+ТРАНСКРИПТ:
+{transcript}"""
+
 
 @dataclass(frozen=True)
 class ExtractedEvent:
     ts: str
     kind: str
     summary: str
+    # Phase 2: model-declared mentions (wire ``entities: [slug, ...]``),
+    # already slugified, deduped, and filtered to slugs the extraction
+    # defines. Empty → the label-in-summary heuristic fills in (see
+    # ``_event_mentions``).
+    mentions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -120,7 +153,33 @@ def slugify(label: str) -> str:
     return s or "unknown"
 
 
-def _coerce_event(raw: Any) -> ExtractedEvent | None:
+def _coerce_mentions(raw: Any, known_slugs: set[str] | None) -> list[str]:
+    """Wire ``entities: [slug, ...]`` on an event → deduped slug list.
+
+    Each item is slugified (models mix slugs and labels) and deduped in
+    order. When ``known_slugs`` is given, slugs outside the extraction's
+    entity set are dropped with a debug log — a mention of a
+    non-extracted entity could never become a graph edge. A non-list
+    (or empty) value simply means "no declared mentions" and the
+    heuristic kicks in downstream.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for item in raw:
+        slug = slugify(str(item))
+        if not slug or slug in out:
+            continue
+        if known_slugs is not None and slug not in known_slugs:
+            log.debug("enrich: dropping declared mention of unknown slug %r", slug)
+            continue
+        out.append(slug)
+    return out
+
+
+def _coerce_event(
+    raw: Any, known_slugs: set[str] | None = None
+) -> ExtractedEvent | None:
     if not isinstance(raw, dict):
         return None
     ts = str(raw.get("ts", "")).strip()
@@ -128,7 +187,8 @@ def _coerce_event(raw: Any) -> ExtractedEvent | None:
     summary = str(raw.get("summary", "")).strip()
     if not (ts and kind and summary):
         return None
-    return ExtractedEvent(ts=ts, kind=kind, summary=summary)
+    mentions = _coerce_mentions(raw.get("entities"), known_slugs)
+    return ExtractedEvent(ts=ts, kind=kind, summary=summary, mentions=mentions)
 
 
 def _coerce_entity(raw: Any) -> ExtractedEntity | None:
@@ -159,22 +219,39 @@ def _parse_extraction(payload: Any) -> ExtractedGraph:
     raw_events = payload.get("events") or []
     raw_entities = payload.get("entities") or []
     raw_relations = payload.get("relations") or []
+    # Entities coerce FIRST: declared mentions are only kept when their
+    # slug exists in the extraction's own entity set (unknown slugs are
+    # dropped in _coerce_event).
+    entities = [e for e in (_coerce_entity(x) for x in raw_entities) if e is not None]
+    known_slugs = {e.slug for e in entities}
     return ExtractedGraph(
-        events=[e for e in (_coerce_event(x) for x in raw_events) if e is not None],
-        entities=[e for e in (_coerce_entity(x) for x in raw_entities) if e is not None],
+        events=[
+            e
+            for e in (_coerce_event(x, known_slugs) for x in raw_events)
+            if e is not None
+        ],
+        entities=entities,
         relations=[r for r in (_coerce_relation(x) for x in raw_relations) if r is not None],
     )
 
 
-def _render_prompt(template: str, title: str, transcript: str) -> str:
-    """Substitute {title} / {transcript}. The contract requires ``{transcript}``;
-    profiles.py already enforces that on load. ``{title}`` is optional."""
-    # Literal replacement of exactly two placeholders — NOT str.format:
+def _render_prompt(
+    template: str, title: str, transcript: str, known_entities: str = ""
+) -> str:
+    """Substitute {title} / {transcript} / {known_entities}. The contract
+    requires ``{transcript}``; profiles.py already enforces that on load —
+    and also enforces ``{known_entities}`` whenever a profile enables the
+    known-entities lookup. ``{title}`` is optional."""
+    # Literal replacement of exactly three placeholders — NOT str.format:
     # profile prompts legitimately embed JSON schema examples with braces
     # ({"events": [...]}) which format() would read as replacement fields
     # and die with KeyError (observed live 2026-08-27 on the pathfinder
     # profile's enrich prompt).
-    return template.replace("{title}", title or "").replace("{transcript}", transcript)
+    return (
+        template.replace("{title}", title or "")
+        .replace("{transcript}", transcript)
+        .replace("{known_entities}", known_entities)
+    )
 
 
 def extract_from_transcript(
@@ -182,6 +259,7 @@ def extract_from_transcript(
     title: str,
     prompt_template: str,
     cfg: Any,
+    known_entities: str = "",
 ) -> ExtractedGraph:
     """One HTTP call to the chat endpoint; retry the same call twice if the
     model returns non-JSON or HTTP 5xx. Raises after the third failure —
@@ -193,7 +271,10 @@ def extract_from_transcript(
     deployment for no semantic gain.
     """
     transcript = transcript_path.read_text(encoding="utf-8")
-    user_content = _render_prompt(prompt_template, title, transcript)
+    # ``known_entities`` is the PRE-RENDERED block for the optional
+    # {known_entities} placeholder (empty when the prompt doesn't use it
+    # — the activity skips the graph lookup entirely in that case).
+    user_content = _render_prompt(prompt_template, title, transcript, known_entities)
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
 
@@ -454,21 +535,17 @@ def write_to_graph(
                 if node is not None:
                     event_ids.append(node[0])
 
-            # Third pass: edges. MENTIONS from events to entities
-            # (case-insensitive label match against the event summary),
-            # then REL between entities.
+            # Third pass: edges. MENTIONS from events to entities via
+            # the SAME resolver the events.json artifact uses
+            # (``_event_mentions``): model-declared mentions win when the
+            # wire event carried ``entities: [...]``, the case-
+            # insensitive word-boundary label match is the fallback — so
+            # the artifact and the graph can never disagree. Then REL
+            # between entities.
             for ev_id, ev in zip(event_ids, graph.events, strict=False):
-                summary_lower = ev.summary.lower()
-                for slug, node_id in slug_to_node.items():
-                    ent_label = next(
-                        (e.label for e in graph.entities if e.slug == slug),
-                        "",
-                    ).lower()
-                    # Word-boundary match: bare substring containment links
-                    # "Orc" to summaries mentioning "Orcus"/"orchestra".
-                    if ent_label and re.search(
-                        r"\b" + re.escape(ent_label) + r"\b", summary_lower
-                    ):
+                for slug in _event_mentions(ev, graph.entities):
+                    node_id = slug_to_node.get(slug)
+                    if node_id is not None:
                         tx.run(
                             mentions_query,
                             a=ev_id,
@@ -496,15 +573,19 @@ def write_to_graph(
 
 
 def _event_mentions(event: ExtractedEvent, entities: list[ExtractedEntity]) -> list[str]:
-    """Slugs of entities whose label occurs in the event summary.
+    """Slugs of entities the event references.
 
-    Word-boundary, case-insensitive — EXACTLY the same heuristic
-    ``write_to_graph`` applies when it creates the
-    ``(:Event)-[:MENTIONS]->(:Entity)`` edges, so the JSON artifact and
-    the graph never disagree. Phase 2 will replace this with
-    model-declared mentions; until then this is the honest
-    approximation.
+    Phase 2: model-declared mentions (wire ``entities: [slug, ...]``,
+    carried on ``event.mentions``) win verbatim when present — the model
+    saw the known-entities block and is the best judge of what it
+    mentioned. Fallback (no declared list): the Phase 1 label-occurrence
+    heuristic — word-boundary, case-insensitive; bare substring
+    containment would link "Orc" to "Orcus"/"orchestra". BOTH the
+    ``meta/events.json`` artifact and the ``write_to_graph`` MENTIONS
+    edges resolve through this function, so they can never disagree.
     """
+    if event.mentions:
+        return list(event.mentions)
     summary_lower = event.summary.lower()
     return [
         ent.slug
@@ -749,3 +830,62 @@ def pre_existing_lookup(
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
 
     return ExistingEntityLookup(driver, graph_database, tag, exclude_rec)
+
+
+def render_known_entities(rows: list[dict[str, str]]) -> str:
+    """Render the ``{known_entities}`` prompt block.
+
+    One ``- slug — label (type)`` line per row; the literal ``(none)``
+    for an empty namespace. ``rows`` comes from ``list_known_entities``
+    (the pre-extraction snapshot of the target namespace).
+    """
+    if not rows:
+        return "(none)"
+    return "\n".join(
+        f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows
+    )
+
+
+def list_known_entities(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    exclude_rec: str = "",
+    limit: int = 25,
+) -> list[dict[str, str]]:
+    """Top-``limit`` (slug, label, type) rows already present in
+    namespace ``tag`` — the pre-extraction snapshot that feeds the
+    ``{known_entities}`` prompt block so the model reuses established
+    slugs instead of minting near-duplicates.
+
+    Same exclusion rule as the dedup lookup: nodes authored by
+    ``exclude_rec`` are invisible (a regenerate must not be steered by
+    the very nodes it is about to delete). Ordering: most-recurring
+    first (``recording_ids`` length), slug as tiebreak — "top" entities
+    are the ones other recordings already reference. Event nodes carry
+    no ``slug`` and are excluded by the ``IS NOT NULL`` guard
+    (selection stays property-based: node labels are
+    profile-overridable).
+    """
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            rows = session.run(
+                "MATCH (e {tag: $tag}) "
+                "WHERE e.slug IS NOT NULL "
+                "AND ($rec = '' OR coalesce(e.origin_recording_id, '') <> $rec) "
+                "RETURN e.slug AS slug, e.label AS label, e.type AS type "
+                "ORDER BY size(coalesce(e.recording_ids, [])) DESC, e.slug "
+                "LIMIT $limit",
+                tag=tag,
+                rec=exclude_rec,
+                limit=limit,
+            )
+            return [
+                {"slug": r["slug"], "label": r["label"], "type": r["type"]}
+                for r in rows
+            ]
+    finally:
+        driver.close()

@@ -32,10 +32,14 @@ summarize:
 #
 # Wave B: extract meeting entities/events into the knowledge graph.
 enrich:
+  # Phase 2: the prompt carries {known_entities} — the host renders the
+  # target namespace's top-25 known entities there so the model reuses
+  # established slugs instead of minting near-duplicates.
+  known_entities: true
   prompt: |
     Ты извлекаешь структурированные данные из транскрипта деловой встречи
     «{title}». Верни JSON-объект:
-    {"events": [{"ts": "…", "kind": "decision|action|deadline|discussion|risk|info"}],
+    {"events": [{"ts": "…", "kind": "decision|action|deadline|discussion|risk|info", "summary": "…", "entities": ["…"]}],
      "entities": [{"slug": "…", "label": "…", "type": "person|project|team|decision|action_item|deadline|system"}],
      "relations": [{"from_slug": "…", "to_slug": "…", "type": "owner_of|works_on|depends_on|decides|assigned_to"}]}
     Правила: только факты из транскрипта; slug — lowercase, слова через дефис;
@@ -44,8 +48,12 @@ enrich:
     type — один из: person (человек), project (проект), team (команда),
     decision (решение), action_item (поручение), deadline (срок), system (система);
     relations — связи между сущностями (owner_of — владеет, works_on — работает над,
-    depends_on — зависит от, decides — принимает решение о, assigned_to — назначено на).
+    depends_on — зависит от, decides — принимает решение о, assigned_to — назначено на);
+    entities у события — slug'и сущностей, которых оно касается (известные slug'и
+    переиспользуй).
     events — ключевые моменты встречи в хронологическом порядке;
     Пустые разделы — пустые списки.
+    Известные сущности этого пространства (переиспользуй их slug, если упоминаешь):
+    {known_entities}
     ТРАНСКРИПТ:
     {transcript}

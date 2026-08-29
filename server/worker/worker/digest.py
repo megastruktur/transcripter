@@ -453,6 +453,40 @@ def build_digest_input(
     return DigestInput(tag=tag, last_n=last_n, rows=rows, graph=graph)
 
 
+# Frontmatter block matcher for _existing_digest_for_tag: leading ---,
+# YAML body, closing ---. DOTALL so multi-line YAML blocks match.
+_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
+
+def _existing_digest_for_tag(digests_dir: Path, tag: str) -> Path | None:
+    """The file already carrying this tag's digest, if any.
+
+    Scans ``digests/*.md`` sorted by name and matches the YAML
+    frontmatter ``tag:`` against ``tag`` (same lookup the API's
+    GET /tags/{tag}/digest performs). Regeneration must OVERWRITE the
+    note wherever it lives — a ``-N`` suffix from an earlier slug
+    collision is part of that tag's identity now, not a new file.
+    """
+    try:
+        candidates = sorted(digests_dir.glob("*.md"))
+    except OSError:
+        return None
+    for p in candidates:
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        m = _FRONTMATTER_RE.match(text)
+        if not m:
+            continue
+        try:
+            fm = yaml.safe_load(m.group(1)) or {}
+        except yaml.YAMLError:
+            continue
+        if isinstance(fm, dict) and fm.get("tag") == tag:
+            return p
+    return None
+
+
 def write_digest(
     transcripts_root: Path,
     input: DigestInput,
@@ -460,16 +494,24 @@ def write_digest(
 ) -> Path:
     """Atomically write the digest note under ``<transcripts_root>/digests/``.
 
-    The filename is the tag's SLUG (see ``safe_filename``); when another
-    tag already slug-collided onto that name, a ``-2`` suffix disambiguates
-    (frontmatter ``tag:`` carries the display tag either way).
+    The filename is the tag's SLUG (see ``safe_filename``). When this
+    tag ALREADY has a digest note (frontmatter ``tag:`` matches, even
+    under a ``-N`` collision name), it is overwritten in place — the
+    regenerate/auto-digest path must refresh the existing note, not
+    pile up ``-2``, ``-3``… copies. Only a genuinely NEW tag whose slug
+    collides with another tag's file gets a disambiguated name.
 
     Returns the path that was written. The caller is responsible for the
     LLM call; this function only assembles the final markdown and
     performs the atomic write.
     """
     digests_dir = transcripts_root / "digests"
-    filename = _disambiguate_filename(digests_dir, safe_filename(input.tag))
+    existing = _existing_digest_for_tag(digests_dir, input.tag)
+    filename = (
+        existing.name
+        if existing is not None
+        else _disambiguate_filename(digests_dir, safe_filename(input.tag))
+    )
     target = digests_dir / filename
     recording_ids = [r.recording_id for r in input.rows]
     # tag: = the DISPLAY tag verbatim (spaces/Cyrillic as the user typed

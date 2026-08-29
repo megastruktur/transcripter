@@ -103,6 +103,11 @@ def _cfg(graph_enabled: bool, tmp_path: Path) -> Any:
     cfg.graph.user = "neo4j"
     cfg.graph.password_env = "NEO4J_PASSWORD"
     cfg.graph.database = "neo4j"
+    # Phase 2 knobs: done-path tests never want a digest LLM call, so
+    # auto-digest is off by default here (dedicated tests opt in).
+    cfg.graph.enrich_all = True
+    cfg.graph.auto_digest = False
+    cfg.graph.auto_digest_window_sec = 3600
     cfg.profiles.path = tmp_path / "profiles"
     # Real paths: the done-path tests let the activity write
     # meta/events.json for real (write_events_json uses os.replace).
@@ -142,7 +147,11 @@ def test_skipped_when_no_profile_with_enrich(recording_id: str, tmp_path: Path) 
 
 
 def test_skipped_when_no_profile_at_all(recording_id: str, tmp_path: Path) -> None:
+    """Phase 2: skip requires enrich_all=False — with the flag on (the
+    default) a no-match recording takes the builtin-fallback path
+    instead (see tests/test_enrich_fallback.py)."""
     cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    cfg.graph.enrich_all = False
     with (
         patch("worker.activities.cfg", return_value=cfg),
         patch("worker.profiles.match_profile_by_type", return_value=None),
@@ -312,3 +321,84 @@ def test_done_writes_events_json(recording_id: str, tmp_path: Path) -> None:
     ]
     assert data["entities"] == [{"slug": "release-q3", "label": "Release Q3", "type": "project"}]
     assert data["relations"] == [{"from": "release-q3", "to": "release-q3", "type": "SELF"}]
+
+# --- Phase 2: known-entities lookup wiring -----------------------------------
+
+
+def test_known_entities_lookup_skipped_when_prompt_lacks_placeholder(
+    recording_id: str, tmp_path: Path
+) -> None:
+    """Zero-cost contract: a profile with known_entities=False (default)
+    must never touch the graph for the block."""
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    profile = _make_profile(has_enrich=True)  # prompt has no {known_entities}
+    extracted_graph = MagicMock()
+    extracted_graph.events = []
+    extracted_graph.entities = []
+    extracted_graph.relations = []
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
+        patch("worker.enrich.extract_from_transcript", return_value=extracted_graph),
+        patch("worker.enrich.resolve_slugs", return_value=extracted_graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch("worker.enrich.list_known_entities") as lke,
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        _run(activities.enrich(recording_id))
+    lke.assert_not_called()
+
+
+def test_known_entities_lookup_runs_for_first_namespace(
+    recording_id: str, tmp_path: Path
+) -> None:
+    """Enabled + placeholder → exactly one snapshot, from the FIRST
+    namespace, with the recording excluded (regenerate must not be
+    steered by the nodes it is about to delete)."""
+    from worker.profiles import EnrichSpec
+
+    cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
+    profile = _make_profile(has_enrich=True)
+    # Enable the lookup on the profile (placeholder + true).
+    profile.enrich = EnrichSpec(
+        prompt="enr {transcript}\nKnown:\n{known_entities}\n", known_entities=True
+    )
+    extracted_graph = MagicMock()
+    extracted_graph.events = []
+    extracted_graph.entities = []
+    extracted_graph.relations = []
+    captured: dict[str, Any] = {}
+
+    def fake_list(uri, user, password, database, tag, exclude_rec, limit):
+        captured.update(
+            uri=uri, tag=tag, exclude_rec=exclude_rec, limit=limit
+        )
+        return [
+            {"slug": "galahad", "label": "Galahad", "type": "character"},
+        ]
+
+    sent: dict[str, Any] = {}
+
+    def fake_extract(path, title, prompt_template, c, known_entities=""):
+        sent["block"] = known_entities
+        return extracted_graph
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=profile),
+        patch(
+            "worker.enrich.extract_from_transcript", side_effect=fake_extract
+        ),
+        patch("worker.enrich.resolve_slugs", return_value=extracted_graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch("worker.enrich.list_known_entities", side_effect=fake_list),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        _run(activities.enrich(recording_id))
+    assert captured["tag"] == "pathfinder"  # first (only) namespace
+    assert captured["exclude_rec"] == recording_id
+    assert captured["limit"] == 25  # known_entities: true → default cap
+    assert captured["uri"] == "bolt://n"
+    assert "- galahad — Galahad (character)" in sent["block"]
