@@ -287,6 +287,38 @@ export async function searchTag(
 	return resp.json();
 }
 
+
+export type GlobalSearchHit = SearchHit & {
+	/** Source namespace: the index-file slug of the tag the segment
+	 * was indexed under (spaces → dashes, lowercased). */
+	tag: string;
+};
+
+export type GlobalSearchResponse = {
+	query: string;
+	k: number;
+	hits: GlobalSearchHit[];
+};
+
+/** Phase 3.75: global cross-tag semantic search — KNN merged across
+ * every per-tag index. Same 503 {available: false} shape as searchTag
+ * when the backend is down or nothing is indexed at all. */
+export async function fetchGlobalSearch(
+	cfg: ApiConfig,
+	q: string,
+	k = 20
+): Promise<GlobalSearchResponse> {
+	const resp = await req(cfg, `/search?q=${encodeURIComponent(q)}&k=${k}`);
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail as SearchUnavailable | string | null;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : (detail?.reason ?? `search ${resp.status}`)),
+			{ status: resp.status, reason: typeof detail === 'object' && detail ? detail.reason : undefined }
+		);
+	}
+	return resp.json();
+}
+
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
 	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });
