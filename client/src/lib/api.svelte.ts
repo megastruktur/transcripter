@@ -244,6 +244,49 @@ export async function regenerateDigest(cfg: ApiConfig, tag: string): Promise<voi
 	}
 }
 
+export type SearchHit = {
+	recording_id: string;
+	session_title: string;
+	/** Seconds into the recording. */
+	ts_start: number;
+	ts_end: number;
+	speaker: string;
+	snippet: string;
+	/** vec0 distance — smaller is closer. */
+	distance: number;
+};
+
+export type SearchResponse = {
+	tag: string;
+	query: string;
+	hits: SearchHit[];
+};
+
+export type SearchUnavailable = {
+	available: false;
+	reason: string;
+};
+
+/** Phase 3.5: semantic search over the tag's indexed transcript
+ * segments. Throws with .status 503 + .reason when the backend/index is
+ * unavailable (the caller surfaces the hint, e.g. run backfill). */
+export async function searchTag(
+	cfg: ApiConfig,
+	tag: string,
+	q: string,
+	k = 20
+): Promise<SearchResponse> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/search?q=${encodeURIComponent(q)}&k=${k}`);
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail as SearchUnavailable | string | null;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : (detail?.reason ?? `search ${resp.status}`)),
+			{ status: resp.status, reason: typeof detail === 'object' && detail ? detail.reason : undefined }
+		);
+	}
+	return resp.json();
+}
+
 export async function getRecording(cfg: ApiConfig, id: string): Promise<Recording> {
 	const resp = await req(cfg, `/recordings/${id}`);
 	if (!resp.ok) throw Object.assign(new Error(`get ${resp.status}`), { status: resp.status });

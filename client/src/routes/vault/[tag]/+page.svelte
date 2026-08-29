@@ -8,10 +8,12 @@
 		fetchTimeline,
 		fetchDigest,
 		regenerateDigest,
+		searchTag,
 		loadApiConfig,
 		type TimelineResponse,
 		type TimelineSession,
-		type TimelineEvent
+		type TimelineEvent,
+		type SearchResponse
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
 
@@ -43,6 +45,57 @@
 	let digestNote = $state('');
 	let digestPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let digestLoaded = false;
+
+	// Phase 3.5 semantic search: query embedded server-side (same backend
+	// that indexed the tag's segments), hits listed under the input; a hit
+	// navigates to the recording with ?t=seconds (the detail page seeks).
+	let searchQuery = $state('');
+	let searchResults = $state<SearchResponse | null>(null);
+	let searchLoading = $state(false);
+	let searchError = $state('');
+	let searchNote = $state('');
+	let searchSeq = 0;
+	let searchOpen = $state(false);
+
+	async function runSearch(): Promise<void> {
+		const q = searchQuery.trim();
+		if (!q || searchLoading) return;
+		const seq = ++searchSeq;
+		searchLoading = true;
+		searchError = '';
+		searchNote = '';
+		try {
+			const result = await searchTag(loadApiConfig(), tag, q);
+			if (seq !== searchSeq) return;
+			searchResults = result;
+			searchOpen = true;
+		} catch (caught) {
+			if (seq !== searchSeq) return;
+			searchResults = null;
+			const err = caught as { status?: number; reason?: string; message?: string };
+			if (err.status === 503) {
+				searchNote = err.reason || 'Semantic search unavailable.';
+			} else if (err.status === 404) {
+				searchNote = 'No sessions carry this tag.';
+			} else {
+				searchError = `Search failed: ${err.message ?? String(caught)}`;
+			}
+		} finally {
+			if (seq === searchSeq) searchLoading = false;
+		}
+	}
+
+	function clearSearch(): void {
+		searchQuery = '';
+		searchResults = null;
+		searchError = '';
+		searchNote = '';
+		searchOpen = false;
+	}
+
+	function openHit(recordingId: string, tsStart: number): void {
+		void goto(`/recordings/${recordingId}?t=${Math.max(0, Math.floor(tsStart))}`);
+	}
 
 	// Timeline sessions expand/collapse one at a time (open = recording_id).
 	let openSession = $state<string | null>(null);
@@ -157,6 +210,16 @@
 		return dateLabel(session.date);
 	}
 
+	/** Seconds → "mm:ss" / "h:mm:ss" (hit rows + titles; the seek target
+	 * stays in raw seconds). */
+	function tsLabel(seconds: number): string {
+		const total = Math.max(0, Math.floor(seconds));
+		const h = Math.floor(total / 3600);
+		const m = Math.floor((total % 3600) / 60);
+		const s = total % 60;
+		const mm = String(m).padStart(h > 0 ? 2 : 1, '0');
+		return `${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
+	}
 
 	onMount(() => {
 		refresh();
@@ -208,7 +271,58 @@
 					{entry.label}
 				</button>
 			{/each}
-		</div>
+			</div>
+
+		<section class="search-recess" aria-label={`Semantic search · ${tag}`}>
+			<form
+				class="search-form"
+				onsubmit={(event) => {
+					event.preventDefault();
+					void runSearch();
+				}}
+			>
+				<input
+					class="search-input"
+					type="search"
+					placeholder="Search this tag's sessions…"
+					aria-label="Search query"
+					bind:value={searchQuery}
+					disabled={searchLoading}
+				/>
+				<button class="search-go" type="submit" disabled={searchLoading || !searchQuery.trim()}>
+					<Icon name="search" size={12} strokeWidth={1.6} />
+					{searchLoading ? 'Searching…' : 'Search'}
+				</button>
+				{#if searchResults !== null || searchNote || searchError}
+					<button class="search-clear" type="button" onclick={clearSearch} aria-label="Clear search results">
+						<Icon name="close" size={12} strokeWidth={1.6} />
+					</button>
+				{/if}
+			</form>
+			{#if searchError}
+				<p class="search-error" role="alert">{searchError}</p>
+			{:else if searchNote}
+				<p class="search-note">{searchNote}</p>
+			{:else if searchResults !== null}
+				{#if searchResults.hits.length === 0}
+					<p class="search-note">No matching segments.</p>
+				{:else}
+					<div class="hit-list">
+						{#each searchResults.hits as hit (hit.recording_id + hit.ts_start)}
+							<button class="hit-row" type="button" title={`Open ${hit.session_title || 'session'} at ${tsLabel(hit.ts_start)}`} onclick={() => openHit(hit.recording_id, hit.ts_start)}>
+								<span class="hit-ts">{tsLabel(hit.ts_start)}</span>
+								<span class="hit-main">
+									<strong>{hit.session_title || 'Untitled capture'}</strong>
+									<small>
+										{#if hit.speaker}{hit.speaker} · {/if}{hit.snippet}
+									</small>
+								</span>
+							</button>
+						{/each}
+					</div>
+				{/if}
+			{/if}
+		</section>
 
 		{#if tab === 'timeline'}
 			<div class="session-list">
@@ -370,6 +484,30 @@
 	.skeleton-heading { width: 55%; height: 18px; }
 	.skeleton-strip { width: 82%; height: 18px; }
 	.skeleton-body { width: 100%; height: 90px; }
+	/* Semantic search (3.5): recess panel + brass controls — same material
+	   cut as the digest recess, same control idiom as the digest-regen
+	   family. Hit rows are a ruled manifest on the recess surface. */
+	.search-recess { display: flex; flex-direction: column; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
+	.search-form { display: grid; grid-template-columns: 1fr auto auto; align-items: stretch; gap: 6px; padding: 6px; }
+	.search-input { min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; }
+	.search-input::placeholder { color: var(--ash); }
+	.search-input:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
+	.search-input:disabled { opacity: 0.6; }
+	.search-go { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.search-go:hover:not(:disabled) { background: rgba(215,167,71,.2); }
+	.search-go:disabled { opacity: 0.6; cursor: default; }
+	.search-clear { display: inline-flex; align-items: center; justify-content: center; width: 30px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); cursor: pointer; }
+	.search-clear:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
+	.search-note { margin: 0; padding: 0 10px 8px; color: var(--ash); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+	.search-error { margin: 0; padding: 0 10px 8px; color: #f36b60; font-size: 11px; }
+	.hit-list { display: grid; max-height: 240px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	.hit-row { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 9px; padding: 8px 10px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
+	.hit-row:first-child { border-top: 0; }
+	.hit-row:hover { background: rgba(255,255,255,.02); }
+	.hit-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
+	.hit-main { min-width: 0; display: grid; gap: 3px; }
+	.hit-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
+	.hit-main small { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: #8b8278; font-size: 10px; line-height: 1.4; }
 	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
 	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } .session-chevron { transition: none; } }
 </style>

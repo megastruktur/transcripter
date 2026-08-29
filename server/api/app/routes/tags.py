@@ -8,6 +8,13 @@ with their meta/events.json events, aggregated entities and the
 digest-generated flag — served from Postgres + events.json only, no
 graph session.
 
+Phase 3.5: GET /tags/{tag}/search — semantic KNN over the tag's
+sqlite-vec index (built by the worker's enrich/backfill). The query is
+embedded through the same backend config the worker indexed with; a
+missing index, unavailable backend or backend/model mismatch replies
+503 with ``available: false`` + a backfill hint, never a silent
+cross-vector-space search.
+
 Tag normalization mirrors recordings.py: trim + lowercase. After that the
 regex pins down file-system-safe forms (the digest activity writes
 ``digests/<tag>.md`` under the transcripts dir) — anything outside the
@@ -21,7 +28,7 @@ import logging
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -30,7 +37,9 @@ from sqlalchemy.orm import Session
 from app import temporal_client
 from app.config import ServerConfig
 from app.db import get_session
-from app.vault import find_digest, scan_timeline
+from app.embeddings import embed_query, expected_index_meta
+from app.semantic_index import index_status, knn_search
+from app.vault import _tag_recordings, find_digest, scan_timeline
 
 router = APIRouter(prefix="/tags")
 
@@ -77,6 +86,96 @@ def _validate_tag(tag: str) -> None:
         )
 
 
+def _tag_exists(tag: str) -> bool:
+    """Whether any DONE recording carries the tag (search's 404 rule —
+    the same done-only semantics as the timeline)."""
+    gen = get_session()
+    try:
+        session = next(gen)
+        return len(_tag_recordings(session, tag)) > 0
+    finally:
+        gen.close()
+
+
+@router.get("/{tag}/search")
+def get_search(
+    tag: Annotated[str, Path()],
+    request: Request,
+    q: Annotated[str, Query(min_length=1)],
+    k: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> dict:
+    """Phase 3.5: semantic search over the tag's indexed transcript
+    segments (worker-built ``<transcripts>/indexes/<tag>.sqlite``).
+
+    404 unknown tag (no recordings carry it — same rule as timeline);
+    503 ``{available: false}`` when the embedding backend is missing or
+    the index file's {backend, model, dimensions} meta does not match
+    the active config (model switch → run backfill)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    # embed first: a dead backend fails fast regardless of index state
+    try:
+        query_vec = embed_query(q.strip(), cfg)
+    except Exception:  # noqa: BLE001 — backend down = unavailable, not a 500
+        _LOG.warning("search: embedding backend failed for tag=%s", norm, exc_info=True)
+        query_vec = None
+    if query_vec is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "available": False,
+                "reason": "embedding backend unavailable",
+            },
+        )
+    status = index_status(cfg.transcripts.path, norm)
+    if status is None or status["segments"] == 0:
+        if not _tag_exists(norm):
+            raise HTTPException(
+                status_code=404, detail=f"no recordings for tag {norm}"
+            )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "available": False,
+                "reason": (
+                    "no semantic index for this tag — index it first "
+                    "(new recordings index automatically; run "
+                    "`docker compose exec worker python -m worker.backfill_index` "
+                    "for old ones)"
+                ),
+            },
+        )
+    expected = expected_index_meta(cfg)
+    if any(status["meta"].get(key) != value for key, value in expected.items()):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "available": False,
+                "reason": (
+                    "index built with a different embedding backend/model "
+                    f"({status['meta']}); re-index with "
+                    "`docker compose exec worker python -m worker.backfill_index`"
+                ),
+            },
+        )
+    hits = knn_search(cfg.transcripts.path, norm, query_vec, k=k)
+    return {
+        "tag": norm,
+        "query": q.strip(),
+        "hits": [
+            {
+                "recording_id": h["recording_id"],
+                "session_title": h["session_title"],
+                "ts_start": h["ts_start"],
+                "ts_end": h["ts_end"],
+                "speaker": h["speaker"],
+                "snippet": h["text"],
+                "distance": h["distance"],
+            }
+            for h in hits
+        ],
+    }
 
 
 @router.get("/{tag}/timeline")

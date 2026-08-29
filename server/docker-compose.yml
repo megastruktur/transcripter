@@ -13,13 +13,24 @@ services:
       # Summarize model from .env — wins over config.yaml summarize.model
       # (keeps /settings truthful; the worker applies the same override).
       SUMMARIZE_MODEL: ${SUMMARIZE_MODEL:-}
+      # Phase 3.5: embedding backend overrides for tag search — SAME
+      # values the worker gets (the search query must be embedded by the
+      # backend that indexed the segments; a mismatch 503s with a backfill
+      # hint instead of searching across vector spaces).
+      EMBED_BACKEND: ${EMBED_BACKEND:-}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-}
+      EMBED_MODEL: ${EMBED_MODEL:-}
     volumes:
       - ./storage:/storage
       - ./config.yaml:/etc/transcripter/config.yaml:ro
       - ./profiles:/etc/transcripter/profiles:ro
-      # Read-only: the API only serves generated digests; the worker owns
-      # writes to the transcripts dir.
+      # Read-only: the API only serves generated digests + READS the
+      # worker-built semantic index files; the worker owns writes to the
+      # transcripts dir.
       - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts:ro
+      # Phase 3.5 local embed backend: bge-m3 ONNX int8 (read-only) so
+      # the api can embed search queries without a separate container.
+      - models:/models:ro
     depends_on:
       postgres:
         condition: service_healthy

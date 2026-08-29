@@ -38,6 +38,32 @@ class ProfilesConfig(BaseModel):
     path: Path = Path("/etc/transcripter/profiles")
 
 
+class EmbedConfig(BaseModel):
+    """Phase 3.5 — pluggable embedding backend for tag search (the
+    speaches pattern; twin of worker/config.py EmbedConfig). The API
+    embeds the SEARCH QUERY through the same backend the worker used to
+    index segments, so query and index live in one vector space.
+
+    ``local``: bge-m3 ONNX int8 in-process (fixed 1024-d; the compose
+    mounts the models volume on the api too). ``http``: any
+    OpenAI-compatible POST {base_url}/embeddings — no ONNX deps needed.
+    """
+
+    backend: str = "local"
+    model_path: Path = Path("/models/bge-m3-int8")
+    # http backend
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    dimensions: int = 0
+
+    @property
+    def configured_dimensions(self) -> int:
+        """Local export dimensionality is fixed by the bge-m3 CLS pool;
+        http backends report what the config declares (0 = unset)."""
+        return 1024 if self.backend == "local" else self.dimensions
+
+
 class GraphConfig(BaseModel):
     """Optional Neo4j knowledge-graph backend (mirrors worker/config.py).
 
@@ -51,6 +77,10 @@ class GraphConfig(BaseModel):
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
     database: str = "neo4j"
+    # Phase 3.5 — search-side embedding backend (same yaml section the
+    # worker reads; the api only consumes backend/model_path/base_url/
+    # model/api_key_env/dimensions).
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
 
     @property
     def enabled(self) -> bool:
@@ -98,4 +128,17 @@ def load_config() -> ServerConfig:
     # (compose passes SUMMARIZE_MODEL to both services).
     if env_model := os.environ.get("SUMMARIZE_MODEL"):
         cfg.summarize.model = env_model
+    # Phase 3.5 — same EMBED_* override pattern as the worker (compose
+    # passes them from .env to both services): switching the embedding
+    # provider never touches the mounted config.yaml.
+    if env_backend := os.environ.get("EMBED_BACKEND"):
+        if env_backend not in ("local", "http"):
+            raise ValueError(
+                f"EMBED_BACKEND must be 'local' or 'http' (got {env_backend!r})"
+            )
+        cfg.graph.embed.backend = env_backend
+    if env_base := os.environ.get("EMBED_BASE_URL"):
+        cfg.graph.embed.base_url = env_base
+    if env_embed_model := os.environ.get("EMBED_MODEL"):
+        cfg.graph.embed.model = env_embed_model
     return cfg

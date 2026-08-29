@@ -135,6 +135,28 @@
 		audioEl.play().catch(() => {});
 	}
 
+	/** Deep-link seek (?t=seconds, e.g. from the Vault tag search): the
+	 * offset is captured on mount and applied once the <audio> element
+	 * reports loadedmetadata (currentTime sticks only then), after which
+	 * the param is stripped so a reload doesn't re-seek. The player uses
+	 * preload="metadata" — the header-only fetch is tiny and it makes
+	 * loadedmetadata (and so the seek) fire without user interaction. */
+	let pendingSeek = $state<number | null>(null);
+
+	function consumePendingSeek(): void {
+		const raw = page.url.searchParams.get('t');
+		if (raw === null) return;
+		const seconds = Number(raw);
+		if (Number.isFinite(seconds) && seconds >= 0) pendingSeek = seconds;
+		goto('?', { replaceState: true, keepFocus: true, noScroll: true });
+	}
+
+	function handleAudioMetadata(): void {
+		if (pendingSeek === null || !audioEl) return;
+		audioEl.currentTime = pendingSeek;
+		pendingSeek = null;
+	}
+
 	function stopPoll(): void {
 		if (pollTimer) {
 			globalThis.clearInterval(pollTimer);
@@ -189,6 +211,7 @@
 
 	onMount(() => {
 		stageRetry.rerun = rerun;
+		consumePendingSeek();
 		void (async () => {
 			await load();
 			if (!recording) return;
@@ -678,7 +701,7 @@
 		{#if recording.state === 'uploading'}
 			<p class="audio-note">Audio available after upload.</p>
 		{:else}
-			<audio bind:this={audioEl} class="audio-player" controls preload="none" src={audioUrl(loadApiConfig(), recording.id)}></audio>
+		<audio bind:this={audioEl} class="audio-player" controls preload="metadata" src={audioUrl(loadApiConfig(), recording.id)} onloadedmetadata={handleAudioMetadata}></audio>
 		{/if}
 		{#if activeTab === 'summary' && recapUsed}
 			<p class="recap-chip">

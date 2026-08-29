@@ -16,6 +16,14 @@ dependencies = [
     # route declares Form/File params (POST /recordings/direct) and raises
     # RuntimeError without it; the image installs --no-dev.
     "python-multipart>=0.0.9",
+    # Phase 3.5 semantic search: read-side sqlite-vec KNN over the
+    # worker-built per-tag index files + the local bge-m3 embedder for
+    # queries (http backend needs none of the three, but local is the
+    # default and the api image installs --no-dev).
+    "sqlite-vec>=0.1.9",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
+    "numpy>=1.26",
 ]
 
 [dependency-groups]
