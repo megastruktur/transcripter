@@ -256,7 +256,7 @@
 			<main class="workspace">
 				<div class="context-bar">
 					{#if android}
-					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={40} /></span></button>
+					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={56} /></span></button>
 					{/if}
 					<span class="context-name">{routeName}</span>
 					{#if onRecordingDetail && stageRetry.rerun && stageRetry.enabled && stageRetry.stages.length}
@@ -366,10 +366,9 @@
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
 	/* Android: the app sigil lives in the context bar and doubles as the
-	   drawer toggle. It is deliberately oversized (2x the old glyph): the
-	   56px square is the hit target, centered on the context-bar box —
-	   it rides over the hazard rule above and the bar seam below (z above
-	   both), while its bottom edge stays ~11px clear of the page title. */
+	   drawer toggle. Glyph fills the 56px hit target so its ink actually
+	   rides OVER the hazard rule above and the bar seam below (z above
+	   both), while its bottom edge stays ~10px clear of the page title. */
 	.cog-toggle { width: 56px; height: 56px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; line-height: 0; position: relative; z-index: 3; }
 	.shell--android .cog-toggle { align-self: center; margin-left: -6px; }
 	/* Pin the bar's internal row to the bar box: without this the 56px
