@@ -6,7 +6,9 @@ services:
       context: .
       dockerfile: Dockerfile.api
     ports:
-      - "8090:8080"
+      # LAN + loopback only — never 0.0.0.0 (Docker publish bypasses UFW).
+      - "127.0.0.1:8090:8080"
+      - "192.168.3.23:8090:8080"
     environment:
       TRANSCRIPTER_TOKEN: ${TRANSCRIPTER_TOKEN:?set TRANSCRIPTER_TOKEN in .env}
       TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
@@ -25,9 +27,9 @@ services:
       # endpoint the worker indexed with. Harmless when unused.
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
     volumes:
-      - ./storage:/storage
-      - ./config.yaml:/etc/transcripter/config.yaml:ro
-      - ./profiles:/etc/transcripter/profiles:ro
+      - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
+      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
+      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
       # Read-only: the API only serves generated digests + READS the
       # worker-built semantic index files; the worker owns writes to the
       # transcripts dir.
@@ -77,13 +79,13 @@ services:
       # stage will report `skipped` without it (best-effort, like diarize).
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
     volumes:
-      - ./storage:/storage
+      - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
       # Host-side transcripts dir (Obsidian vault); empty default keeps the
       # feature working locally (./storage/transcripts) for tests/e2e.
       - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts
       - models:/models
-      - ./config.yaml:/etc/transcripter/config.yaml:ro
-      - ./profiles:/etc/transcripter/profiles:ro
+      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
+      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
     # Note: NO `depends_on: neo4j` — the graph profile is opt-in (like
     # diarization). When `--profile graph` is OFF, the enrich stage checks
     # cfg.graph.enabled at runtime and reports `skipped`; the worker starts
@@ -126,7 +128,8 @@ services:
     environment:
       TEMPORAL_ADDRESS: temporal:7233
     ports:
-      - "8082:8080"
+      # Loopback only — admin UI without auth, keep it off the LAN.
+      - "127.0.0.1:8082:8080"
     depends_on:
       - temporal
     restart: unless-stopped
