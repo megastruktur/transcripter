@@ -122,6 +122,17 @@ fantasy styling does not. See [`DESIGN_GUIDELINES.md`](./DESIGN_GUIDELINES.md)
 for the canonical palette, component rules, motion, accessibility, copy, and
 review checklist.
 
+## How it works
+
+Two companion documents explain the full pipeline logic (extraction,
+deduplication, grouping, memory):
+
+- [LOGIC_DIAGRAM.md](./LOGIC_DIAGRAM.md) — the detailed technical map: every
+  stage, dedup level, namespace rule, and failure invariant, with function
+  and file names.
+- [LOGIC_DIAGRAM_SIMPLIFIED.md](./LOGIC_DIAGRAM_SIMPLIFIED.md) — the same
+  logic in plain language (Russian), for non-technical readers.
+
 ## Pipeline
 
 | Stage        | Engine                                   | Notes                                              |
