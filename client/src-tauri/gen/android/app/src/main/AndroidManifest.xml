@@ -9,10 +9,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
-    <!-- Background-recording keepalive via tauri-plugin-background-service:
-         mic-type foreground service plus its persistent notification. The
-         plugin manifest declares LifecycleService with foregroundServiceType
-         containing the microphone bit (merged in); host adds permissions. -->
+    <!-- Background-recording keepalive: our own RecordingService below is a
+         mic-type foreground service with a persistent notification, keeping
+         the process alive and mic access legal while the app is backgrounded. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -50,5 +49,12 @@
             android:name="android.support.FILE_PROVIDER_PATHS"
             android:resource="@xml/file_paths" />
         </provider>
+        <!-- Mic-type FGS started by RecordingPlugin on recording start.
+             foregroundServiceType="microphone" is what keeps mic capture legal
+             on Android 14+ once the app is backgrounded. -->
+        <service
+            android:name=".RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 </manifest>

@@ -4,6 +4,7 @@ pub mod encode;
 pub mod permissions;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod recording;
+pub mod recording_service;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub mod spool;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
@@ -31,34 +32,6 @@ use crate::spool::{Spool, SpoolSession};
 
 static RUNTIME: std::sync::LazyLock<Runtime> =
     std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime"));
-
-/// Keepalive service for Android background recording. The recording itself
-/// runs in the WebView (getUserMedia → MediaRecorder); this service exists so
-/// the plugin raises a microphone-type foreground service with a persistent
-/// notification while recording, keeping the process alive and mic access
-/// legal when the user backgrounds the app. `run` does no work — it only
-/// waits for the JS side to stop the service via `stopService()`.
-struct RecordingKeepalive;
-
-#[async_trait::async_trait]
-impl<R: tauri::Runtime> tauri_plugin_background_service::BackgroundService<R>
-    for RecordingKeepalive
-{
-    async fn init(
-        &mut self,
-        _ctx: &tauri_plugin_background_service::ServiceContext<R>,
-    ) -> Result<(), tauri_plugin_background_service::ServiceError> {
-        Ok(())
-    }
-
-    async fn run(
-        &mut self,
-        ctx: &tauri_plugin_background_service::ServiceContext<R>,
-    ) -> Result<(), tauri_plugin_background_service::ServiceError> {
-        ctx.shutdown.cancelled().await;
-        Ok(())
-    }
-}
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn show_main_window(app: &AppHandle) {
@@ -91,12 +64,9 @@ fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // notification MUST register before background-service (it is the
-        // plugin's notifier backend).
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_background_service::init_with_service(
-            || RecordingKeepalive,
-        ))
+        // App-local plugin bridging the Kotlin RecordingService (Android mic
+        // foreground service) to the frontend; inert stub on desktop.
+        .plugin(recording_service::init())
         .setup(|_app| {
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             {

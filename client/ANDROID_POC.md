@@ -187,14 +187,21 @@ Failure modes to watch for (real, not speculative):
   shipped with WebView 51+) will silently deny with no UI feedback.
 - **Permission prompt ordering.** Android 12+ shows the prompt inline. Pre-12
   modal. Both paths are handled by the upstream launcher.
-- **~~Background tab loss~~ — SOLVED (commit 32cbf33).** A microphone-type
-  foreground service (`tauri-plugin-background-service`, keepalive impl in
-  `src-tauri/src/lib.rs` `RecordingKeepalive`) keeps the process alive while
-  recording, so the WebView MediaRecorder keeps capturing when the app is
-  backgrounded. The FGS starts before `MediaRecorder.start()` (fail-loud on
-  error — Android forbids mic-FGS starts from the background) and stops on
-  every teardown path; the persistent notification's native Stop action is
-  bridged to the in-app stop path via `onPluginEvent`.
+- **~~Background tab loss~~ — SOLVED (commit 32cbf33, reworked in the Kotlin
+  FGS pivot).** A microphone-type foreground service keeps the process alive
+  while recording, so the WebView MediaRecorder keeps capturing when the app
+  is backgrounded. The service is OURS — `gen/android/.../RecordingService.kt`
+  + `RecordingPlugin.kt`, bridged by the app-local `recording-service` plugin
+  (`src-tauri/src/recording_service.rs`) — because the third-party
+  `tauri-plugin-background-service` turned out to require a headless native
+  core (`libapp_core.so` JNI bridge) and rejects the service start without
+  one; its "lifecycle-only path" is contradicted by its own code. The FGS
+  starts after the getUserMedia grant but before the recording UI flips
+  (fail-loud on error — a mic-type FGS requires RECORD_AUDIO to be already
+  granted, and Android forbids mic-FGS starts from the background) and stops
+  on every teardown path; swipe-closing the app stops the service from
+  `MainActivity.onDestroy` (a dead WebView records nothing, so the
+  notification must not outlive it).
 - **No AAudio path.** We deliberately removed cpal from the android build,
   so the legacy "native Rust mic capture" path is impossible. Everything
   goes through the WebView; this is by design (matches wave-D6 plan).

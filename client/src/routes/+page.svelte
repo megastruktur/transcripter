@@ -24,7 +24,6 @@
 		startRecordingKeepalive,
 		stopRecordingKeepalive
 	} from '$lib/mobile-recorder';
-	import { onPluginEvent } from 'tauri-plugin-background-service';
 	import type { MobileRecorder } from '$lib/mobile-recorder';
 
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
@@ -49,16 +48,6 @@
 	let tagSuggestions = $derived(tagSuggestionsCache.items);
 
 	onMount(() => {
-		// The persistent FGS notification carries a native Stop action: when it
-		// fires, the service goes down and the plugin emits a `stopped` event —
-		// route it into the same stop path as the in-app button so the
-		// MediaRecorder/upload are torn down too. Re-entrancy is safe:
-		// stopMobileRecording() early-returns when `recorder.stopping` is set.
-		const unlistenPlugin = isAndroidTauri()
-			? onPluginEvent((event) => {
-					if (event.type === 'stopped' && recorder.recording) void stopMobileRecording();
-				})
-			: null;
 		// Instant from the shared cache on remounts; enumerates and checks in
 		// the background only when there is no report for this selection yet.
 		void ensureAudioDevices();
@@ -91,7 +80,6 @@
 				recorder.warnings.push('capture cancelled — left the page mid-recording');
 				void stopRecordingKeepalive();
 			}
-			void unlistenPlugin?.then((unlisten) => unlisten());
 		};
 	});
 	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));

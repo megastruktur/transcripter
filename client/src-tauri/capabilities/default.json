@@ -5,8 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "notification:default",
-    "background-service:default",
+    "recording-service:default",
     "core:window:allow-inner-size",
     "core:window:allow-scale-factor",
     "core:window:allow-set-size",
