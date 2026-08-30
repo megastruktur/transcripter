@@ -855,6 +855,7 @@ def write_events_json(
     profile_id: str,
     namespaces: list[str],
     resolved: ExtractedGraph,
+    corrected_labels: dict[str, tuple[str, str]] | None = None,
 ) -> None:
     """Write the recording's timeline artifact ``meta/events.json``.
 
@@ -872,7 +873,12 @@ def write_events_json(
     see ``_event_mentions`` (mirrors the graph's MENTIONS edges).
     ``entities``/``relations`` come from the FIRST namespace's resolved
     extraction (namespaces are copies; the first write also purged).
+    ``corrected_labels`` (phase 4): slug → (label, type) overrides from
+    user-corrected graph nodes — the artifact must display the user's
+    label ("Валли"), not the fresh extraction's ASR guess, so the
+    timeline stays in sync with the graph after a rename.
     """
+    corrected = corrected_labels or {}
     payload = {
         "recording_id": recording_id,
         "recording_date": recording_date,
@@ -889,7 +895,11 @@ def write_events_json(
             for ev in resolved.events
         ],
         "entities": [
-            {"slug": e.slug, "label": e.label, "type": e.type}
+            {
+                "slug": e.slug,
+                "label": corrected.get(e.slug, (e.label, ""))[0],
+                "type": corrected.get(e.slug, ("", e.type))[1],
+            }
             for e in resolved.entities
         ],
         "relations": [
@@ -1157,6 +1167,39 @@ def pre_existing_lookup(
 
 
     return ExistingEntityLookup(driver, graph_database, tag, exclude_rec)
+
+
+def user_corrected_labels(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+) -> dict[str, tuple[str, str]]:
+    """Slug → (label, type) of user-corrected nodes in the namespace.
+
+    Phase 4 rename overlay for ``write_events_json``: after a rename the
+    graph node carries the authoritative label, but a later regenerate
+    re-writes ``events.json`` from the fresh extraction, whose ASR label
+    ("Valiy") would resurface in the timeline. The activity overlays
+    these rows so the artifact stays in sync with the graph. Empty dict
+    on any graph failure — best-effort, never fails enrich.
+    """
+    try:
+        driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+        try:
+            with driver.session(database=graph_database) as session:
+                rows = session.run(
+                    "MATCH (e {tag: $tag}) WHERE coalesce(e.user_corrected, false) "
+                    "RETURN e.slug AS slug, e.label AS label, e.type AS type",
+                    tag=tag,
+                ).data()
+        finally:
+            driver.close()
+    except Exception:
+        log.exception("enrich: user-corrected overlay lookup failed; skipping")
+        return {}
+    return {r["slug"]: (r["label"], r["type"]) for r in rows}
 
 
 def render_known_entities(rows: list[dict[str, str]]) -> str:

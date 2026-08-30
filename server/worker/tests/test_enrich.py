@@ -949,6 +949,37 @@ class TestWriteToGraphDeclaredMentions:
         data = _json.loads(path.read_text(encoding="utf-8"))
         assert data["events"][0]["mentions"] == ["a", "b"]
 
+    def test_events_json_corrected_labels_overlay(self, tmp_path: Path):
+        """Phase 4: a user-corrected label/type wins over the fresh
+        extraction's ASR guess in the timeline artifact (the "Valiy"
+        vs "Валли" regression); uncorrected entities pass through."""
+        path = tmp_path / "events.json"
+        resolved = ExtractedGraph(
+            events=[],
+            entities=[
+                ExtractedEntity(slug="valiy", label="Valiy", type="person"),
+                ExtractedEntity(slug="adhd", label="ADHD", type="system"),
+            ],
+            relations=[],
+        )
+        write_events_json(
+            path,
+            recording_id="r",
+            recording_date="2026-08-29T00:00:00+00:00",
+            recording_title="T",
+            profile_id="p",
+            namespaces=["n"],
+            resolved=resolved,
+            corrected_labels={"valiy": ("Валли", "person")},
+        )
+        import json as _json
+
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        by_slug = {e["slug"]: e for e in data["entities"]}
+        assert by_slug["valiy"]["label"] == "Валли"
+        assert by_slug["valiy"]["type"] == "person"
+        assert by_slug["adhd"]["label"] == "ADHD"
+
 
 # --- Phase 2: fallback prompt constant ---------------------------------------
 

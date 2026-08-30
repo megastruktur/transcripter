@@ -643,6 +643,7 @@ async def enrich(rec_id: str) -> dict:
             pre_existing_lookup,
             render_known_entities,
             resolve_slugs,
+            user_corrected_labels,
             write_events_json,
             write_to_graph,
         )
@@ -793,7 +794,20 @@ async def enrich(rec_id: str) -> dict:
         # namespace's resolved extraction (namespaces are copies;
         # identical content). Written after the graph loop so a graph
         # failure never leaves a file describing nodes that were never
-        # committed. Atomic — see write_events_json.
+        # committed. Atomic — see write_events_json. Phase 4: the
+        # user-corrected overlay (read BEFORE the purge-capable write)
+        # re-applies renamed labels so the artifact never resurfaces a
+        # pre-rename ASR guess ("Valiy" vs the user's "Валли").
+        _corrected = await _heartbeat_while(
+            asyncio.to_thread(
+                user_corrected_labels,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+                graph_tags[0],
+            )
+        )
         await _heartbeat_while(
             asyncio.to_thread(
                 write_events_json,
@@ -804,6 +818,7 @@ async def enrich(rec_id: str) -> dict:
                 profile_id=profile_id,
                 namespaces=graph_tags,
                 resolved=resolved_by_tag[graph_tags[0]],
+                corrected_labels=_corrected,
             )
         )
         # Phase 3.5 semantic index: index this recording's segments in
