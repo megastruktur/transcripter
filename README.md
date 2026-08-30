@@ -13,9 +13,9 @@ and a summary** — every stage re-runnable on demand.
 │ Client (Tauri v2)        │  FLAC    │ Server (Docker Compose)             │
 │ ┌──────────────────────┐ │  via     │ ┌────────┐  ┌────────────────────┐  │
 │ │ mic + system audio   │─┼──PUT─────┼▶│  API   │─▶│ Temporal worker    │  │
-│ │ FLAC encode          │ │ resumable│ │FastAPI │  │ transcribe         │  │
+│ │ FLAC encode          │ │ resumable│ │FastAPI │  │ chunk → transcribe │  │
 │ │ spool + retry        │ │ chunks   │ │ :8090  │  │ → diarize → merge  │  │
-│ └──────────────────────┘ │          │ └────────┘  │ → summarize        │  │
+│ └──────────────────────┘ │          │ └────────┘  │ → summarize/enrich │  │
 │ SvelteKit UI             │          │             └────────────────────┘  │
                                       │ PostgreSQL · Temporal UI :8082      │
                                       │ NAS-backed recording storage        │
@@ -27,7 +27,7 @@ and a summary** — every stage re-runnable on demand.
 - **Client is thin, server does the ML.** Capture + FLAC encode + upload on the
   desktop; transcription (faster-whisper), diarization (LinTO/pyannote) and
   summarization (any OpenAI-compatible API) run in Docker on your hardware.
-- **Durable pipeline.** Temporal drives the five stages with per-stage retry
+- **Durable pipeline.** Temporal drives every stage with per-stage retry
   and status; a crash or restart never loses a recording mid-processing.
 - **Resumable uploads.** Audio is spooled locally, uploaded as offset-addressed
   chunks, verified by SHA-256 at finalize. A dropped Wi-Fi connection resumes
@@ -40,10 +40,12 @@ and a summary** — every stage re-runnable on demand.
   every record start; **Settings** runs a live RMS probe of both capture
   paths — no more silent empty first recordings.
 - **Single-user by design.** One bearer token, LAN-oriented, zero accounts.
-- **Tags & profiles.** Tag a recording (`pathfinder`, `meeting`…) and a yaml
-  profile can override the summary prompt and name the exported artifact —
-  RPG session logs, structured minutes, your own domain. Declarative only;
-  the core pipeline never breaks on a bad profile.
+- **Types, tags & profiles.** Pick a recording type (`ttrpg`, `meeting`…)
+  and a yaml profile rewrites the summary prompt and names the exported
+  artifact — RPG session logs, structured minutes, your own domain.
+  Freehand tags become knowledge namespaces: timeline, entities, digests,
+  semantic search, recap. Declarative only; the core pipeline never
+  breaks on a bad profile.
 
 ## Screenshots
 
@@ -80,8 +82,8 @@ relative `./storage` bind and the `config.yaml` mount depend on it.
 whisper weights (~0.5 GB for `small`) from huggingface.co into the `models`
 named volume; container recreates keep them. After that the whole stack
 works with no internet access. Never run `docker compose down -v` unless
-you mean it — it deletes the whisper cache, the postgres database, and the
-Speaches cache.
+you mean it — it deletes the whisper and bge-m3 model caches, the
+postgres database, the Speaches cache, and the Neo4j graph.
 
 **Resources.** ~4 GB free RAM for the base stack (local whisper + LinTO).
 The LinTO container takes ~2 min to load its weights on first start —
@@ -144,13 +146,16 @@ deduplication, grouping, memory):
 | `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`)      |
 | `merge_speakers` | IoU word↔segment matching           | fuses transcript words with speaker turns          |
 | `summarize`  | OpenAI-compatible endpoint               | optional; stage reports `skipped` when no model    |
+| `enrich`     | LLM extraction → Neo4j + per-tag vector index | optional; graph off → `skipped` (best-effort) |
 | `finalize`   | —                                        | always runs (even on stage failure) — unblocks UI |
 
 Artifacts per recording: raw transcript, diarization turns, merged
-speaker-attributed transcript, summary — all fetchable over the API and shown
-in the client. The recording page renders the transcript, speakers, and summary
-tabs as sanitized Markdown (allowlist-only tags, no links/images); the JSON tab
-stays raw.
+speaker-attributed transcript, summary, extracted events — all fetchable
+over the API and shown in the client. The recording page renders the
+transcript, speakers and summary tabs as sanitized Markdown
+(allowlist-only tags, no links/images); the events and JSON tabs stay
+raw.
+
 ### Chunking (long recordings, CPU voice stacks)
 
 A single multi-hour STT request can collapse into the whisper **repetition
@@ -177,33 +182,60 @@ chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
 Off by default (`chunk.enabled: false` → stage reports `skipped`, pipeline
 runs whole-file as before).
 
-## Tags & profiles
+## Types, tags & profiles
 
-Recordings carry flat lowercase **tags**: set them on the record page, edit
-them on the recording page, search them via the library search box
-(`GET /recordings?q=` matches title and tags).
+Recordings carry an optional **type** (`ttrpg`, `meeting`…) picked at
+record/import time and flat lowercase freehand **tags**; both are edited
+on the recording page, and the library search box matches title, id and
+tags (`GET /recordings?q=`). Editing the type or tags of a done recording
+re-runs the affected stages automatically (type → summarize+enrich, since
+profile routing is by type; tags → enrich, since tags are the graph
+namespaces).
 
 **Profiles** are yaml files in `server/profiles/` (bind-mounted read-only at
 `/etc/transcripter/profiles`, re-scanned on every stage run — no restart
-needed). A profile whose `tags` intersect the recording's tags overrides the
-summarize prompt and renames the exported summary artifact
-(`output_artifact`, default `summary.md`; the canonical `meta/summary.md` is
-unchanged). Tag edits on existing recordings apply on the next summarize
-regenerate. Two examples ship in the repo (`pathfinder-party-log`,
-`meeting-notes`); the format contract for writing your own is
-`server/profiles/README.md`. A broken profile logs a warning and is skipped —
-the pipeline is never affected.
+needed). A profile applies when the recording's type equals the profile's
+`type`; it overrides the summarize prompt and renames the exported summary
+artifact (`output_artifact`, default `summary.md`; the canonical
+`meta/summary.md` is unchanged). Two examples ship in the repo
+(`pathfinder-party-log` for type `ttrpg`, `meeting-notes` for type
+`meeting`); the format contract for writing your own is
+`server/profiles/README.md`. A broken profile logs a warning and is
+skipped — the pipeline is never affected.
 
-With the graph layer on (`--profile graph`), profiles with an `enrich:`
-section additionally extract events/entities/relations into Neo4j after
-summarize (best-effort — failures never hurt the recording), and
-`POST /tags/{tag}/digest {last_n}` renders a digest note of the last N
-tagged sessions to `<transcripts>/digests/<tag>.md`.
+### Knowledge layer (tags as namespaces, `graph` profile)
+
+With the graph layer on, every tag is a knowledge namespace. After
+summarize, the `enrich` stage extracts events/entities/relations into
+Neo4j — via the matched profile's `enrich:` section, or (with
+`graph.enrich_all: true`, the default) a built-in fallback ontology — and
+indexes transcript segments into per-tag sqlite-vec files (bge-m3
+embeddings: local ONNX int8 in the worker, or any OpenAI-compatible
+`/embeddings` endpoint — `graph.embed`; `EMBED_*` env overrides in
+`.env`). Best-effort throughout: failures never hurt the recording.
+On top of the graph:
+
+- **Vault page** (client nav): one row per tag — sessions, entities,
+  last activity, digest state — plus global cross-tag semantic search
+  (`GET /search?q=`).
+- **Tag page**: session timeline with click-to-seek events, an entity
+  list with inline user rename (`PATCH /tags/{tag}/entities/{slug}`;
+  user-corrected entities are exempt from auto-dedup), and the digest.
+- **Digests**: `POST /tags/{tag}/digest {last_n}` renders a digest note
+  of the last N tagged sessions to `<transcripts>/digests/<tag>.md`;
+  `GET /tags/{tag}/digest` serves it back. With `graph.auto_digest:
+  true` (default) it also auto-refreshes after enrich, at most once per
+  `auto_digest_window_sec`.
+- **Recap**: `summarize.recap: true` (default) prepends prior context to
+  the summarize prompt — the tag's digest note plus KNN-retrieved
+  segments from earlier sessions (the "Memory applied" chip in the
+  client; knobs `recap_k`, `recap_budget_chars`).
 
 Mobile/one-shot uploads: `POST /recordings/direct` accepts a single
-multipart request (audio + title + tags) and transcodes to FLAC
-server-side — used by the Android client (PoC state and build repro:
-`client/ANDROID_POC.md`).
+multipart request (audio + title + tags + optional type and
+`recorded_at` backdate; flac/wav/mp3 are transcoded server-side) — used
+by the Android client and the desktop **Import** page (Android capture
+path and build notes: `client/ANDROID_POC.md`).
 
 ## ML deployment matrix
 
@@ -254,6 +286,13 @@ the graph layer is off, `enrich` reports `skipped` and the recording
 completes normally — the core pipeline is unaffected (same opt-in
 pattern as `diarization`).
 
+Extraction runs via the matched profile's `enrich:` section, or — with
+`graph.enrich_all: true` (the default) — a built-in fallback ontology
+when no profile matched, so untyped/untagged recordings enrich too. The
+knowledge-layer surface built on the graph (Vault, timelines, digests,
+search, recap) is described in
+[Types, tags & profiles](#types-tags--profiles) above.
+
 Enable the bundled Neo4j container with the `graph` profile:
 
 ```bash
@@ -277,13 +316,21 @@ graph:
   database: neo4j
 ```
 
-`docker compose restart worker` to apply. The image is `neo4j:5.26-community`
+`docker compose restart worker` to apply (config is read once at
+startup). The image is `neo4j:5.26-community`
 (LTS, internal 5.26.30, pinned per [SECURITY.md](./SECURITY.md) pre-update
 checklist — pulled 2026-08-27), `mem_limit: 1.5g`, no published ports
 (bolt driver reaches it on the compose network only). Auth is mandatory
 (`NEO4J_AUTH=neo4j/<password>`); compose refuses to render the service
 without `NEO4J_PASSWORD` set in `.env`. The worker never `depends_on`
 neo4j, so toggling the profile doesn't restart the worker.
+
+The local embedding backend reads the bge-m3 ONNX int8 export from
+`/models/bge-m3-int8` in the shared `models` volume (the same volume as
+the whisper weights; the export is not auto-downloaded — place it there
+once). Switching embedding backend/model later is detected via recorded
+index metadata: writes rebuild the affected per-tag index, searches
+reply 503 with a backfill hint.
 
 **Without the profile**, recordings still complete end-to-end:
 `diarize` and `enrich` both report `skipped` if their backend is
@@ -379,6 +426,8 @@ summarize:
                         # http://192.168.3.23:4000/v1, qwen3.8-27b-q4_k_m)
   api_key_env: ""         # env var NAME (dev stack: LITELLM_API_KEY in .env —
                         # a LiteLLM virtual key scoped to that model)
+  recap: true             # (graph on) prepend prior-session context —
+                        # digest note + semantic KNN hits — to the prompt
 
 diarization:
   enabled: true           # false → diarize/merge skipped, no container needed
@@ -474,6 +523,11 @@ blocks the start, but one that delivers no frames within 10 s (no audio
 flowing, slow aggregate spin-up) degrades the recording to microphone-only
 with a live warning in the UI instead of killing it.
 
+The left rail navigates **Record / Import / Library / Vault / Settings**:
+**Import** pushes existing flac/wav/mp3 files through the same pipeline
+(optional backdate + type), **Vault** is the knowledge-layer front end
+(timelines, entities, digests, search).
+
 ## API
 
 All endpoints require `Authorization: Bearer <token>` (except `/health`).
@@ -484,12 +538,21 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | PUT    | `/recordings/{id}/audio?offset=N`                    | upload chunk (≤16 MB), resumable         |
 | POST   | `/recordings/{id}/finalize`                          | SHA-256 check → start pipeline           |
 | GET    | `/recordings` / `/recordings/{id}`                   | paginated list (`?limit=&offset=&q=&state=`) / detail      |
-| PATCH  | `/recordings/{id}`                                   | rename (trims title) + re-export note    |
+| PATCH  | `/recordings/{id}`                                   | edit title/tags/type/date; auto re-run on tags/type |
 | DELETE | `/recordings/{id}`                                   | delete recording + stored audio (204)    |
 | POST   | `/recordings/{id}/regenerate`                        | `{"stage": "transcribe"}` → rerun chain  |
 | GET    | `/recordings/{id}/artifacts/{stage}[?file=…]`        | stage artifacts (transcript, diarization, …) |
 | GET    | `/recordings/{id}/summary`                           | latest summary artifact                  |
 |GET/HEAD| `/recordings/{id}/audio`                             | download the FLAC (HTTP Range supported) |
+| POST   | `/recordings/direct`                                  | one-shot multipart upload (mobile/import) |
+| GET    | `/profiles`                                           | profile list for the type selector        |
+| GET    | `/tags`                                               | distinct tags with counts                  |
+| GET    | `/tags/{tag}/timeline`                                | tag sessions + events + entities           |
+|GET/POST| `/tags/{tag}/digest`                                  | serve / render the digest note (202)       |
+| GET    | `/tags/{tag}/search?q=&k=`                            | semantic KNN within the tag                |
+| PATCH  | `/tags/{tag}/entities/{slug}`                         | user entity rename (re-embed)              |
+| GET    | `/vault`                                              | per-tag manifest (Vault page)              |
+| GET    | `/search?q=&k=`                                       | global cross-tag semantic search           |
 | GET    | `/settings`                                          | effective config (secrets masked)        |
 
 Quick check:
@@ -510,13 +573,26 @@ connection drop and resume**, verifies byte-identity via SHA-256, waits for
 the pipeline, and checks all stage artifacts. Green output = the whole stack
 works.
 
+`GRAPH=1 bash scripts/e2e_smoke.sh` additionally exercises the enrich
+write path (deterministic in-container probe + a live enrich regenerate).
+
 ## Development
 
 ### Skills for coding agents
 
-Beyond the transcripter-specific skills (`.claude/skills/transcripter-*`,
-symlinked from `skills/`), two vendored Temporal skills give agents accurate,
-up-to-date Temporal knowledge instead of relying on stale training data:
+Beyond the vendored Temporal skills (below), the repo ships nine
+project skills in `skills/` (symlinked from `.claude/skills/`) that walk
+an agent through the repeatable procedures: `transcripter-stack-up`
+(bring the server up in any ML mode), `transcripter-test-suite` (pytest
+/ ruff / pyright / cargo gates), `transcripter-e2e-smoke` (full
+upload→pipeline→artifacts smoke), `transcripter-client-build`,
+`transcripter-client-run`, `transcripter-android` (APK build + on-device
+debug), `transcripter-release-ops` (version bump, tag, release CI),
+`transcripter-troubleshooting` (known failure modes), and
+`transcripter-verify-all` (the full ordered verification sequence).
+
+Two vendored Temporal skills give agents accurate, up-to-date Temporal
+knowledge instead of relying on stale training data:
 
 - `skills/temporal-developer` — Python-SDK subset of
   [skill-temporal-developer](https://github.com/temporalio/skill-temporal-developer)
@@ -533,11 +609,12 @@ Each skill's SKILL.md records the vendored commit; check upstream for updates
 before syncing. Fresh official docs are fetchable as Markdown by appending
 `.md` to any docs.temporal.io URL (index: `docs.temporal.io/llms.txt`).
 
+### Tests & lint
 
 - Server API tests: `cd server/api && uv run pytest`
 - Worker tests: `cd server/worker && uv run pytest`
 - Client tests: `cd client/src-tauri && cargo test`
-- Lint: `uvx ruff check .` / `uvx pyright` (server), `cargo clippy -- -D warnings` (client)
+- Lint: `uvx ruff check .` / `uvx pyright` (server), `cargo clippy -- -D warnings` + `pnpm check` (client)
 
 ## Building the client for Windows / macOS
 
