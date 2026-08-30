@@ -512,6 +512,28 @@ class TestWriteToGraph:
         assert "DETACH DELETE" in runs[0][0]
         assert "MERGE" not in runs[0][0]
 
+    def test_purge_excludes_user_corrected(self):
+        """Phase 4 invariant: a user-corrected node survives ANY
+        regenerate — the origin-scoped DETACH DELETE must carry the
+        coalesce exclusion (matches missing/false, exempts only true).
+        Live regression 2026-08-30: single-recording tag lost the
+        Валли rename to the purge."""
+        driver, runs = _tx_recorder()
+        with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
+            write_to_graph(
+                rec_id="rec-uc",
+                tag="daily blob",
+                graph=ExtractedGraph(),
+                node_labels=MagicMock(event="Event", entity="Entity"),
+                graph_uri="bolt://n",
+                graph_user="neo4j",
+                graph_password="x",
+                graph_database="neo4j",
+            )
+        delete_q = runs[0][0]
+        assert "DETACH DELETE" in delete_q
+        assert "coalesce(n.user_corrected, false) = false" in delete_q
+
     def test_custom_labels_propagate(self):
         driver, runs = _tx_recorder()
         with patch("worker.enrich.GraphDatabase.driver", return_value=driver):
@@ -1257,6 +1279,6 @@ class TestExistingEntityLookupEmbedding:
         driver.session = MagicMock(return_value=session)
         lookup = ExistingEntityLookup(driver, "neo4j", "pathfinder")
         out = lookup("galahad")
-        assert out["embedding"] == [0.5, 0.5]
+        assert out is not None and out["embedding"] == [0.5, 0.5]
         q = session.run.call_args.args[0]
         assert "e.embedding AS embedding" in q

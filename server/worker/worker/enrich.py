@@ -653,7 +653,16 @@ def write_to_graph(
             )
             delete_query = cast(
                 "Any",
-                "MATCH (n {origin_recording_id: $rec}) DETACH DELETE n",
+                # Phase 4: a user-corrected node must survive ANY
+                # regenerate — coalesce(...) = false matches both a
+                # false flag and a missing property; only true exempts.
+                # Without this, a single-recording tag (every node
+                # origin-authored by the ONE recording) loses the user's
+                # label edit on every regenerate — the exact regression
+                # phase 4 exists to prevent.
+                "MATCH (n {origin_recording_id: $rec}) "
+                "WHERE coalesce(n.user_corrected, false) = false "
+                "DETACH DELETE n",
             )
             if purge_origin:
                 tx.run(delete_query, rec=rec_id)
