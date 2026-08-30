@@ -24,6 +24,12 @@ class SummarizeConfig(BaseModel):
     # the summarize prompt as prior context. No digest notes are ever
     # written without the graph, so recap without graph.enabled is a no-op.
     recap: bool = True
+    # Recap-retrieval tail: KNN over the tag's Phase 3.5 semantic index
+    # (segments of OTHER recordings) appended to the digest note. k hits,
+    # budget caps the rendered block. Degradation is graceful: missing
+    # index/backend → digest-only recap, never a stage failure.
+    recap_k: int = 6
+    recap_budget_chars: int = 1600
 
 
 class DiarizationConfig(BaseModel):

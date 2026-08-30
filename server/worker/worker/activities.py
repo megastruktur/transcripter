@@ -470,10 +470,12 @@ async def summarize(rec_id: str) -> dict:
 
         profile = match_profile_by_type(rec.type, c.profiles.path)
     prompt_template = profile.summarize.prompt if profile is not None else None
-    # Phase 3 recap: inject the first-tag digest note as prior context.
-    # Needs the knob, the graph (digest notes are only written when the
-    # graph is enabled), and at least one tag. Best-effort: a recap
-    # failure must never fail the summarize stage.
+    # Phase 3 recap: inject the first-tag digest note as prior context,
+    # extended by the recap-retrieval tail (KNN over the tag's Phase 3.5
+    # index, other recordings only). Needs the knob, the graph (digest
+    # notes are only written when the graph is enabled), and at least one
+    # tag. Best-effort: a recap failure must never fail the summarize
+    # stage.
     recap_block: str | None = None
     if c.summarize.recap and c.graph.enabled:
         with session() as s:
@@ -484,7 +486,12 @@ async def summarize(rec_id: str) -> dict:
                 from .summarize import build_recap
 
                 recap_block = await asyncio.to_thread(
-                    build_recap, tags[0], c.transcripts.path
+                    build_recap,
+                    tags[0],
+                    c.transcripts.path,
+                    recording_id=rec_id,
+                    meta_dir=meta_dir(rec_id),
+                    cfg=c,
                 )
             except Exception:
                 log.exception(

@@ -9,6 +9,7 @@ no-op, and the digest prompt's new "Entity updates" section.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -172,10 +173,11 @@ def meta(tmp_path: Path) -> Path:
 
 RECAP = "1. Overview: the party met a dragon."
 
-# Constant prefix shared by the injection assertions below.
+# Constant prefix shared by the injection assertions below. Kept in sync
+# with summarize_transcript's injection wording.
 PREFIX = (
     "Prior context from this series' knowledge base "
-    "(digest of earlier sessions):\n\n"
+    "(digest and retrieved excerpts of earlier sessions):\n\n"
 )
 
 # Exact instruction strings — assert against the real constants, never
@@ -463,6 +465,171 @@ class TestDigestPromptEntityUpdates:
         assert "Sessions: T1 (2026-08-01)" in prompt
         assert "Relations (from — rel — to):" in prompt
         assert "(none)" in prompt
+
+# ---------- recap retrieval (semantic tail) --------------------------------------
+
+_DIM = 4
+
+
+class TestRecapRetrieval:
+    """The recap-retrieval tail: KNN over the tag's Phase 3.5 index,
+    other recordings only, rendered after the digest body."""
+
+    def _seed_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Path, Path, Path]:
+        """Build a real vec0 index for tag 'pathfinder' with one OTHER
+        recording; return (root, meta_cur, index_path)."""
+        from worker.semantic_index import index_path, index_segments
+
+        root = tmp_path / "transcripts"
+        meta_other = tmp_path / "other"
+        meta_other.mkdir()
+        (meta_other / "transcript.md").write_text(
+            "# Transcript\n\n"
+            "**[00:00:01 – 00:00:05]** dragon attacked the party at the bridge.\n\n"
+            "**[00:01:00 – 00:01:10]** the party retreated to the tavern.\n",
+            encoding="utf-8",
+        )
+        embed = SimpleNamespace(
+            backend="local",
+            model_path=Path("/models/bge"),
+            base_url="",
+            model="",
+            api_key_env="",
+            configured_dimensions=_DIM,
+        )
+        index_cfg = SimpleNamespace(graph=SimpleNamespace(embed=embed))
+
+        monkeypatch.setattr(
+            "worker.embeddings.embed_texts",
+            lambda texts, c: [[0.1] * _DIM for _ in texts],
+        )
+        index_segments(
+            "rec-old", "pathfinder", "Old session", meta_other, root, index_cfg
+        )
+        meta_cur = tmp_path / "cur"
+        meta_cur.mkdir()
+        (meta_cur / "transcript.md").write_text(
+            "# Transcript\n\n**[00:00:01 – 00:00:05]** hello agenda dragons again.\n",
+            encoding="utf-8",
+        )
+        return root, meta_cur, index_path(root, "pathfinder")
+
+    def test_retrieval_appends_after_digest(self, tmp_path, monkeypatch) -> None:
+        root, meta_cur, _ = self._seed_index(tmp_path, monkeypatch)
+        dig = root / "digests"
+        dig.mkdir(parents=True)
+        _write_digest(dig, "pathfinder.md", "pathfinder", "Digest body.")
+        cfg = SimpleNamespace(
+            summarize=SimpleNamespace(recap_k=3, recap_budget_chars=800)
+        )
+        out = build_recap(
+            "pathfinder",
+            root,
+            recording_id="rec-cur",
+            meta_dir=meta_cur,
+            cfg=cfg,
+        )
+        assert out is not None
+        assert out.startswith("Digest body.")
+        assert "Related earlier discussion" in out
+        assert "Old session" in out
+        assert "dragon attacked" in out
+
+    def test_no_digest_retrieval_only(self, tmp_path, monkeypatch) -> None:
+        root, meta_cur, _ = self._seed_index(tmp_path, monkeypatch)
+        cfg = SimpleNamespace(
+            summarize=SimpleNamespace(recap_k=3, recap_budget_chars=800)
+        )
+        out = build_recap(
+            "pathfinder",
+            root,
+            recording_id="rec-cur",
+            meta_dir=meta_cur,
+            cfg=cfg,
+        )
+        assert out is not None
+        assert out.startswith("Related earlier discussion")
+        assert "dragon attacked" in out
+
+    def test_current_recording_excluded(self, tmp_path, monkeypatch) -> None:
+        root, meta_cur, _ = self._seed_index(tmp_path, monkeypatch)
+        from worker.semantic_index import index_segments
+
+        embed = SimpleNamespace(
+            backend="local",
+            model_path=Path("/models/bge"),
+            base_url="",
+            model="",
+            api_key_env="",
+            configured_dimensions=_DIM,
+        )
+        index_cfg = SimpleNamespace(graph=SimpleNamespace(embed=embed))
+        monkeypatch.setattr(
+            "worker.embeddings.embed_texts",
+            lambda texts, c: [[0.1] * _DIM for _ in texts],
+        )
+        index_segments(
+            "rec-cur", "pathfinder", "Current session", meta_cur, root, index_cfg
+        )
+        cfg = SimpleNamespace(
+            summarize=SimpleNamespace(recap_k=3, recap_budget_chars=800)
+        )
+        out = build_recap(
+            "pathfinder",
+            root,
+            recording_id="rec-cur",
+            meta_dir=meta_cur,
+            cfg=cfg,
+        )
+        assert out is not None
+        assert "Current session" not in out
+        assert "Old session" in out
+
+    def test_no_index_digest_only(self, tmp_path, monkeypatch) -> None:
+        root = tmp_path / "transcripts"
+        root.mkdir()
+        dig = root / "digests"
+        dig.mkdir()
+        _write_digest(dig, "pathfinder.md", "pathfinder", "Only digest.")
+        meta_cur = tmp_path / "cur"
+        meta_cur.mkdir()
+        (meta_cur / "transcript.md").write_text(
+            "# Transcript\n\n**[00:00:01 – 00:00:05]** agenda.\n", encoding="utf-8"
+        )
+        cfg = SimpleNamespace(
+            summarize=SimpleNamespace(recap_k=3, recap_budget_chars=800)
+        )
+        out = build_recap(
+            "pathfinder",
+            root,
+            recording_id="rec-cur",
+            meta_dir=meta_cur,
+            cfg=cfg,
+        )
+        assert out == "Only digest.\n"
+
+    def test_embedding_failure_degrades_to_digest(self, tmp_path, monkeypatch) -> None:
+        root, meta_cur, _ = self._seed_index(tmp_path, monkeypatch)
+        dig = root / "digests"
+        dig.mkdir(parents=True)
+        _write_digest(dig, "pathfinder.md", "pathfinder", "Safe digest.")
+        monkeypatch.setattr(
+            "worker.embeddings.embed_texts",
+            lambda texts, c: (_ for _ in ()).throw(RuntimeError("backend dead")),
+        )
+        cfg = SimpleNamespace(
+            summarize=SimpleNamespace(recap_k=3, recap_budget_chars=800)
+        )
+        out = build_recap(
+            "pathfinder",
+            root,
+            recording_id="rec-cur",
+            meta_dir=meta_cur,
+            cfg=cfg,
+        )
+        assert out == "Safe digest.\n"
 
 
 def datetime_utc(*args: int) -> Any:
