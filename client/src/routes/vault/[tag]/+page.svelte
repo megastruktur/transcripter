@@ -276,6 +276,26 @@ async function runSearch(): Promise<void> {
 		const mm = String(m).padStart(h > 0 ? 2 : 1, '0');
 		return `${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
 	}
+	/** Event kind → left-rail accent. Explicit entries cover the default
+	 * enrich vocabulary (milestone/change/decision/meeting); kinds invented
+	 * by custom profiles get a deterministic color from the same ramp.
+ * Cyan stays out — it is reserved for verified state. */
+	const KIND_ACCENTS: Record<string, string> = {
+		milestone: 'var(--brass)',
+		decision: 'var(--red)',
+		change: '#e9dfcf',
+		meeting: '#9e9183'
+	};
+	const KIND_RAMP = ['var(--brass)', 'var(--red)', '#e9dfcf', '#9e9183'];
+
+	function kindAccent(kind: string): string {
+		const key = kind.trim().toLowerCase();
+		const explicit = KIND_ACCENTS[key];
+		if (explicit !== undefined) return explicit;
+		let hash = 0;
+		for (const ch of key) hash = (hash * 31 + ch.codePointAt(0)!) >>> 0;
+		return KIND_RAMP[hash % KIND_RAMP.length] ?? 'var(--brass)';
+	}
 
 	onMount(() => {
 		refresh();
@@ -395,16 +415,18 @@ async function runSearch(): Promise<void> {
 						{#if openSession === session.recording_id}
 							<div class="event-list">
 								{#each session.events as event, index (index + event.ts + event.summary)}
-									<div class="event-line">
-										<span class="event-ts">{event.ts}</span>
-										<span class="event-kind">{event.kind}</span>
-										<span class="event-summary">{event.summary}</span>
+									<div class="event-card" style="--event-accent: {kindAccent(event.kind)}">
+										<div class="event-head">
+											<span class="event-ts">{event.ts}</span>
+											<span class="event-kind" title={event.kind}>{event.kind}</span>
+										</div>
+										<p class="event-summary">{event.summary}</p>
 										{#if event.mentions.length > 0}
-											<span class="event-mentions">
+											<div class="event-mentions">
 												{#each event.mentions as mention (mention)}
 													<span class="event-mention">{mention}</span>
 												{/each}
-											</span>
+											</div>
 										{/if}
 									</div>
 								{:else}
@@ -539,16 +561,20 @@ async function runSearch(): Promise<void> {
 	.session-name small { display: block; margin-top: 4px; font-size: 10px; color: #8b8278; }
 	.session-chevron { display: grid; place-items: center; color: #6f685f; line-height: 0; transition: transform 120ms ease; }
 	.session-heading[aria-expanded='true'] .session-chevron { transform: rotate(180deg); color: var(--brass); }
+	/* Event cards: full-width summary text instead of the old three-column
+	   row. The colored left rail carries the event kind; consecutive rails
+	   form the timeline spine. Cyan is deliberately absent — it belongs to
+	   verified state, not taxonomy. */
 	.event-list { display: grid; padding: 0 11px 8px 27px; }
-	.event-line { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+	.event-card { display: grid; gap: 5px; padding: 8px 10px 8px 9px; border-left: 2px solid var(--event-accent, var(--brass)); background: rgba(0,0,0,.18); border-radius: 0 3px 3px 0; box-shadow: inset 0 1px 3px rgba(0,0,0,.32); }
+	.event-card + .event-card { margin-top: 6px; }
+	.event-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 	.event-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
-	.event-kind { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-	.event-summary { color: #c7bbad; font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
-	.event-mentions { grid-column: 3; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+	.event-kind { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.event-summary { margin: 0; color: #c7bbad; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+	.event-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 1px; }
 	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.event-empty { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ash); font-size: 11px; }
-	.entity-list { display: grid; }
-	.entity-row { width: 100%; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; padding: 9px 4px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 	.entity-row:not(:last-child) { border-bottom: 1px solid var(--line); }
 	.entity-name { min-width: 0; }
 	.entity-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
