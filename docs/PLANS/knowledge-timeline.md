@@ -452,6 +452,10 @@ hit-строки показывают tag-eyebrow + сессию + ts, клик 
 Границы: полнотекст по сегментам только (entities/digest не ищем);
 каждый hit остаётся адресуемым в свой неймспейс.
 
+Статус (2026-08-30, коммит 23a6d83): реализовано, review PASS, live:
+/search?q=Валли — хиты из нескольких тегов с полем tag, /search?q=ADHD
+— sane ts. api 200 (200-я база на момент фазы), pnpm 0/0.
+
 ### Фаза 4 — правка сущностей пользователем (спроектирована 2026-08-29)
 
 Живой кейс: узел `Entity {slug: vova, label: "Валя"}` в daily blob —
@@ -497,6 +501,17 @@ label/type, флаг user_corrected, re-embed при наличии embedding);
   + temporal_client + тесты; (d) клиент inline-edit на Entities-таб;
 (e) live: переименовать «Валя»→«Валли» в daily blob, проверить
 known_entities-рендер и digest на следующем прогоне; (f) гейты+commit.
+
+Статус (2026-08-30, коммиты 3dd90ec+9562a10+5dec86a, фикс-хвосты
+c911e71+4481575+059912e): реализовано, review PASS, live-цикл
+проверен целиком — PATCH vova→«Валли» → enrich regenerate → узел
+жив (user_corrected=true, 1024d embedding), events.json и timeline
+показывают «Валли». Live-verify вскрыл и закрыл три бага, которых
+юнит-тесты не видели: (1) known_entities-рендер '(none)' ломал
+JSON-экстракцию qwen3.6 детерминированно; (2) origin-scoped purge
+СТИРАЛ user-corrected узлы ( DETACH DELETE не исключал их);
+(3) events.json писал extraction-label без оверлея переименований.
+Гейты: worker 411+4s, api 212, pnpm 0/0. Релиз v0.10.1.
 
 ### Ближайшие хвосты (не фазы, список)
 
