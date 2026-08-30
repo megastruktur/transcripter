@@ -1,16 +1,19 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		audioDevices,
 		clearWarnings,
 		ensureAudioDevices,
+		pushNotice,
+		removeNotice,
 		recorder,
 		startRecording,
 		stopRecording,
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import { commands } from '$lib/tauri';
-	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
+	import { getRecording, loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import TagChips from '$lib/TagChips.svelte';
 	import SignalWarnings from '$lib/SignalWarnings.svelte';
@@ -37,6 +40,48 @@
 	let mobile: MobileRecorder | null = null;
 	let mobileFramesTimer: ReturnType<typeof setInterval> | null = null;
 	let mobileStartedAt = 0;
+	/** Active processing watchers (recording id poll timers), cleared on unmount. */
+	const processingWatchers = new SvelteSet<ReturnType<typeof setInterval>>();
+	/** How long a "queued for processing" receipt may stay before it expires on
+	 * its own; the watcher below removes it earlier once the pipeline settles. */
+	const PROCESSING_WATCH_MS = 10 * 60_000;
+	const PROCESSING_POLL_MS = 10_000;
+
+	/** Poll the uploaded recording until the pipeline settles, then swap the
+	 * stale "queued" receipt for a short-lived outcome receipt. Poll errors
+	 * (server down, app backgrounded) just keep waiting — the receipt's TTL
+	 * guarantees it never outlives its truth. */
+	function watchProcessing(id: string, notice: string): void {
+		const cfg = loadApiConfig();
+		const shortId = id.slice(0, 8);
+		const timer = setInterval(async () => {
+			try {
+				const rec = await getRecording(cfg, id);
+				if (rec.state !== 'done' && rec.state !== 'failed') return;
+				clearInterval(timer);
+				processingWatchers.delete(timer);
+				removeNotice(notice);
+				pushNotice(
+					rec.state === 'done'
+						? `recording processed (${shortId}…)`
+						: `processing failed (${shortId}…) — see library`,
+					20_000
+				);
+			} catch {
+				// transient: keep polling until the notice TTL expires
+			}
+		}, PROCESSING_POLL_MS);
+		processingWatchers.add(timer);
+	}
+
+	/** Receipt for a successful upload: expires on its own after
+	 * PROCESSING_WATCH_MS, replaced by the outcome receipt as soon as the
+	 * pipeline reports done/failed. */
+	function announceQueued(id: string): void {
+		const notice = `recording queued for processing (${id.slice(0, 8)}…)`;
+		pushNotice(notice, PROCESSING_WATCH_MS);
+		watchProcessing(id, notice);
+	}
 	/** Failed mobile upload kept in memory for a manual retry — unlike the
 	 * desktop spool there is no on-disk persistence yet (PoC), so leaving
 	 * the page still loses it; the notice copy says as much. */
@@ -69,6 +114,8 @@
 				clearInterval(mobileFramesTimer);
 				mobileFramesTimer = null;
 			}
+			for (const timer of processingWatchers) clearInterval(timer);
+			processingWatchers.clear();
 			// Mobile capture lives in THIS component (unlike the desktop
 			// Rust-side session that survives remounts): leaving the page
 			// mid-recording must tear the MediaRecorder down, or the store
@@ -213,7 +260,7 @@
 			const result = await uploadDirect(cfg, blob, title, tags, durationSec, {
 				type: recType ?? undefined
 			});
-			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+			announceQueued(result.id);
 		} catch (error) {
 			// Do NOT discard the audio: the desktop path survives via the
 			// on-disk spool; the mobile PoC keeps the blob in memory and
@@ -239,7 +286,7 @@
 				{ type: recType ?? undefined }
 			);
 			failedUpload = null;
-			recorder.warnings.push(`recording queued for processing (${result.id.slice(0, 8)}…)`);
+			announceQueued(result.id);
 		} catch {
 			// Block stays; the user can retry again. No stacked warnings —
 			// the persistent notice already carries the failure state.

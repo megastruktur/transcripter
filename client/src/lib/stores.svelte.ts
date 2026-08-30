@@ -212,6 +212,20 @@ let recordingStatusTimer: number | null = null;
 export function clearWarnings(): void {
 	recorder.warnings = [];
 }
+/** Receipt-style messages ("queued for processing …") are info, not signal
+ * warnings: they must EXPIRE instead of staying on screen after the fact
+ * they report is no longer true (guidelines: instrument, not dashboard).
+ * `pushNotice` auto-removes after `ttlMs`; `removeNotice` pulls one early —
+ * e.g. when the reported job finishes. */
+export function pushNotice(text: string, ttlMs = 30_000): void {
+	recorder.warnings.push(text);
+	setTimeout(() => removeNotice(text), ttlMs);
+}
+
+export function removeNotice(text: string): void {
+	const index = recorder.warnings.indexOf(text);
+	if (index !== -1) recorder.warnings.splice(index, 1);
+}
 
 export async function checkAudio(
 	microphone: string | null,
@@ -481,7 +495,7 @@ export async function stopRecording(): Promise<void> {
 		}
 		recorder.recording = false;
 		if (cfg.baseUrl && cfg.token) {
-			recorder.warnings.push(`recording queued for upload (${session.id.slice(0, 8)}…)`);
+			pushNotice(`recording queued for upload (${session.id.slice(0, 8)}…)`, 60_000);
 		} else {
 			recorder.warnings.push('no server configured — recording saved locally in spool');
 		}
