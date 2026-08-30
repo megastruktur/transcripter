@@ -666,8 +666,10 @@ def test_pre_existing_lookup_instantiates_driver(monkeypatch):
 
 
 class TestRenderKnownEntities:
-    def test_empty_is_none_literal(self):
-        assert render_known_entities([]) == "(none)"
+    def test_empty_is_empty_string(self):
+        # 2026-08-30: '(none)' made qwen3.6-35b break JSON on the
+        # daily-blob regenerate; empty must read like a disabled lookup.
+        assert render_known_entities([]) == ""
 
     def test_one_row_per_line(self):
         rows = [

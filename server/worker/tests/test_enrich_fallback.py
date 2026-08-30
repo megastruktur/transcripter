@@ -132,21 +132,22 @@ def test_fallback_used_when_no_profile_and_enrich_all(
         assert st.details["profile_id"] == "builtin-fallback"
         assert st.details["namespaces"] == ["campaign"]  # tag → namespace
     # The fallback prompt is what got sent, and it carries the mandatory
-    # placeholders; known-entities was rendered for it (enabled by default
-    # in the fallback spec).
+    # placeholders (known-entities enabled by default in the fallback
+    # spec; the block itself may be empty — empty namespace).
     from worker.enrich import _FALLBACK_ENRICH_PROMPT
 
     assert captured["prompt"] is _FALLBACK_ENRICH_PROMPT
     for ph in ("{title}", "{transcript}", "{known_entities}"):
         assert ph in captured["prompt"]
-    assert captured["known_entities"]  # rendered block (not empty)
+    assert "known_entities" in captured
 
 
 def test_fallback_renders_known_entities_block(
     recording_id: str, tmp_path: Path
 ) -> None:
     """The fallback spec enables known_entities: the block for an EMPTY
-    namespace is the literal '(none)'."""
+    namespace (or a dead lookup) is the empty string — same as a
+    disabled lookup (2026-08-30 '(none)' JSON-break fix)."""
     cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
     captured: dict[str, Any] = {}
 
@@ -178,9 +179,8 @@ def test_fallback_renders_known_entities_block(
         patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
     ):
         _run(activities.enrich(recording_id))
-
-    # Lookup died (best-effort) → the empty-namespace literal.
-    assert captured["known_entities"] == "(none)"
+    # Lookup died (best-effort) → empty block, same as disabled lookup.
+    assert captured["known_entities"] == ""
 
 
 def test_no_match_enrich_all_false_skips(recording_id: str, tmp_path: Path) -> None:

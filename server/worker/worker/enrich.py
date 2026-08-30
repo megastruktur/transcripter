@@ -1153,12 +1153,15 @@ def pre_existing_lookup(
 def render_known_entities(rows: list[dict[str, str]]) -> str:
     """Render the ``{known_entities}`` prompt block.
 
-    One ``- slug — label (type)`` line per row; the literal ``(none)``
-    for an empty namespace. ``rows`` comes from ``list_known_entities``
-    (the pre-extraction snapshot of the target namespace).
+    One ``- slug — label (type)`` line per row; an empty snapshot
+    renders an EMPTY string (2026-08-30: the former literal ``(none)``
+    made qwen3.6-35b deterministically emit broken JSON — a doubled
+    ``{`` right after the events array — on the daily-blob regenerate;
+    the same prompt with an empty block parses 3/3. Empty input must
+    read exactly like a disabled lookup). ``rows`` comes from
+    ``list_known_entities`` (the pre-extraction snapshot of the target
+    namespace).
     """
-    if not rows:
-        return "(none)"
     return "\n".join(
         f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows
     )
