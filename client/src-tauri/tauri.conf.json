@@ -27,6 +27,11 @@
       "csp": null
     }
   },
+  "plugins": {
+    "background-service": {
+      "androidForegroundServiceTypes": ["microphone"]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

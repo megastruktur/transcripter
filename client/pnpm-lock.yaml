@@ -11,12 +11,18 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.0.0
         version: 2.11.1
+      '@tauri-apps/plugin-notification':
+        specifier: ^2.3.3
+        version: 2.3.3
       dompurify:
         specifier: ^3.4.14
         version: 3.4.14
       marked:
         specifier: ^18.0.11
         version: 18.0.11
+      tauri-plugin-background-service:
+        specifier: ^1.0.1
+        version: 1.0.1
     devDependencies:
       '@sveltejs/adapter-static':
         specifier: ^3.0.0
@@ -474,6 +480,9 @@ packages:
     engines: {node: '>= 10'}
     hasBin: true
 
+  '@tauri-apps/plugin-notification@2.3.3':
+    resolution: {integrity: sha512-Zw+ZH18RJb41G4NrfHgIuofJiymusqN+q8fGUIIV7vyCH+5sSn5coqRv/MWB9qETsUs97vmU045q7OyseCV3Qg==}
+
   '@types/cookie@0.6.0':
     resolution: {integrity: sha512-4Kh9a6B2bQciAhf7FSuMRRkUWecJgJu9nPnx3yzpsfXX/c50REIqpHY4C82bXP90qrLtXtkDxTZosYO3UpOwlA==}
 
@@ -633,6 +642,9 @@ packages:
   svelte@5.56.9:
     resolution: {integrity: sha512-VT8kSnlEg8069w7AiCcAk3Yf5xvMnrGTagVOmU/OpOLHaHnNqXhWZCH/4EVga/bT/HtWhvE6/fHrXLErx7OnJA==}
     engines: {node: '>=18'}
+
+  tauri-plugin-background-service@1.0.1:
+    resolution: {integrity: sha512-mXx0TMgQK6eWT7yiWFTGVlQZrhRkmQC50Kt3ZGShvdTiIhV3lOucXNXQdo6XHICmrvx46CkU+UV6UsgbyfHhzw==}
 
   totalist@3.0.1:
     resolution: {integrity: sha512-sf4i37nQ2LBx4m3wB74y+ubopq6W/dIzXg0FDGjsYnZHVa1Da8FH853wlL2gtUhg+xJXjfk3kUZS3BRoQeoQBQ==}
@@ -958,6 +970,10 @@ snapshots:
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
 
+  '@tauri-apps/plugin-notification@2.3.3':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
+
   '@types/cookie@0.6.0': {}
 
   '@types/estree@1.0.9': {}
@@ -1138,6 +1154,10 @@ snapshots:
       zimmerframe: 1.1.4
     transitivePeerDependencies:
       - '@typescript-eslint/types'
+
+  tauri-plugin-background-service@1.0.1:
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   totalist@3.0.1: {}
 

@@ -14,11 +14,35 @@
  * before — `isAndroidTauri()` is the single switch the capture page reads.
  */
 
+import { startService, stopService } from 'tauri-plugin-background-service';
+
 const ANDROID_UA = /Android/i;
 /** Pseudo device id the shared store reports on Android: the platform owns
  * device routing (system mic via getUserMedia), so there is exactly one
  * selectable "device" and the desktop IPC enumeration does not exist. */
 export const ANDROID_MIC_ID = 'android-system-mic';
+
+/**
+ * Raise the mic-type foreground service that keeps the process (and this
+ * WebView's MediaRecorder) alive when the user backgrounds the app. MUST be
+ * called while the app is in the foreground — Android rejects mic-type FGS
+ * starts from the background (while-in-use restriction on RECORD_AUDIO).
+ * A failure here means a backgrounded recording would die silently, so
+ * callers must treat it as fatal for the recording start (fail-loud).
+ */
+export async function startRecordingKeepalive(): Promise<void> {
+	await startService({ serviceLabel: 'Идёт запись', foregroundServiceType: 'microphone' });
+}
+
+/** Best-effort stop: safe to call when the service was never started or is
+ * already gone (e.g. system killed it) — errors are swallowed on purpose. */
+export async function stopRecordingKeepalive(): Promise<void> {
+	try {
+		await stopService();
+	} catch {
+		// keepalive teardown must never mask the recording's own stop path
+	}
+}
 
 export function isTauriWebview(): boolean {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;

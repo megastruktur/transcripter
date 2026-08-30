@@ -36,6 +36,12 @@ url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 futures = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# Android background-recording keepalive (plan: .ship-it/plans/android-background-recording-2026-08-30.md).
+# tauri-plugin-notification MUST be registered before tauri-plugin-background-service
+# (plugin README, Quick Start step 2 — background-service uses it as its notifier).
+tauri-plugin-notification = "2"
+tauri-plugin-background-service = "1.0"
+async-trait = "0.1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 anyhow = "1"
