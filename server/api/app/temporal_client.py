@@ -17,6 +17,8 @@ EXPORT_WORKFLOW_NAME = "ExportRecording"
 EXPORT_WORKFLOW_ID_PREFIX = "export-recording-"
 DIGEST_WORKFLOW_NAME = "TagDigest"
 DIGEST_WORKFLOW_ID_PREFIX = "digest-"
+RENAME_ENTITY_WORKFLOW_NAME = "RenameEntity"
+RENAME_ENTITY_ID_PREFIX = "rename-entity-"
 
 _client: Client | None = None
 
@@ -81,6 +83,24 @@ async def start_digest(tag: str, last_n: int) -> str:
         DIGEST_WORKFLOW_NAME,
         {"tag": tag, "last_n": last_n},
         id=f"{DIGEST_WORKFLOW_ID_PREFIX}{tag}-{suffix}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id
+
+
+async def start_rename_entity(tag: str, slug: str, label: str, type_: str | None = None) -> str:
+    """Phase 4: rename ONE entity (label ± type) in the tag's namespace.
+
+    Same unique-id pattern as start_digest: concurrent renames of the
+    same entity must coexist (each PATCH is its own workflow; the
+    activity's Neo4j SET is idempotent, last write wins).
+    """
+    suffix = uuid.uuid4().hex[:8]
+    client = await get_client()
+    handle = await client.start_workflow(
+        RENAME_ENTITY_WORKFLOW_NAME,
+        {"tag": tag, "slug": slug, "label": label, "type": type_},
+        id=f"{RENAME_ENTITY_ID_PREFIX}{tag}-{slug}-{suffix}",
         task_queue=TASK_QUEUE,
     )
     return handle.id

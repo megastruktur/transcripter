@@ -249,6 +249,77 @@ def get_digest(tag: Annotated[str, Path()], request: Request) -> FileResponse:
     return FileResponse(md, media_type="text/markdown")
 
 
+class EntityPatchRequest(BaseModel):
+    """Phase 4: label is required (1..200 chars after trim); type is
+    optional — absent means "leave as is", never "clear"."""
+
+    label: str = Field(min_length=1, max_length=200)
+    type: str | None = Field(default=None, max_length=100)
+
+
+@router.patch("/{tag}/entities/{slug}", status_code=202)
+async def patch_entity(
+    body: EntityPatchRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    slug: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase 4: rename ONE entity (label ± type) in the tag's namespace.
+
+    The slug is identity (REL edges, known_entities, events.json
+    mentions) and never changes; the label is display-only and moves.
+    The worker arms the node with ``user_corrected: true`` so the dedup
+    loop stops auto-merging it and future enrich runs keep the edit.
+
+    Existence check: the SAME aggregation the timeline GET serves
+    (events.json across the tag's DONE recordings) — the entity a user
+    can click is exactly one of those rows. A slug that lives only in
+    the graph (never in events.json) is not visible in any UI and
+    therefore not renamable from here; the worker treats a missing node
+    as non-retryable.
+
+    202 like digest: the write is a Temporal workflow
+    (start_rename_entity → RenameEntity → rename_entity activity); the
+    graph lands asynchronously and the client applies the optimistic
+    label immediately.
+    """
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="label must not be empty")
+    cfg: ServerConfig = request.app.state.config
+    if not cfg.graph.enabled:
+        # Same UX shape as POST /digest: a concrete operator-facing
+        # error, not a Temporal 500 cascade one hop later.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "graph backend not configured (graph.uri empty) — start the "
+                "compose graph profile or set graph.uri in config.yaml"
+            ),
+        )
+    payload = scan_timeline(cfg, session, norm)
+    if not payload["sessions"]:
+        raise HTTPException(status_code=404, detail=f"no recordings for tag {norm}")
+    slugs = {row["slug"] for row in payload["entities"]}
+    if slug not in slugs:
+        raise HTTPException(
+            status_code=404, detail=f"entity {slug} not found in tag {norm}"
+        )
+    try:
+        workflow_id = await temporal_client.start_rename_entity(
+            norm, slug, label, body.type
+        )
+    except Exception:  # noqa: BLE001 — same blind-catch shape as post_digest
+        _LOG.exception("start_rename_entity failed for %s/%s", norm, slug)
+        raise HTTPException(
+            status_code=503, detail="temporal unavailable; try again later"
+        )
+    return {"workflow_id": workflow_id, "tag": norm, "slug": slug, "label": label}
+
+
 class TagCount(BaseModel):
     tag: str
     count: int
