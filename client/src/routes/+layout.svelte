@@ -256,7 +256,7 @@
 			<main class="workspace">
 				<div class="context-bar">
 					{#if android}
-						<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={20} /></span></button>
+					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={40} /></span></button>
 					{/if}
 					<span class="context-name">{routeName}</span>
 					{#if onRecordingDetail && stageRetry.rerun && stageRetry.enabled && stageRetry.stages.length}
@@ -335,7 +335,7 @@
 	.window-actions button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
 	.window-actions button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.55); background: rgba(215, 167, 71, 0.08); }
 	.window-actions .close:hover { color: white; border-color: var(--red); background: var(--red-dark); }
-	.hazard-rule { background: repeating-linear-gradient(120deg, var(--brass) 0 8px, #17110b 8px 16px); opacity: 0.72; z-index: 2; }
+	.hazard-rule { background: repeating-linear-gradient(120deg, var(--brass) 0 8px, #17110b 8px 16px); opacity: 0.72; z-index: 0; }
 	.shell-body { display: grid; grid-template-columns: 80px minmax(0, 1fr); min-height: 0; position: relative; z-index: 1; }
 	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 10px 7px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
@@ -365,10 +365,17 @@
 	.page-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.status-strip { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 14px; padding: 0 12px; border-top: 1px solid rgba(215, 167, 71, 0.16); background: #0e0b0a; color: #8f857b; font-size: 10px; position: relative; z-index: 2; }
 	.status-strip span:first-child { display: flex; align-items: center; gap: 7px; }
-	/* On Android the app sigil lives in the context bar and doubles as the
-	   drawer toggle; negative margin keeps the visual footprint identical
-	   while the hit area grows. */
-	.cog-toggle { display: grid; place-items: center; margin: -6px; padding: 6px; border: 0; background: transparent; cursor: pointer; line-height: 0; }
+	/* Android: the app sigil lives in the context bar and doubles as the
+	   drawer toggle. It is deliberately oversized (2x the old glyph): the
+	   56px square is the hit target, centered on the context-bar box —
+	   it rides over the hazard rule above and the bar seam below (z above
+	   both), while its bottom edge stays ~11px clear of the page title. */
+	.cog-toggle { width: 56px; height: 56px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; cursor: pointer; line-height: 0; position: relative; z-index: 3; }
+	.shell--android .cog-toggle { align-self: center; margin-left: -6px; }
+	/* Pin the bar's internal row to the bar box: without this the 56px
+	   toggle grows the row to 56px and drags the page title off-center. */
+	.shell--android .context-bar { grid-template-rows: 100%; }
+	.shell--android .mini-cog { width: 56px; height: 56px; }
 	.cog-toggle:active .mini-cog { transform: scale(0.94); transition: transform 100ms ease; }
 
 	/* Android: the WebView draws edge-to-edge under the system status bar, so
