@@ -138,22 +138,11 @@
 		clearWarnings();
 		tags = mergeDraftTags(tags, tagDraft);
 		tagDraft = '';
-		// Keepalive FIRST, while the app is guaranteed foreground: Android
-		// rejects mic-type FGS starts from the background, and a recording
-		// without the service dies silently when the user switches apps.
-		try {
-			await startRecordingKeepalive();
-		} catch (error) {
-			recorder.warnings.push(`Не удалось запустить фоновую запись: ${String(error)}`);
-			starting = false;
-			return;
-		}
 		let handle: MobileRecorder;
 		try {
 			handle = startMobileRecorder({});
 		} catch (error) {
 			recorder.warnings.push(String(error));
-			void stopRecordingKeepalive();
 			starting = false;
 			return;
 		}
@@ -166,7 +155,22 @@
 		} catch (error) {
 			if (mobile === handle) mobile = null;
 			recorder.warnings.push(String(error));
-			void stopRecordingKeepalive();
+			starting = false;
+			return;
+		}
+		// Keepalive AFTER the getUserMedia grant, still before the recording UI
+		// flips: a mic-type FGS requires RECORD_AUDIO to be ALREADY granted at
+		// startForeground time ("anyOf […, RECORD_AUDIO]" in the platform
+		// error), and the grant only exists once getUserMedia resolves. The app
+		// is still guaranteed foreground here, which is the other FGS
+		// requirement. Fail-loud: without the service a backgrounded recording
+		// dies silently.
+		try {
+			await startRecordingKeepalive();
+		} catch (error) {
+			if (mobile === handle) mobile = null;
+			handle.cancel();
+			recorder.warnings.push(`Не удалось запустить фоновую запись: ${String(error)}`);
 			starting = false;
 			return;
 		}
