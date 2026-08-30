@@ -3,8 +3,9 @@
 	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import TagChips from '$lib/TagChips.svelte';
+	import TypeProfileField from '$lib/TypeProfileField.svelte';
 	import { mergeDraftTags } from '$lib/tags';
-	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
+	import { ensureProfiles } from '$lib/profiles.svelte';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 
 	const IMPORT_ACCEPT = '.flac,.wav,.mp3,audio/flac,audio/wav,audio/x-wav,audio/mpeg';
@@ -19,17 +20,12 @@
 	let importType = $state<string | null>(null);
 	let importTagDraft = $state('');
 	let importTags = $state<string[]>([]);
+	let tagSuggestions = $derived(tagSuggestionsCache.items);
 	let importing = $state(false);
 	let importError = $state('');
 	/** Last successful import's short id — one-line receipt under the picker. */
 	let queuedId = $state('');
 	const importOversize = $derived(importFile !== null && importFile.size > IMPORT_SIZE_HINT);
-	const tagSuggestions = $derived(tagSuggestionsCache.items);
-	const matchedProfile = $derived(
-		importType === null
-			? null
-			: (profilesCache.items.find((profile) => profile.type === importType) ?? null)
-	);
 
 	function openImportPicker(): void {
 		importInput?.click();
@@ -99,9 +95,6 @@
 <svelte:head><title>Import · Transcriptor Maximus</title></svelte:head>
 
 <section class="page import-page">
-	<header>
-		<h1 class="page-title">Import audio</h1>
-	</header>
 
 	{#if !importFile}
 		<button class="import-picker panel" type="button" onclick={openImportPicker}>
@@ -125,18 +118,7 @@
 				<span class="field-label">Recording name</span>
 				<input type="text" placeholder="e.g. Doctronic weekly" bind:value={importTitle} />
 			</label>
-			<label class="type-field">
-				<span class="field-label">Type</span>
-				<select bind:value={importType}>
-					<option value={null}>None — default pipeline</option>
-					{#each profilesCache.items as profile (profile.id)}
-						<option value={profile.type}>{profile.display_name}</option>
-					{/each}
-				</select>
-				{#if matchedProfile}
-					<small class="type-hint">Profile: {matchedProfile.display_name}{matchedProfile.has_enrich ? ' · memory extraction on' : ''}</small>
-				{/if}
-			</label>
+			<TypeProfileField bind:value={importType} />
 			<label class="title-field">
 				<span class="field-label">Recorded at</span>
 				<input type="datetime-local" bind:value={importWhen} />
@@ -190,9 +172,6 @@
 	.import-head { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; color: var(--brass); }
 	.import-filename { font-size: 12px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bone); }
 	.import-size { font-size: 10px; color: #8d847a; font-variant-numeric: tabular-nums; }
-	.type-field { display: block; margin-bottom: 0; }
-	.type-field select { width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.25); color: var(--bone); font-size: 12px; }
-	.type-hint { display: block; margin-top: 4px; font-size: 10px; color: #8d847a; }
 	.title-field { display: block; margin-bottom: 0; }
 	.tags-field { display: block; margin-bottom: 0; }
 	.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }

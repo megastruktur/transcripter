@@ -13,8 +13,10 @@
 	import { loadApiConfig, uploadDirect } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import TagChips from '$lib/TagChips.svelte';
+	import SignalWarnings from '$lib/SignalWarnings.svelte';
+	import TypeProfileField from '$lib/TypeProfileField.svelte';
 	import { mergeDraftTags } from '$lib/tags';
-	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
+	import { ensureProfiles } from '$lib/profiles.svelte';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 	import { isAndroidTauri, startMobileRecorder } from '$lib/mobile-recorder';
 	import type { MobileRecorder } from '$lib/mobile-recorder';
@@ -39,10 +41,6 @@
 	/** Selected pipeline type slug; null = default pipeline. */
 	let recType = $state<string | null>(null);
 	let tagSuggestions = $derived(tagSuggestionsCache.items);
-	/** The type hint shows which profile the selected type routes to. */
-	const matchedProfile = $derived(
-		recType === null ? null : profilesCache.items.find((profile) => profile.type === recType) ?? null
-	);
 
 	onMount(() => {
 		// Instant from the shared cache on remounts; enumerates and checks in
@@ -230,13 +228,7 @@
 <svelte:head><title>Capture · Transcriptor Maximus</title></svelte:head>
 
 <section class="page capture-page">
-	<header>
-		<h1 class="page-title">Record audio</h1>
-	</header>
-
-	{#each recorder.warnings as warning (warning)}
-		<div class="notice warning" role="status"><strong>Signal warning</strong><span>{warning}</span></div>
-	{/each}
+	<SignalWarnings />
 
 	{#if failedUpload}
 		<div class="notice warning upload-pending" role="status">
@@ -265,18 +257,7 @@
 	</div>
 
 	<div class="capture-fields">
-		<label class="type-field">
-			<span class="field-label">Type</span>
-			<select bind:value={recType} disabled={recorder.recording}>
-				<option value={null}>None — default pipeline</option>
-				{#each profilesCache.items as profile (profile.id)}
-					<option value={profile.type}>{profile.display_name}</option>
-				{/each}
-			</select>
-			{#if matchedProfile}
-				<small class="type-hint">Profile: {matchedProfile.display_name}{matchedProfile.has_enrich ? ' · memory extraction on' : ''}</small>
-			{/if}
-		</label>
+		<TypeProfileField bind:value={recType} disabled={recorder.recording} />
 
 		<label class="title-field">
 			<span class="field-label">Recording name</span>
@@ -313,7 +294,6 @@
 
 <style>
 .capture-page { display: flex; flex-direction: column; min-height: 100%; }
-.capture-page > header { margin-bottom: 14px; }
 .recorder-core { position: relative; overflow: hidden; padding: 14px 12px 0; background: rgba(0,0,0,0.26); border-radius: 3px 3px 0 0; }
 .recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
 .recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
@@ -323,9 +303,6 @@
 .timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
 .capture-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; padding: 8px 12px 10px; font-size: 10px; color: #8d847a; }
 .capture-fields { flex: 1; display: grid; gap: 12px; align-content: start; padding: 14px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.type-field { display: block; }
-.type-field select { width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 12px; }
-.type-hint { display: block; margin-top: 4px; font-size: 10px; color: #8d847a; }
 .title-field { display: block; }
 .tags-field { display: block; }
 .tags-field.disabled { opacity: 0.55; }

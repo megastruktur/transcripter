@@ -3,7 +3,12 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
-	import Markdown from '$lib/Markdown.svelte';
+	import BackButton from '$lib/BackButton.svelte';
+	import DigestPanel from '$lib/DigestPanel.svelte';
+	import EmptyState from '$lib/EmptyState.svelte';
+	import NoticePanel from '$lib/NoticePanel.svelte';
+	import SearchRecess from '$lib/SearchRecess.svelte';
+	import Skeleton from '$lib/Skeleton.svelte';
 	import {
 		fetchTimeline,
 		fetchDigest,
@@ -111,7 +116,6 @@
 			editSaving = false;
 		}
 	}
-let searchOpen = $state(false);
 
 async function runSearch(): Promise<void> {
 	const q = searchQuery.trim();
@@ -124,7 +128,6 @@ async function runSearch(): Promise<void> {
 		const result = await searchTag(loadApiConfig(), tag, q);
 		if (seq !== searchSeq) return;
 		searchResults = result;
-		searchOpen = true;
 	} catch (caught) {
 		if (seq !== searchSeq) return;
 		searchResults = null;
@@ -146,7 +149,6 @@ async function runSearch(): Promise<void> {
 		searchResults = null;
 		searchError = '';
 		searchNote = '';
-		searchOpen = false;
 	}
 
 	function openHit(recordingId: string, tsStart: number): void {
@@ -266,16 +268,6 @@ async function runSearch(): Promise<void> {
 		return dateLabel(session.date);
 	}
 
-	/** Seconds → "mm:ss" / "h:mm:ss" (hit rows + titles; the seek target
-	 * stays in raw seconds). */
-	function tsLabel(seconds: number): string {
-		const total = Math.max(0, Math.floor(seconds));
-		const h = Math.floor(total / 3600);
-		const m = Math.floor((total % 3600) / 60);
-		const s = total % 60;
-		const mm = String(m).padStart(h > 0 ? 2 : 1, '0');
-		return `${h > 0 ? `${h}:` : ''}${mm}:${String(s).padStart(2, '0')}`;
-	}
 	/** Event kind → left-rail accent. Explicit entries cover the default
 	 * enrich vocabulary (milestone/change/decision/meeting); kinds invented
 	 * by custom profiles get a deterministic color from the same ramp.
@@ -307,11 +299,9 @@ async function runSearch(): Promise<void> {
 
 <section class="page tag-page">
 	<header class="tag-header">
-		<button class="back-button" type="button" onclick={() => goto('/vault')} aria-label="Back to vault" title="Back to vault">
-			<Icon name="back" size={16} />
-		</button>
+		<BackButton href="/vault" label="Back to vault" />
 		{#if loading}
-			<span class="skeleton-bar skeleton-heading" aria-hidden="true"></span>
+			<Skeleton variant="heading" />
 		{:else}
 			<h1 class="page-title tag-title">{tag}</h1>
 		{/if}
@@ -322,16 +312,9 @@ async function runSearch(): Promise<void> {
 	{/if}
 
 	{#if loading}
-		<div class="skeleton-panel" aria-hidden="true">
-			<span class="skeleton-bar skeleton-strip"></span>
-			<span class="skeleton-bar skeleton-body"></span>
-		</div>
+		<Skeleton variant="panel-tag" />
 	{:else if notFound}
-		<div class="notice-panel">
-			<strong>No sessions carry this tag</strong>
-			<small>The tag may have been removed from every recording, or the address is wrong.</small>
-			<a class="back-link" href="/vault"><Icon name="back" size={13} /> Back to vault</a>
-		</div>
+		<NoticePanel title="No sessions carry this tag" hint="The tag may have been removed from every recording, or the address is wrong." backHref="/vault" backLabel="Back to vault" />
 	{:else if data}
 		<div class="tag-tabs" role="tablist" aria-label="Tag views">
 			{#each TABS as entry (entry.key)}
@@ -349,56 +332,18 @@ async function runSearch(): Promise<void> {
 			{/each}
 			</div>
 
-		<section class="search-recess" aria-label={`Semantic search · ${tag}`}>
-			<form
-				class="search-form"
-				onsubmit={(event) => {
-					event.preventDefault();
-					void runSearch();
-				}}
-			>
-				<input
-					class="search-input"
-					type="search"
-					placeholder="Search this tag's sessions…"
-					aria-label="Search query"
-					bind:value={searchQuery}
-					disabled={searchLoading}
-				/>
-				<button class="search-go" type="submit" disabled={searchLoading || !searchQuery.trim()}>
-					<Icon name="search" size={12} strokeWidth={1.6} />
-					{searchLoading ? 'Searching…' : 'Search'}
-				</button>
-				{#if searchResults !== null || searchNote || searchError}
-					<button class="search-clear" type="button" onclick={clearSearch} aria-label="Clear search results">
-						<Icon name="close" size={12} strokeWidth={1.6} />
-					</button>
-				{/if}
-			</form>
-			{#if searchError}
-				<p class="search-error" role="alert">{searchError}</p>
-			{:else if searchNote}
-				<p class="search-note">{searchNote}</p>
-			{:else if searchResults !== null}
-				{#if searchResults.hits.length === 0}
-					<p class="search-note">No matching segments.</p>
-				{:else}
-					<div class="hit-list">
-						{#each searchResults.hits as hit (hit.recording_id + hit.ts_start)}
-							<button class="hit-row" type="button" title={`Open ${hit.session_title || 'session'} at ${tsLabel(hit.ts_start)}`} onclick={() => openHit(hit.recording_id, hit.ts_start)}>
-								<span class="hit-ts">{tsLabel(hit.ts_start)}</span>
-								<span class="hit-main">
-									<strong>{hit.session_title || 'Untitled capture'}</strong>
-									<small>
-										{#if hit.speaker}{hit.speaker} · {/if}{hit.snippet}
-									</small>
-								</span>
-							</button>
-						{/each}
-					</div>
-				{/if}
-			{/if}
-		</section>
+		<SearchRecess
+			ariaLabel={`Semantic search · ${tag}`}
+			placeholder="Search this tag's sessions…"
+			bind:query={searchQuery}
+			loading={searchLoading}
+			error={searchError}
+			note={searchNote}
+			results={searchResults}
+			onsearch={runSearch}
+			onclear={clearSearch}
+			onopenhit={openHit}
+		/>
 
 		{#if tab === 'timeline'}
 			<div class="session-list">
@@ -436,11 +381,7 @@ async function runSearch(): Promise<void> {
 						{/if}
 					</div>
 				{:else}
-					<div class="empty">
-						<span class="empty-icon" aria-hidden="true"><Icon name="timeline" size={30} /></span>
-						<strong>No sessions carry this tag</strong>
-						<small>Tag recordings in the Library to build the timeline.</small>
-					</div>
+					<EmptyState icon="timeline" title="No sessions carry this tag" hint="Tag recordings in the Library to build the timeline." />
 				{/each}
 			</div>
 		{:else if tab === 'entities'}
@@ -498,40 +439,11 @@ async function runSearch(): Promise<void> {
 						</button>
 					{/if}
 				{:else}
-					<div class="empty">
-						<span class="empty-icon" aria-hidden="true"><Icon name="speakers" size={30} /></span>
-						<strong>No entities extracted yet</strong>
-						<small>Run the pipeline on tagged recordings to populate the roster.</small>
-					</div>
+					<EmptyState icon="speakers" title="No entities extracted yet" hint="Run the pipeline on tagged recordings to populate the roster." />
 				{/each}
 			</div>
 		{:else}
-			<section class="digest-recess" aria-label={`Digest · ${tag}`}>
-				<header class="digest-header">
-					<span class="digest-title">
-						<Icon name="summary" size={11} />
-						Digest
-						<span class="digest-tag-name">{tag}</span>
-					</span>
-					<button type="button" class="digest-regen" disabled={digestGenerating} onclick={() => void regenerateDigestNow()}>
-						<Icon name="refresh" size={11} strokeWidth={1.5} />
-						Regenerate
-					</button>
-				</header>
-				{#if digestLoading}
-					<p class="tab-placeholder">Retrieving digest…</p>
-				{:else if digestGenerating}
-					<p class="tab-placeholder">Generating…</p>
-				{:else if digestError}
-					<p class="tab-error" role="alert">{digestError}</p>
-				{:else if digestNote}
-					<p class="tab-placeholder">{digestNote}</p>
-				{:else if digestMissing}
-					<p class="tab-placeholder">No digest yet — generate first.</p>
-				{:else if digestText !== null}
-					<div class="digest-body"><Markdown text={digestText} /></div>
-				{/if}
-			</section>
+			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} onregen={() => void regenerateDigestNow()} />
 		{/if}
 	{/if}
 </section>
@@ -539,8 +451,6 @@ async function runSearch(): Promise<void> {
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
 	.tag-header { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
 	.tag-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
-	.back-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
-	.back-button:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
 	.tag-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.tag-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
 	.tag-error span { color: #c6baaa; }
@@ -581,56 +491,6 @@ async function runSearch(): Promise<void> {
 	.entity-name small { display: block; margin-top: 3px; font-size: 9px; color: #8b8278; text-transform: capitalize; }
 	.entity-meta { display: grid; justify-items: end; gap: 2px; }
 	.entity-meta small { font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; white-space: nowrap; }
-	/* Digest recess: same material cut as the detail page's digest panel. */
-	.digest-recess { flex: 1 1 auto; min-height: 160px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
-	.digest-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-bottom: 1px solid var(--line); }
-	.digest-title { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-	.digest-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--bone); font-size: 10px; letter-spacing: 0.02em; }
-	.digest-regen { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
-	.digest-regen:hover:not(:disabled) { background: rgba(215,167,71,.2); }
-	.digest-regen:disabled { opacity: 0.6; cursor: default; }
-	.digest-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 8px; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
-	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
-	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
-	.notice-panel { display: grid; justify-items: start; gap: 6px; padding: 18px 14px; }
-	.notice-panel strong { color: #b5aa9c; font-size: 13px; }
-	.notice-panel small { color: #746d64; font-size: 11px; }
-	.back-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--brass); font-size: 11px; font-weight: 650; text-decoration: none; }
-	.back-link:hover { color: var(--bone); }
-	.empty { display: grid; justify-items: center; gap: 5px; padding: 28px 16px; color: #746d64; text-align: center; }
-	.empty-icon { display: grid; place-items: center; color: var(--brass); line-height: 0; }
-	.empty strong { color: #b5aa9c; font-size: 13px; }
-	.empty small { font-size: 11px; }
-	.skeleton-panel { display: grid; gap: 10px; padding: 0; }
-	.skeleton-bar { display: block; border-radius: 2px; background: var(--iron-raised); animation: skeleton-pulse 150ms ease-in-out infinite alternate; }
-	.skeleton-heading { width: 55%; height: 18px; }
-	.skeleton-strip { width: 82%; height: 18px; }
-	.skeleton-body { width: 100%; height: 90px; }
-	/* Semantic search (3.5): recess panel + brass controls — same material
-	   cut as the digest recess, same control idiom as the digest-regen
-	   family. Hit rows are a ruled manifest on the recess surface. */
-	.search-recess { display: flex; flex-direction: column; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
-	.search-form { display: grid; grid-template-columns: 1fr auto auto; align-items: stretch; gap: 6px; padding: 6px; }
-	.search-input { min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; }
-	.search-input::placeholder { color: var(--ash); }
-	.search-input:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
-	.search-input:disabled { opacity: 0.6; }
-	.search-go { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
-	.search-go:hover:not(:disabled) { background: rgba(215,167,71,.2); }
-	.search-go:disabled { opacity: 0.6; cursor: default; }
-	.search-clear { display: inline-flex; align-items: center; justify-content: center; width: 30px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); cursor: pointer; }
-	.search-clear:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
-	.search-note { margin: 0; padding: 0 10px 8px; color: var(--ash); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
-	.search-error { margin: 0; padding: 0 10px 8px; color: #f36b60; font-size: 11px; }
-	.hit-list { display: grid; max-height: 240px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
-	.hit-row { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 9px; padding: 8px 10px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; cursor: pointer; }
-	.hit-row:first-child { border-top: 0; }
-	.hit-row:hover { background: rgba(255,255,255,.02); }
-	.hit-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
-	.hit-main { min-width: 0; display: grid; gap: 3px; }
-	.hit-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
-	.hit-main small { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: #8b8278; font-size: 10px; line-height: 1.4; }
-	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
 	.entity-row:hover { background: rgba(255,255,255,.02); }
 	.entity-row:hover .entity-name strong { color: var(--bone); }
 	.entity-edit { display: grid; gap: 5px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
@@ -646,5 +506,5 @@ async function runSearch(): Promise<void> {
 	.entity-edit-cancel:hover:not(:disabled) { color: var(--bone); border-color: rgba(215,167,71,.4); }
 	.entity-edit-cancel:disabled { opacity: 0.6; cursor: default; }
 	.entity-edit-error { margin: 0; padding: 0 2px; color: #f36b60; font-size: 10px; }
-	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } .session-chevron { transition: none; } }
+	@media (prefers-reduced-motion: reduce) { .session-chevron { transition: none; } }
 </style>

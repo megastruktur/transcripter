@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import Icon from '$lib/Icon.svelte';
+	import EmptyState from '$lib/EmptyState.svelte';
+	import Skeleton from '$lib/Skeleton.svelte';
 	import { retryPendingUploads } from '$lib/stores.svelte';
 	import { listRecordings, loadApiConfig, type Recording } from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
@@ -93,10 +95,6 @@
 <svelte:head><title>Archive · Transcriptor Maximus</title></svelte:head>
 
 <section class="page archive-page">
-	<header>
-		<h1 class="page-title">Recordings</h1>
-	</header>
-
 	<div class="archive-tools">
 		<label>
 			<span class="sr-only">Search recordings</span>
@@ -120,16 +118,7 @@
 
 	<div class="record-list" aria-live="polite">
 		{#if loading}
-			{#each [0, 1, 2] as skeletonIndex (skeletonIndex)}
-				<div class="record-card skeleton-card" aria-hidden="true">
-					<span class="skeleton-bar skeleton-mark"></span>
-					<span class="skeleton-lines">
-						<span class="skeleton-bar skeleton-title"></span>
-						<span class="skeleton-bar skeleton-meta"></span>
-					</span>
-					<span class="skeleton-bar skeleton-label"></span>
-				</div>
-			{/each}
+			<Skeleton variant="record" count={3} />
 		{:else}
 			{#each recordings as recording (recording.id)}
 				<article class="record-card">
@@ -141,7 +130,7 @@
 					</button>
 				</article>
 			{:else}
-				<div class="empty"><span class="empty-icon" aria-hidden="true"><Icon name="empty" size={30} /></span><strong>No matching captures</strong><small>New recordings appear here after upload begins.</small></div>
+				<EmptyState icon="empty" title="No matching captures" hint="New recordings appear here after upload begins." tone="red" />
 			{/each}
 		{/if}
 	</div>
@@ -192,19 +181,6 @@
 	.record-tag-overflow { padding: 1px 6px; border-radius: 2px; background: rgba(255,255,255,.04); color: #8b8278; font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.record-heading:hover .record-chevron { color: var(--brass); }
 	@media (prefers-reduced-motion: reduce) { .record-chevron { transition: none; } }
-	.empty { display: grid; justify-items: center; gap: 5px; padding: 28px 16px; color: #746d64; text-align: center; }
-	.empty-icon { display: grid; place-items: center; color: var(--red); line-height: 0; }
-	.empty strong { color: #b5aa9c; font-size: 13px; }
-	.empty small { font-size: 11px; }
-	.skeleton-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 11px; }
-	.skeleton-lines { display: grid; gap: 6px; }
-	.skeleton-bar { display: block; border-radius: 2px; background: var(--iron-raised); animation: skeleton-pulse 150ms ease-in-out infinite alternate; }
-	.skeleton-mark { width: 7px; height: 7px; border-radius: 50%; }
-	.skeleton-title { width: 62%; height: 11px; }
-	.skeleton-meta { width: 38%; height: 8px; }
-	.skeleton-label { width: 46px; height: 18px; }
-	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
-	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } }
 	.pager { display: grid; grid-template-columns: 34px 1fr 34px; align-items: center; gap: 8px; }
 	.pager-button { height: 34px; display: grid; place-items: center; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); cursor: pointer; line-height: 0; }
 	.pager-button:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }

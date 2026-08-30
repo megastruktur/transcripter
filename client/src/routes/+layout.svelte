@@ -210,6 +210,10 @@
 	<div class="app-shell" class:shell--android={android}>
 		{#if !android}
 		<header class="titlebar" data-tauri-drag-region>
+			<div class="titlebar-identity">
+				<span class="titlebar-sigil"><Icon name="mark" size={18} /></span>
+				<span class="wordmark">Transcriptor Maximus</span>
+			</div>
 			<div class="window-actions">
 				<button type="button" onclick={toggleCollapsed} aria-label="Collapse to symbol" title="Collapse to symbol"><Icon name="collapse" size={16} /></button>
 				<button type="button" onclick={minimizeWindow} aria-label="Minimize window" title="Minimize"><Icon name="minimize" size={16} /></button>
@@ -326,10 +330,15 @@
 		overflow: hidden;
 	}
 	.app-shell::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.22; background-image: repeating-linear-gradient(0deg, transparent 0 3px, rgba(255, 255, 255, 0.018) 3px 4px); mix-blend-mode: screen; }
-	/* Desktop titlebar is only a drag strip plus the window buttons; the
-	   identity wordmark was removed to save vertical space (the context bar
-	   below already names the current page). */
-	.titlebar { display: flex; align-items: center; justify-content: flex-end; padding: 3px 6px; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
+	/* Desktop titlebar is a slim drag strip: identity cluster (sigil +
+	   wordmark) on the left, window buttons on the right; the context bar
+	   below still names the current page. The identity cluster is
+	   pointer-events: none so clicks on it fall through to the header's
+	   data-tauri-drag-region. */
+	.titlebar { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
+	.titlebar-identity { display: flex; align-items: center; gap: 7px; pointer-events: none; }
+	.titlebar-sigil { width: 18px; height: 18px; display: grid; place-items: center; line-height: 0; color: var(--brass); }
+	.wordmark { color: var(--bone); font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
 	.mini-cog { width: 29px; height: 29px; display: grid; place-items: center; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .45)); line-height: 0; }
 	.window-actions { display: flex; gap: 3px; }
 	.window-actions button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }

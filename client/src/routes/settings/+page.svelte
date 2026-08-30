@@ -13,6 +13,7 @@
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import SignalWarnings from '$lib/SignalWarnings.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 
 	let cfg = $state(loadApiConfig());
@@ -76,10 +77,6 @@
 <svelte:head><title>Settings · Transcriptor Maximus</title></svelte:head>
 
 <section class="page settings-page">
-	<header>
-		<h1 class="page-title">Settings</h1>
-	</header>
-
 	<form class="connection-panel" onsubmit={(event) => { event.preventDefault(); onTest(); }}>
 		<div class="panel-heading">
 			<div class="antenna" aria-hidden="true"><Icon name="link" size={17} /></div>
@@ -139,9 +136,7 @@
 			{#if preflight.current?.error}
 				<div class="notice error" role="alert"><strong>Pre-flight failed</strong><span>{preflight.current.error}</span></div>
 			{/if}
-			{#each recorder.warnings as warning (warning)}
-				<div class="notice warning" role="status"><strong>Signal warning</strong><span>{warning}</span></div>
-			{/each}
+			<SignalWarnings />
 
 			<div class="device-control">
 				<div class="device-heading">

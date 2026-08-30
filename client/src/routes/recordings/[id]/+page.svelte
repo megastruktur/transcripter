@@ -5,6 +5,10 @@
 	import Icon, { type IconName } from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
 	import TagChips from '$lib/TagChips.svelte';
+	import BackButton from '$lib/BackButton.svelte';
+	import DigestPanel from '$lib/DigestPanel.svelte';
+	import NoticePanel from '$lib/NoticePanel.svelte';
+	import Skeleton from '$lib/Skeleton.svelte';
 	import {
 		getRecording,
 		updateRecording,
@@ -522,11 +526,9 @@
 
 <section class="page detail-page">
 	<header class="detail-header">
-		<button class="back-button" type="button" onclick={() => goto('/recordings')} aria-label="Back to recordings" title="Back to recordings">
-			<Icon name="back" size={16} />
-		</button>
+		<BackButton href="/recordings" label="Back to recordings" />
 		{#if loading}
-			<span class="skeleton-bar skeleton-heading" aria-hidden="true"></span>
+			<Skeleton variant="heading" />
 		{:else if recording && renaming}
 			<div class="rename-row">
 				<input
@@ -560,18 +562,9 @@
 	{/if}
 
 	{#if loading}
-		<div class="skeleton-panel" aria-hidden="true">
-			<span class="skeleton-bar skeleton-meta"></span>
-			<span class="skeleton-bar skeleton-strip"></span>
-			<span class="skeleton-bar skeleton-player"></span>
-			<span class="skeleton-bar skeleton-body"></span>
-		</div>
+		<Skeleton variant="panel-detail" />
 	{:else if notFound}
-		<div class="notice-panel">
-			<strong>Recording not found</strong>
-			<small>It may have been deleted, or the address is wrong.</small>
-			<a class="back-link" href="/recordings"><Icon name="back" size={13} /> Back to recordings</a>
-		</div>
+		<NoticePanel title="Recording not found" hint="It may have been deleted, or the address is wrong." backHref="/recordings" backLabel="Back to recordings" />
 	{:else if !recording}
 		<div class="archive-error" role="alert"><strong>Recording unavailable</strong><span>{error}</span></div>
 	{:else}
@@ -659,35 +652,7 @@
 			{/each}
 		</div>
 		{#if digestTag}
-			<section class="digest-panel" aria-label={`Digest · ${digestTag}`}>
-				<header class="digest-header">
-					<span class="digest-title" title={digestTag}>
-						<Icon name="summary" size={11} />
-						Digest
-						<span class="digest-tag-name">{digestTag}</span>
-					</span>
-					<button type="button" class="digest-regen" disabled={digestGenerating} onclick={() => void regenerateDigestNow()}>
-						<Icon name="refresh" size={11} strokeWidth={1.5} />
-						Regenerate
-					</button>
-					<button type="button" class="digest-close" aria-label="Close digest" title="Close digest" onclick={closeDigest}>
-						<Icon name="close" size={11} />
-					</button>
-				</header>
-				{#if digestLoading}
-					<p class="tab-placeholder">Retrieving digest…</p>
-				{:else if digestGenerating}
-					<p class="tab-placeholder">Generating…</p>
-				{:else if digestError}
-					<p class="tab-error" role="alert">{digestError}</p>
-				{:else if digestNote}
-					<p class="tab-placeholder">{digestNote}</p>
-				{:else if digestMissing}
-					<p class="tab-placeholder">No digest yet — generate first.</p>
-				{:else if digestText !== null}
-					<Markdown text={digestText} />
-				{/if}
-			</section>
+			<DigestPanel tag={digestTag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} onregen={() => void regenerateDigestNow()} onclose={closeDigest} />
 		{/if}
 	{/if}
 	{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
@@ -771,8 +736,6 @@
 	.detail-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
 	.detail-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
 	.detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
-	.back-button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
-	.back-button:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
 .detail-meta { display: flex; flex-direction: column; gap: 8px; }
 .type-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .type-badge { padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; }
@@ -808,15 +771,6 @@
 	.digest-button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 10px; font-weight: 650; cursor: pointer; }
 	.digest-button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
 	.digest-button.active { border-color: var(--brass); background: rgba(215,167,71,.16); }
-	.digest-panel { flex: 1 1 auto; min-height: 160px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
-	.digest-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-bottom: 1px solid var(--line); }
-	.digest-title { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
-	.digest-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--bone); font-size: 10px; letter-spacing: 0.02em; }
-	.digest-regen { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
-	.digest-regen:hover:not(:disabled) { background: rgba(215,167,71,.2); }
-	.digest-regen:disabled { opacity: 0.6; cursor: default; }
-	.digest-close { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
-	.digest-close:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
 	.recap-chip { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; color: var(--brass); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
@@ -853,18 +807,4 @@
 	.archive-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.archive-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
 	.archive-error span { color: #c6baaa; }
-	.notice-panel { display: grid; justify-items: start; gap: 6px; padding: 18px 14px; }
-	.notice-panel strong { color: #b5aa9c; font-size: 13px; }
-	.notice-panel small { color: #746d64; font-size: 11px; }
-	.back-link { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; color: var(--brass); font-size: 11px; font-weight: 650; text-decoration: none; }
-	.back-link:hover { color: var(--bone); }
-	.skeleton-heading { width: 55%; height: 18px; }
-	.skeleton-panel { display: grid; gap: 10px; padding: 0; }
-	.skeleton-bar { display: block; border-radius: 2px; background: var(--iron-raised); animation: skeleton-pulse 150ms ease-in-out infinite alternate; }
-	.skeleton-meta { width: 46%; height: 11px; }
-	.skeleton-strip { width: 82%; height: 18px; }
-	.skeleton-player { width: 100%; height: 36px; }
-	.skeleton-body { width: 100%; height: 220px; }
-	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
-	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } }
 </style>
