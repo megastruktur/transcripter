@@ -18,4 +18,6 @@ server/config.yaml
 backups/
 MEMORY.md
 .omp/
+design-shots/
+*.bak*
 local:
