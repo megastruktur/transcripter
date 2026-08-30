@@ -251,7 +251,7 @@
 		</div>
 	{/if}
 
-	<div class:active={recorder.recording} class="recorder-core panel">
+	<div class:active={recorder.recording} class="recorder-core">
 		<div class="meter" aria-hidden="true">
 			{#each [12, 22, 34, 18, 42, 28, 48, 20, 38, 16, 30, 10] as height, index (index)}
 				<i style={`--bar-height: ${height}px; --delay: ${index * -74}ms`}></i>
@@ -262,7 +262,9 @@
 			<span>{recorder.recording ? (android ? 'Recording in WebM' : 'Recording in FLAC') : 'Ready to record'}</span>
 			<span>{recorder.recording ? `${fmt(elapsed)} captured` : 'Processed after you stop'}</span>
 		</div>
+	</div>
 
+	<div class="capture-fields">
 		<label class="type-field">
 			<span class="field-label">Type</span>
 			<select bind:value={recType} disabled={recorder.recording}>
@@ -292,47 +294,51 @@
 				onChange={(next) => (tags = next)}
 			/>
 		</label>
-
-		{#if recorder.recording}
-			<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => android ? stopMobileRecording() : stopRecording()}>
-				<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
-				<span><strong>{recorder.stopping ? 'Sealing archive…' : 'Stop recording'}</strong><small>Finish and send for processing</small></span>
-			</button>
-		{:else}
-			<div class="capture-actions">
-				<button class="record-control start" type="button" disabled={starting} onclick={beginRecording}>
-					<span class="control-symbol" aria-hidden="true"><Icon name="dot" size={12} /></span>
-					<span><strong>{starting ? 'Running pre-flight…' : 'Start recording'}</strong><small>Checks devices before capture</small></span>
-				</button>
-			</div>
-		{/if}
 	</div>
+
+	{#if recorder.recording}
+		<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => android ? stopMobileRecording() : stopRecording()}>
+			<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
+			<span><strong>{recorder.stopping ? 'Sealing archive…' : 'Stop recording'}</strong><small>Finish and send for processing</small></span>
+		</button>
+	{:else}
+		<button class="record-control start" type="button" disabled={starting} onclick={beginRecording}>
+			<span class="control-symbol" aria-hidden="true"><Icon name="dot" size={12} /></span>
+			<span><strong>{starting ? 'Running pre-flight…' : 'Start recording'}</strong><small>Checks devices before capture</small></span>
+		</button>
+	{/if}
+
 
 </section>
 
 <style>
-	.recorder-core { padding: 12px; box-shadow: inset 0 1px rgba(255,255,255,0.025); position: relative; overflow: hidden; }
-	.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
-	.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
-	.meter { height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; }
-	.meter i { width: 3px; height: calc(var(--bar-height) * 0.42); background: #4c4640; border-radius: 1px; transform-origin: center; }
-	.active .meter i { background: linear-gradient(to top, var(--red), var(--brass)); animation: signal 780ms ease-in-out infinite alternate; animation-delay: var(--delay); box-shadow: 0 0 7px rgba(213, 45, 36, 0.25); }
-	.timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
-	.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin: 5px 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 10px; color: #8d847a; }
-	.type-field { display: block; margin-bottom: 10px; }
-	.type-field select { width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 12px; }
-	.type-hint { display: block; margin-top: 4px; font-size: 10px; color: #8d847a; }
-	.title-field { display: block; margin-bottom: 10px; }
-	.tags-field { display: block; margin-bottom: 10px; }
-	.tags-field.disabled { opacity: 0.55; }
-	.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
-	.capture-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: stretch; }
-	.record-control { width: 100%; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
-	.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
-	.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }
-	.control-symbol { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.42); border-radius: 50%; line-height: 0; }
-	.record-control strong, .record-control small { display: block; }
-	.record-control strong { font-size: 14px; letter-spacing: 0.01em; }
-	.record-control small { margin-top: 4px; font-size: 10px; opacity: 0.74; }
-	@keyframes signal { to { height: var(--bar-height); } }
+.capture-page { display: flex; flex-direction: column; min-height: 100%; }
+.capture-page > header { margin-bottom: 14px; }
+.recorder-core { position: relative; overflow: hidden; padding: 14px 12px 0; background: rgba(0,0,0,0.26); border-radius: 3px 3px 0 0; }
+.recorder-core::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #534b43; }
+.recorder-core.active::before { background: var(--red); box-shadow: 0 0 16px var(--red); }
+.meter { height: 40px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; }
+.meter i { width: 3px; height: calc(var(--bar-height) * 0.42); background: #4c4640; border-radius: 1px; transform-origin: center; }
+.active .meter i { background: linear-gradient(to top, var(--red), var(--brass)); animation: signal 780ms ease-in-out infinite alternate; animation-delay: var(--delay); box-shadow: 0 0 7px rgba(213, 45, 36, 0.25); }
+.timer { margin-top: 2px; text-align: center; font: 300 36px/1 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: var(--bone); }
+.capture-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; padding: 8px 12px 10px; font-size: 10px; color: #8d847a; }
+.capture-fields { flex: 1; display: grid; gap: 12px; align-content: start; padding: 14px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.type-field { display: block; }
+.type-field select { width: 100%; padding: 7px 8px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 12px; }
+.type-hint { display: block; margin-top: 4px; font-size: 10px; color: #8d847a; }
+.title-field { display: block; }
+.tags-field { display: block; }
+.tags-field.disabled { opacity: 0.55; }
+.tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
+.record-control { width: 100%; margin-top: auto; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
+.record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
+.record-control.stop { background: rgba(213, 45, 36, 0.08); color: #ff8b7c; box-shadow: inset 0 0 18px rgba(213, 45, 36, 0.06); }
+.control-symbol { width: 30px; height: 30px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,0.42); border-radius: 50%; line-height: 0; }
+.record-control strong, .record-control small { display: block; }
+.record-control strong { font-size: 14px; letter-spacing: 0.01em; }
+.record-control small { margin-top: 4px; font-size: 10px; opacity: 0.74; }
+.upload-pending { grid-template-columns: 1fr auto; align-items: center; }
+.retry-upload { align-self: center; min-height: 34px; padding: 0 14px; border: 1px solid var(--brass); border-radius: 3px; background: transparent; color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; transition: background 120ms ease, color 120ms ease; }
+.retry-upload:hover:not(:disabled) { background: var(--brass); color: #17110b; }
+@keyframes signal { to { height: var(--bar-height); } }
 </style>

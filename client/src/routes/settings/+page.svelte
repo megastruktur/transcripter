@@ -214,11 +214,6 @@
 	.security-icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--brass); line-height: 0; }
 	.security-note strong { color: #afa397; font-size: 10px; font-weight: 700; }
 	.security-note p { margin: 5px 0 0; font-size: 11px; line-height: 1.5; }
-	.notice { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
-	.notice.error { border-color: var(--red); background: rgba(213, 45, 36, 0.08); }
-	.notice strong { font-size: 10px; font-weight: 700; color: var(--brass); }
-	.notice.error strong { color: var(--red); }
-	.notice span { color: #b5aa9c; font-size: 11px; }
 	.device-control { display: grid; gap: 6px; }
 	.device-heading { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 7px; min-width: 0; }
 	.device-heading label { color: #c9bdad; font-size: 11px; font-weight: 650; }

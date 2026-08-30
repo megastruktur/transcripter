@@ -408,6 +408,11 @@
 	:global(input::placeholder) { color: #665f58; }
 	:global(input:focus), :global(select:focus) { border-color: var(--brass); background: rgba(7, 6, 5, 0.82); outline: none; }
 	:global(button:disabled) { cursor: not-allowed; opacity: 0.5; }
+	:global(.notice) { display: grid; gap: 4px; margin: 0 0 10px; padding: 11px 12px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.07); font-size: 12px; line-height: 1.4; }
+	:global(.notice.error) { border-color: var(--red); background: rgba(213, 45, 36, 0.08); }
+	:global(.notice strong) { font-size: 10px; font-weight: 700; color: var(--brass); }
+	:global(.notice.error strong) { color: var(--red); }
+	:global(.notice span) { color: #b5aa9c; font-size: 11px; }
 
 	@media (prefers-reduced-motion: reduce) {
 		*, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
