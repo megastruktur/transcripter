@@ -244,6 +244,32 @@ export async function regenerateDigest(cfg: ApiConfig, tag: string): Promise<voi
 	}
 }
 
+/** Phase 4: rename one entity (label ± type) in the tag's namespace.
+ * The slug is identity and never changes; the server replies 202 and
+ * applies the write in a Temporal workflow — the caller renders the
+ * optimistic label immediately and rolls back on error. Throws with
+ * .status 404 (unknown tag/slug), 409 (graph off), 503 (temporal down). */
+export async function patchEntity(
+	cfg: ApiConfig,
+	tag: string,
+	slug: string,
+	label: string,
+	type?: string
+): Promise<{ workflow_id: string; label: string }> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/entities/${encodeURIComponent(slug)}`, {
+		method: 'PATCH',
+		body: JSON.stringify(type !== undefined ? { label, type } : { label })
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `rename ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
 export type SearchHit = {
 	recording_id: string;
 	session_title: string;

@@ -9,6 +9,7 @@
 		fetchDigest,
 		regenerateDigest,
 		searchTag,
+		patchEntity,
 		loadApiConfig,
 		type TimelineResponse,
 		type TimelineSession,
@@ -55,35 +56,90 @@
 	let searchError = $state('');
 	let searchNote = $state('');
 	let searchSeq = 0;
-	let searchOpen = $state(false);
 
-	async function runSearch(): Promise<void> {
-		const q = searchQuery.trim();
-		if (!q || searchLoading) return;
-		const seq = ++searchSeq;
-		searchLoading = true;
-		searchError = '';
-		searchNote = '';
+	// Phase 4 entity rename: click a row → inline recess input + brass
+	// controls; PATCH is applied optimistically and rolled back with an
+	// ash note on error. One editor open at a time (editingSlug).
+	let editingSlug = $state<string | null>(null);
+	let editLabel = $state('');
+	let editType = $state('');
+	let editSaving = $state(false);
+	let editError = $state('');
+	// Priors captured at startEdit — the optimistic pass overwrites
+	// entity.label, so the rollback values must live outside the row.
+	let editPriorLabel = '';
+	let editPriorType = '';
+
+	function startEdit(slug: string, label: string, type: string): void {
+		if (editSaving) return;
+		editingSlug = slug;
+		editLabel = label;
+		editType = type;
+		editPriorLabel = label;
+		editPriorType = type;
+		editError = '';
+	}
+
+	function cancelEdit(): void {
+		if (editSaving) return;
+		editingSlug = null;
+		editError = '';
+	}
+
+	async function saveEdit(slug: string): Promise<void> {
+		const label = editLabel.trim();
+		if (!label || editSaving) return;
+		editSaving = true;
+		editError = '';
+		// Optimistic: swap the row immediately; rollback on any failure.
+		if (data) {
+			const row = data.entities.find((e) => e.slug === slug);
+			if (row) row.label = label;
+		}
 		try {
-			const result = await searchTag(loadApiConfig(), tag, q);
-			if (seq !== searchSeq) return;
-			searchResults = result;
-			searchOpen = true;
+			const type = editType.trim();
+			await patchEntity(loadApiConfig(), tag, slug, label, type !== editPriorType ? type : undefined);
+			editingSlug = null;
 		} catch (caught) {
-			if (seq !== searchSeq) return;
-			searchResults = null;
-			const err = caught as { status?: number; reason?: string; message?: string };
-			if (err.status === 503) {
-				searchNote = err.reason || 'Semantic search unavailable.';
-			} else if (err.status === 404) {
-				searchNote = 'No sessions carry this tag.';
-			} else {
-				searchError = `Search failed: ${err.message ?? String(caught)}`;
+			// Rollback to the pre-edit row values (captured in startEdit).
+			if (data) {
+				const row = data.entities.find((e) => e.slug === slug);
+				if (row) row.label = editPriorLabel;
 			}
+			editError = `Rename failed: ${caught instanceof Error ? caught.message : String(caught)}`;
 		} finally {
-			if (seq === searchSeq) searchLoading = false;
+			editSaving = false;
 		}
 	}
+let searchOpen = $state(false);
+
+async function runSearch(): Promise<void> {
+	const q = searchQuery.trim();
+	if (!q || searchLoading) return;
+	const seq = ++searchSeq;
+	searchLoading = true;
+	searchError = '';
+	searchNote = '';
+	try {
+		const result = await searchTag(loadApiConfig(), tag, q);
+		if (seq !== searchSeq) return;
+		searchResults = result;
+		searchOpen = true;
+	} catch (caught) {
+		if (seq !== searchSeq) return;
+		searchResults = null;
+		const err = caught as { status?: number; reason?: string; message?: string };
+		if (err.status === 503) {
+			searchNote = err.reason || 'Semantic search unavailable.';
+		} else if (err.status === 404) {
+			searchNote = 'No sessions carry this tag.';
+		} else {
+			searchError = `Search failed: ${err.message ?? String(caught)}`;
+		}
+	} finally {
+		if (seq === searchSeq) searchLoading = false;
+	}
+}
 
 	function clearSearch(): void {
 		searchQuery = '';
@@ -368,16 +424,57 @@
 		{:else if tab === 'entities'}
 			<div class="entity-list">
 				{#each data.entities as entity (entity.slug)}
-					<div class="entity-row">
-						<span class="entity-name">
-							<strong>{entity.label}</strong>
-							<small>{entity.type}</small>
-						</span>
-						<span class="entity-meta">
-							<small>{entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
-							<small>{dateLabel(entity.last_seen)}</small>
-						</span>
-					</div>
+					{#if editingSlug === entity.slug}
+						<div class="entity-edit">
+							<form
+								class="entity-edit-form"
+								onsubmit={(event) => {
+									event.preventDefault();
+									void saveEdit(entity.slug);
+								}}
+							>
+								<input
+									class="entity-edit-input"
+									type="text"
+									aria-label={`Rename ${entity.label}`}
+									bind:value={editLabel}
+									disabled={editSaving}
+									maxlength="200"
+								/>
+								<input
+									class="entity-edit-type"
+									type="text"
+									aria-label="Entity type"
+									bind:value={editType}
+									disabled={editSaving}
+									maxlength="100"
+									placeholder="type"
+								/>
+								<button class="entity-edit-save" type="submit" disabled={editSaving || !editLabel.trim()}>
+									<Icon name="refresh" size={11} strokeWidth={1.6} />
+									{editSaving ? 'Saving…' : 'Save'}
+								</button>
+								<button class="entity-edit-cancel" type="button" disabled={editSaving} onclick={cancelEdit}>
+									<Icon name="close" size={11} strokeWidth={1.6} />
+									Cancel
+								</button>
+							</form>
+							{#if editError}
+								<p class="entity-edit-error" role="alert">{editError}</p>
+							{/if}
+						</div>
+					{:else}
+						<button class="entity-row" type="button" onclick={() => startEdit(entity.slug, entity.label, entity.type)} title={`Rename ${entity.label}`}>
+							<span class="entity-name">
+								<strong>{entity.label}</strong>
+								<small>{entity.type}</small>
+							</span>
+							<span class="entity-meta">
+								<small>{entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
+								<small>{dateLabel(entity.last_seen)}</small>
+							</span>
+						</button>
+					{/if}
 				{:else}
 					<div class="empty">
 						<span class="empty-icon" aria-hidden="true"><Icon name="speakers" size={30} /></span>
@@ -416,7 +513,6 @@
 		{/if}
 	{/if}
 </section>
-
 <style>
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
 	.tag-header { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
@@ -452,7 +548,7 @@
 	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.event-empty { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ash); font-size: 11px; }
 	.entity-list { display: grid; }
-	.entity-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; padding: 9px 4px; }
+	.entity-row { width: 100%; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 9px; padding: 9px 4px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 	.entity-row:not(:last-child) { border-bottom: 1px solid var(--line); }
 	.entity-name { min-width: 0; }
 	.entity-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
@@ -509,5 +605,20 @@
 	.hit-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
 	.hit-main small { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; color: #8b8278; font-size: 10px; line-height: 1.4; }
 	@keyframes skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }
+	.entity-row:hover { background: rgba(255,255,255,.02); }
+	.entity-row:hover .entity-name strong { color: var(--bone); }
+	.entity-edit { display: grid; gap: 5px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+	.entity-edit-form { display: grid; grid-template-columns: 1fr 92px auto auto; align-items: stretch; gap: 6px; }
+	.entity-edit-input, .entity-edit-type { min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; }
+	.entity-edit-input::placeholder, .entity-edit-type::placeholder { color: var(--ash); }
+	.entity-edit-input:focus, .entity-edit-type:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
+	.entity-edit-input:disabled, .entity-edit-type:disabled { opacity: 0.6; }
+	.entity-edit-save { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.entity-edit-save:hover:not(:disabled) { background: rgba(215,167,71,.2); }
+	.entity-edit-save:disabled { opacity: 0.6; cursor: default; }
+	.entity-edit-cancel { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.entity-edit-cancel:hover:not(:disabled) { color: var(--bone); border-color: rgba(215,167,71,.4); }
+	.entity-edit-cancel:disabled { opacity: 0.6; cursor: default; }
+	.entity-edit-error { margin: 0; padding: 0 2px; color: #f36b60; font-size: 10px; }
 	@media (prefers-reduced-motion: reduce) { .skeleton-bar { animation: none; opacity: 0.75; } .session-chevron { transition: none; } }
 </style>
