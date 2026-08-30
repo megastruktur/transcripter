@@ -187,10 +187,14 @@ Failure modes to watch for (real, not speculative):
   shipped with WebView 51+) will silently deny with no UI feedback.
 - **Permission prompt ordering.** Android 12+ shows the prompt inline. Pre-12
   modal. Both paths are handled by the upstream launcher.
-- **Background tab loss.** If the app goes to background, MediaStream
-  tears down. The recorder has to commit whatever it has so far and start a
-  new stream on resume, OR keep a foreground service — the latter is the
-  canonical solution for a long recording session.
+- **~~Background tab loss~~ — SOLVED (commit 32cbf33).** A microphone-type
+  foreground service (`tauri-plugin-background-service`, keepalive impl in
+  `src-tauri/src/lib.rs` `RecordingKeepalive`) keeps the process alive while
+  recording, so the WebView MediaRecorder keeps capturing when the app is
+  backgrounded. The FGS starts before `MediaRecorder.start()` (fail-loud on
+  error — Android forbids mic-FGS starts from the background) and stops on
+  every teardown path; the persistent notification's native Stop action is
+  bridged to the in-app stop path via `onPluginEvent`.
 - **No AAudio path.** We deliberately removed cpal from the android build,
   so the legacy "native Rust mic capture" path is impossible. Everything
   goes through the WebView; this is by design (matches wave-D6 plan).
@@ -225,5 +229,6 @@ transcode). PoC-era limitations closed since the verdict above:
   (PoC) — leaving the page loses it; a durable spool (IndexedDB/OPFS or
   Rust-side) is the follow-up.
 
-Still open: background tab loss (foreground service), on-device runtime
-validation of the full record→upload→pipeline loop.
+Still open: on-device runtime validation of the background-recording flow
+(manual protocol in .ship-it/plans/android-background-recording-2026-08-30.md,
+Phase 8) — background keepalive itself shipped in 32cbf33.
