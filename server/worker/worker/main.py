@@ -26,16 +26,17 @@ from .activities import (
     graph_gc,
     merge_speakers,
     preload_local,
+    rename_entity,
     summarize,
     tag_digest,
     transcribe,
 )
 from .config import load_config
 from .db import init_engine
-from .workflows import ExportRecording, GraphGc, ProcessRecording, TagDigest
+from .workflows import ExportRecording, GraphGc, ProcessRecording, RenameEntity, TagDigest
 
 # Module-level so tests can assert it matches every @activity.defn
-ACTIVITIES = [chunk, transcribe, diarize, merge_speakers, summarize, enrich, finalize_recording, export_transcript, tag_digest, graph_gc]
+ACTIVITIES = [chunk, transcribe, diarize, merge_speakers, summarize, enrich, finalize_recording, export_transcript, tag_digest, graph_gc, rename_entity]
 # (an unregistered activity fails workflows at runtime with NotFoundError
 # while the stage row sits pending — observed 2026-08-27 on enrich).
 
@@ -119,7 +120,7 @@ async def amain() -> None:
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[ProcessRecording, ExportRecording, TagDigest, GraphGc],
+        workflows=[ProcessRecording, ExportRecording, TagDigest, GraphGc, RenameEntity],
         activities=ACTIVITIES,
     )
     log.info("worker started on queue %s", TASK_QUEUE)

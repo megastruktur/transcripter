@@ -619,7 +619,13 @@ def write_to_graph(
                     # Multi-recording provenance: a shared entity MERGEs onto
                     # one node, so origin_recording_id alone can never show
                     # recurrence — digests read recording_ids instead.
-                    "ON MATCH SET e.label = $label, e.type = $type, "
+                    # Phase 4: a user-corrected label/type is authoritative —
+                    # a recurring extraction must not stomp the user's edit
+                    # back onto the ASR label ("Валли" → "Валя" regression).
+                    "ON MATCH SET e.label = CASE WHEN coalesce(e.user_corrected, false) "
+                    "THEN e.label ELSE $label END, "
+                    "e.type = CASE WHEN coalesce(e.user_corrected, false) "
+                    "THEN e.type ELSE $type END, "
                     "e.recording_ids = CASE WHEN $rec IN coalesce(e.recording_ids, []) "
                     "THEN e.recording_ids ELSE e.recording_ids + $rec END "
                     "RETURN elementId(e)"
@@ -721,6 +727,91 @@ def write_to_graph(
             return len(slug_to_node)
     finally:
         driver.close()
+
+
+def rename_entity_in_graph(
+    tag: str,
+    slug: str,
+    label: str,
+    type_: str | None,
+    cfg: Any,
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+) -> dict[str, Any]:
+    """Phase 4: user-initiated entity rename — set label (+ optional type)
+    and ``user_corrected: true`` on the ONE node ``(Entity {tag, slug})``.
+
+    The slug NEVER changes (it is the node identity: REL edges,
+    known_entities rendering, events.json mentions all key on it); only
+    the display label moves. ``user_corrected`` arms the dedup guard —
+    resolve_slugs will never auto-merge this node again — and the
+    write_to_graph ON MATCH clause will not stomp the corrected label
+    on recurrence.
+
+    Re-embedding: a node that CARRIES an embedding gets the new label's
+    vector written in the same transaction (a stale vector would keep
+    answering the 2.5 cosine prefilter with the OLD name's geometry —
+    the exact drift the rename is supposed to fix). A node WITHOUT one
+    gets a vector now when the embedder answers (cheap — the same one
+    embed_texts call already pays for the re-embed case; the node joins
+    the ANN index early instead of waiting for the next enrich MERGE
+    ON CREATE).
+
+    Returns ``{"ok": bool, "re_embedded": bool}``; ``ok=False`` means
+    the (tag, slug) pair matches nothing — the API has already 404'd on
+    the events.json aggregation, but the graph can still disagree (an
+    entity mentioned only in events, a namespace write that failed).
+    """
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            # Snapshot FIRST: does the node exist, does it carry a vector.
+            row = session.run(
+                "MATCH (e {tag: $tag, slug: $slug}) "
+                "RETURN e.embedding AS embedding LIMIT 1",
+                tag=tag,
+                slug=slug,
+            ).single()
+            if row is None:
+                return {"ok": False, "re_embedded": False}
+            had_embedding = row["embedding"] is not None
+        new_vec: list[float] | None = None
+        if had_embedding or getattr(cfg.graph, "embed_enabled", None) is True:
+            new_vec = _embed_one(label, cfg)
+        with (
+            driver.session(database=graph_database) as session,
+            session.begin_transaction() as tx,
+        ):
+            type_clause = ", e.type = $type" if type_ is not None else ""
+            tx.run(
+                "MATCH (e {tag: $tag, slug: $slug}) "
+                "SET e.label = $label" + type_clause + ", "
+                "e.user_corrected = true"
+                + (", e.embedding = $vec" if new_vec is not None else ""),
+                tag=tag,
+                slug=slug,
+                label=label,
+                type=type_,
+                vec=new_vec,
+            )
+        return {"ok": True, "re_embedded": new_vec is not None}
+    finally:
+        driver.close()
+
+
+def _embed_one(text: str, cfg: Any) -> list[float] | None:
+    """Embed ONE label via the shared client; None when the backend is
+    off/unavailable (the caller then leaves the node vectorless)."""
+    from .embeddings import embed_texts
+
+    try:
+        vecs = embed_texts([text], cfg)
+        return vecs[0] if vecs else None
+    except Exception:
+        log.exception("rename_entity: embedding failed; leaving node vectorless")
+        return None
 
 
 def _event_mentions(event: ExtractedEvent, entities: list[ExtractedEntity]) -> list[str]:
@@ -894,16 +985,29 @@ def resolve_slugs(
         elif existing_lookup is not None:
             existing = existing_lookup(slug)
             if existing is not None:
-                same = _dedup_verdict(
-                    ent.label,
-                    ent.type,
-                    existing["label"],
-                    existing["type"],
-                    cfg,
-                    vec,
-                    existing.get("embedding"),
-                    llm_enabled=llm_enabled,
-                )
+                if existing.get("user_corrected"):
+                    # Phase 4 dedup guard: a user-corrected node is
+                    # authoritative — neither the cosine prefilter nor
+                    # the LLM Y/N may merge into it (and the gray-zone
+                    # "merge on error" path must not either). Treat as
+                    # distinct and step past; one log line per hit.
+                    log.info(
+                        "dedup: %s/%s is user-corrected; keeping distinct",
+                        tag,
+                        slug,
+                    )
+                    same = False
+                else:
+                    same = _dedup_verdict(
+                        ent.label,
+                        ent.type,
+                        existing["label"],
+                        existing["type"],
+                        cfg,
+                        vec,
+                        existing.get("embedding"),
+                        llm_enabled=llm_enabled,
+                    )
                 if same:
                     seen[slug] = ExtractedEntity(
                         slug=existing["slug"], label=existing["label"], type=existing["type"]
@@ -944,6 +1048,17 @@ def resolve_slugs(
         out_relations.append(ExtractedRelation(from_slug=f, to_slug=t, type=rel.type))
     return ExtractedGraph(events=graph.events, entities=out, relations=out_relations)
 
+def _disambiguate(slug: str, taken: dict[str, ExtractedEntity]) -> str:
+    n = 2
+    while True:
+        candidate = f"{slug}-{n}"
+        if candidate not in taken:
+            return candidate
+        n += 1
+        if n > 999:
+            # Pathological: bail with a hash so we never spin forever.
+            return f"{slug}-{hash(slug) & 0xFFFF:x}"
+
 def _next_free_slug(
     slug: str,
     taken: dict[str, ExtractedEntity],
@@ -966,17 +1081,6 @@ def _next_free_slug(
         if n > 999:
             return f"{slug}-{hash((slug, n)) & 0xFFFF:x}"
 
-
-def _disambiguate(slug: str, taken: dict[str, ExtractedEntity]) -> str:
-    n = 2
-    while True:
-        candidate = f"{slug}-{n}"
-        if candidate not in taken:
-            return candidate
-        n += 1
-        if n > 999:
-            # Pathological: bail with a hash so we never spin forever.
-            return f"{slug}-{hash(slug) & 0xFFFF:x}"
 
 
 class ExistingEntityLookup:
@@ -1009,7 +1113,10 @@ class ExistingEntityLookup:
                 # must not silently opt out of dedup either.
                 "WHERE $rec = '' OR coalesce(e.origin_recording_id, '') <> $rec "
                 "RETURN e.label AS label, e.type AS type, e.slug AS slug, "
-                "e.embedding AS embedding LIMIT 1",
+                # Phase 4: user_corrected rides along so resolve_slugs can
+                # refuse to auto-merge a user-renamed node.
+                "e.embedding AS embedding, "
+                "coalesce(e.user_corrected, false) AS user_corrected LIMIT 1",
                 tag=self._tag,
                 slug=slug,
                 rec=self._exclude_rec,
@@ -1023,6 +1130,8 @@ class ExistingEntityLookup:
             # Phase 2.5: the live-graph side of the cosine prefilter —
             # None on nodes written before the embedding phase.
             "embedding": row["embedding"],
+            # Phase 4: false on every legacy/test row (coalesce).
+            "user_corrected": bool(row["user_corrected"]),
         }
 
 
@@ -1036,6 +1145,7 @@ def pre_existing_lookup(
 ) -> ExistingEntityLookup:
     """Build an ``ExistingEntityLookup`` bound to the configured graph."""
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+
 
     return ExistingEntityLookup(driver, graph_database, tag, exclude_rec)
 
@@ -1052,6 +1162,8 @@ def render_known_entities(rows: list[dict[str, str]]) -> str:
     return "\n".join(
         f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows
     )
+
+
 
 
 def list_known_entities(

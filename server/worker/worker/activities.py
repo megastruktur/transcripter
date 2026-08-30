@@ -1053,6 +1053,66 @@ async def tag_digest(args: dict) -> dict:
         log.exception("tag_digest failed for tag=%s", tag)
         raise
 
+@activity.defn
+async def rename_entity(args: dict) -> dict:
+    """Phase 4: rename ONE entity node — label (+ optional type) and
+    ``user_corrected: true`` — inside the tag's namespace.
+
+    Not a pipeline stage (no stage row): the API has already validated
+    the tag/slug pair against the events.json aggregation and returned
+    202; this activity is the async half. The neo4j driver lives in the
+    worker (same reason enrich/tag_digest do), hence an activity rather
+    than an inline API call.
+
+    Graph disabled → RuntimeError (the same loud shape as tag_digest:
+    the API 409'd already, so reaching here means the config flipped
+    between request and execution).
+    """
+    tag = args["tag"]
+    slug = args["slug"]
+    label = args["label"]
+    type_ = args.get("type")
+    c = cfg()
+    if not c.graph.enabled:
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — rename cannot run"
+        )
+    try:
+        from .enrich import rename_entity_in_graph
+
+        result = await _heartbeat_while(
+            asyncio.to_thread(
+                rename_entity_in_graph,
+                tag,
+                slug,
+                label,
+                type_,
+                c,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+            )
+        )
+    except Exception:
+        log.exception("rename_entity failed for %s/%s", tag, slug)
+        raise
+    if not result.get("ok"):
+        # The node vanished between the API's existence check and the
+        # write (namespace copy never made, GC sweep, manual delete).
+        # Raise non-retryable: a retry re-runs the same missing MATCH.
+        raise ApplicationError(
+            f"entity {tag}/{slug} not found in graph", non_retryable=True
+        )
+    log.info(
+        "rename_entity: %s/%s → %r (re_embedded=%s)",
+        tag,
+        slug,
+        label,
+        result.get("re_embedded"),
+    )
+    return result
+
 
 @activity.defn
 async def graph_gc(_: dict) -> dict:

@@ -287,3 +287,27 @@ class GraphGc:
             retry_policy=RetryPolicy(maximum_attempts=2),
             heartbeat_timeout=timedelta(seconds=120),
         )
+
+
+@workflow.defn
+class RenameEntity:
+    """Phase 4: rename ONE entity (label ± type + user_corrected flag)
+    in one namespace. Thin single-activity wrapper — same shape as
+    GraphGc: the API starts it via temporal_client.start_rename_entity
+    after its own existence check; the workflow exists so the write is
+    visible/cancellable in the Temporal UI and carries a retry policy.
+
+    Short budget: a Neo4j SET plus at most ONE embed call — nothing
+    here legitimately takes two minutes. A missing node raises
+    non-retryable inside the activity, so the ×2 retry only covers
+    transient Neo4j/HTTP hiccups.
+    """
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "rename_entity",
+            args,
+            start_to_close_timeout=timedelta(seconds=120),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )

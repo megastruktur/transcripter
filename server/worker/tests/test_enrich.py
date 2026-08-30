@@ -578,13 +578,27 @@ class TestExistingEntityLookup:
         session.__enter__ = MagicMock(return_value=session)
         session.__exit__ = MagicMock(return_value=False)
         row = MagicMock()
-        row.single = MagicMock(return_value={"label": "Galahad", "type": "character", "slug": "galahad", "embedding": None})
+        row.single = MagicMock(
+            return_value={
+                "label": "Galahad",
+                "type": "character",
+                "slug": "galahad",
+                "embedding": None,
+                "user_corrected": False,
+            }
+        )
         session.run = MagicMock(return_value=row)
         driver = MagicMock()
         driver.session = MagicMock(return_value=session)
         lookup = ExistingEntityLookup(driver, "neo4j", "pathfinder")
         out = lookup("galahad")
-        assert out == {"label": "Galahad", "type": "character", "slug": "galahad", "embedding": None}
+        assert out == {
+            "label": "Galahad",
+            "type": "character",
+            "slug": "galahad",
+            "embedding": None,
+            "user_corrected": False,
+        }
         # The query filters by tag AND slug, and EXCLUDES the current
         # recording's own nodes (origin_recording_id <> rec) so a
         # regenerate reclaims its own slugs instead of drifting -2/-3.
@@ -1233,6 +1247,7 @@ class TestExistingEntityLookupEmbedding:
                 "type": "character",
                 "slug": "galahad",
                 "embedding": [0.5, 0.5],
+                "user_corrected": False,
             }
         )
         session.run = MagicMock(return_value=row)
