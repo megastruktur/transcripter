@@ -19,9 +19,9 @@
 	let navOpen = $state(false);
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
-
 	const navItems = [
 		{ href: '/', label: 'Record', icon: 'record' },
+		{ href: '/import', label: 'Import', icon: 'import' },
 		{ href: '/recordings', label: 'Library', icon: 'library' },
 		{ href: '/vault', label: 'Vault', icon: 'vault' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
@@ -83,11 +83,13 @@
 	const routeName = $derived(
 		page.url.pathname === '/'
 			? 'Recorder'
-			: page.url.pathname.startsWith('/recordings')
-				? 'Recordings'
-				: page.url.pathname.startsWith('/vault')
-					? 'Vault'
-					: 'Settings'
+			: page.url.pathname.startsWith('/import')
+				? 'Import'
+				: page.url.pathname.startsWith('/recordings')
+					? 'Recordings'
+					: page.url.pathname.startsWith('/vault')
+						? 'Vault'
+						: 'Settings'
 	);
 	onMount(async () => {
 		void checkServerConnection();
