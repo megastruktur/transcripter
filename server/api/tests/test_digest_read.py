@@ -50,7 +50,7 @@ def test_get_digest_returns_markdown_for_frontmatter_match(
     _write_digest(digests, "pathfinder", "pathfinder")
     _write_digest(digests, "other-tag", "other tag")
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     r = client.get("/tags/pathfinder/digest")
@@ -67,7 +67,7 @@ def test_get_digest_first_sorted_match_wins(
     _write_digest(digests, "b-dup", "dup", body="B body")
     _write_digest(digests, "a-dup", "dup", body="A body")
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     r = client.get("/tags/dup/digest")
@@ -82,7 +82,7 @@ def test_get_digest_unicode_tag_matches_normalized(
     digests = tmp_path / "transcripts" / "digests"
     _write_digest(digests, "проба-кириллица", "проба кириллица")
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     raw = "%D0%9F%D1%80%D0%BE%D0%B1%D0%B0%20%D0%9A%D0%B8%D1%80%D0%B8%D0%BB%D0%BB%D0%B8%D1%86%D0%B0"
@@ -100,7 +100,7 @@ def test_get_digest_no_file_for_tag_404(
     digests = tmp_path / "transcripts" / "digests"
     _write_digest(digests, "pathfinder", "pathfinder")
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     r = client.get("/tags/nosuchtag/digest")
@@ -113,7 +113,7 @@ def test_get_digest_missing_dir_404(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "nowhere"
+        client.app.state.config.vault, "path", tmp_path / "nowhere"
     )
 
     r = client.get("/tags/anything/digest")
@@ -130,7 +130,7 @@ def test_get_digest_skips_oversized_and_nonfrontmatter_files(
     (digests / "big.md").write_text("x" * (1024 * 1024 + 1), encoding="utf-8")
     (digests / "nofm.md").write_text("no frontmatter here", encoding="utf-8")
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     r = client.get("/tags/big/digest")

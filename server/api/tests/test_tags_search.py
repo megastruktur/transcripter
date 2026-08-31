@@ -121,7 +121,7 @@ def search_env(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     rid = _make_recording(client, ["quest"], "Boss fight")
     _force_state(rid, "done")
     transcripts = tmp_path / "transcripts"
-    monkeypatch.setattr(client.app.state.config.transcripts, "path", transcripts)
+    monkeypatch.setattr(client.app.state.config.vault, "path", transcripts)
 
     near = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]  # == query → distance ~0
     far = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1]

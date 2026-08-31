@@ -20,7 +20,7 @@ from .export import check_sentinel
 
 log = logging.getLogger("transcripter.backfill")
 
-_CHILD_TIMEOUT_SEC = 20
+_CHILD_TIMEOUT_SEC = 120
 
 
 async def _run_one(rec_id: str) -> dict:
@@ -48,7 +48,7 @@ async def amain() -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     cfg = load_config()
     init_engine(cfg.database.url)
-    check_sentinel(cfg.transcripts.path, cfg.transcripts.sentinel)
+    check_sentinel(cfg.vault.path, cfg.vault.sentinel)
 
     rec_ids = _done_recording_ids()
     log.info("backfill: %d done recordings", len(rec_ids))

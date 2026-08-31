@@ -44,7 +44,7 @@ def _make_cfg(tmp_path: Path) -> Any:
     cfg.storage.path = tmp_path / "storage"
     cfg.recordings_root = tmp_path / "storage" / "recordings"
     # transcripts root for digest placement (real tmp dir).
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     # Phase 3-F F3: the dedup soft gate reads summarize.* for its probe.
     cfg.summarize.base_url = "http://llm:8080/v1"
     cfg.summarize.model = "m"
@@ -153,7 +153,7 @@ def test_missing_digest_runs(recording_id: str, tmp_path: Path) -> None:
     args = rd.call_args.args
     assert args[0] == "campaign"  # tag
     assert args[1] == 5  # last_n
-    assert args[3] == cfg.transcripts.path  # transcripts root
+    assert args[3] == cfg.vault.path  # transcripts root
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.done

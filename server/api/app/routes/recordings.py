@@ -687,9 +687,14 @@ def delete_recording(
     request: Request,
     session: Session = Depends(get_session),
 ) -> Response:
+    from app.vault import delete_recording_folders
+
     cfg = _cfg(request)
     rec = _get(recording_id, session)
     session.delete(rec)
     session.commit()
     shutil.rmtree(cfg.recordings_root / rec.id, ignore_errors=True)
+    # Vault side: the exported folder (notes + .transcripter/ audio +
+    # manifest) goes with the catalog row — id8-scoped, app-owned content.
+    delete_recording_folders(cfg, rec.id)
     return Response(status_code=204)

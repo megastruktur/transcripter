@@ -112,6 +112,7 @@ def get_audio(
     session: Session = Depends(get_session),
 ):
     from app.db import RecordingState
+    from app.vault import vault_audio
 
     rec = _get(recording_id, session)
     if rec.state == RecordingState.uploading:
@@ -119,7 +120,17 @@ def get_audio(
     cfg = _cfg(request)
     p = cfg.recordings_root / recording_id / "audio.flac"
     if not p.exists():
-        raise HTTPException(status_code=404, detail="audio file missing")
+        # The export stage moves the FLAC into the vault once the pipeline
+        # is done; storage is empty afterwards by design.
+        p = vault_audio(cfg, recording_id)
+    if p is None or not p.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "audio file missing — not in storage and no vault copy; "
+                "it may have been removed from the vault folder manually"
+            ),
+        )
     return FileResponse(p, media_type="audio/flac")
 
 

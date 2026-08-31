@@ -62,7 +62,7 @@ def _db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg.graph.user = "neo4j"
     cfg.graph.password_env = "NEO4J_PASSWORD"
     cfg.graph.database = "neo4j"
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     cfg.summarize.base_url = "http://llm:8080/v1"
     cfg.summarize.model = "m"
     cfg.summarize.api_key_env = "SUM_KEY"
@@ -418,7 +418,7 @@ def test_run_digest_writes_file(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _mock_llm_post(monkeypatch, "# digest body")
 
     cfg = activities._cfg
-    transcripts = cfg.transcripts.path
+    transcripts = cfg.vault.path
     result = asyncio.run(
         asyncio.to_thread(run_digest, "pathfinder", 2, cfg, transcripts)
     )
@@ -438,7 +438,7 @@ def test_run_digest_empty_selection_no_file(monkeypatch: pytest.MonkeyPatch) -> 
     """No done recordings carry the tag → no file, no LLM call."""
     _mock_llm_post(monkeypatch, "should never be sent")
     cfg = activities._cfg
-    transcripts = cfg.transcripts.path
+    transcripts = cfg.vault.path
     result = asyncio.run(
         asyncio.to_thread(run_digest, "missing", 5, cfg, transcripts)
     )
@@ -458,7 +458,7 @@ def test_run_digest_llm_error_propagates(monkeypatch: pytest.MonkeyPatch) -> Non
     cfg = activities._cfg
     with pytest.raises(httpx.HTTPError, match="llm down"):
         asyncio.run(
-            asyncio.to_thread(run_digest, "pathfinder", 2, cfg, cfg.transcripts.path)
+            asyncio.to_thread(run_digest, "pathfinder", 2, cfg, cfg.vault.path)
         )
 
 
@@ -470,7 +470,7 @@ def test_run_digest_invalid_tag_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = activities._cfg
     with pytest.raises(ValueError, match="not file-safe"):
         asyncio.run(
-            asyncio.to_thread(run_digest, "bad$tag", 2, cfg, cfg.transcripts.path)
+            asyncio.to_thread(run_digest, "bad$tag", 2, cfg, cfg.vault.path)
         )
 
 

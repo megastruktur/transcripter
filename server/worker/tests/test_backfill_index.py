@@ -26,7 +26,7 @@ from worker.semantic_index import index_status
 def _make_cfg(tmp_path: Path) -> WorkerConfig:
     cfg = WorkerConfig()
     cfg.storage.path = tmp_path / "storage"
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     cfg.graph.embed = EmbedConfig()
     # main() re-inits the engine from this url — keep it on the test db.
     cfg.database.url = f"sqlite:///{tmp_path / 't.db'}"
@@ -94,7 +94,7 @@ def test_main_indexes_all_namespaces(tmp_path: Path, monkeypatch) -> None:
     assert rc == 0
     # r1 indexed into BOTH its tags; r2 into the untagged namespace.
     for tag in ("alpha", "beta", "untagged"):
-        st = index_status(cfg.transcripts.path, tag)
+        st = index_status(cfg.vault.path, tag)
         assert st is not None and st["segments"] == 1, tag
 
 

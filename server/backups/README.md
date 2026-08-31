@@ -128,9 +128,10 @@ The script is idempotent and cheap (~1 s on idle). Trigger it:
 
 ## What is NOT backed up
 
-- Audio FLACs live in `./storage/recordings/` (NAS via `TRANSCRIPTS_DIR`)
-  and are bound-mounted — back them up at the filesystem level, not via
-  this script.
+- Audio FLACs live in the vault (`VAULT_DIR`, moved there by the export
+  stage once a recording is done; `/storage/recordings/<id>/audio.flac`
+  only holds in-flight/pipeline-failed captures) — back the vault up at
+  the filesystem level, not via this script.
 - Temporal workflow history lives in the `pgdata` volume (the `temporal`
   Postgres database); the `postgres.*.sql` dump captures it as one
   logical DB (no `--schema-only` filter).

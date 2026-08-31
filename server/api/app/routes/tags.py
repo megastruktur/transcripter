@@ -128,7 +128,7 @@ def get_search(
                 "reason": "embedding backend unavailable",
             },
         )
-    status = index_status(cfg.transcripts.path, norm)
+    status = index_status(cfg.vault.path, norm)
     if status is None or status["segments"] == 0:
         if not _tag_exists(norm):
             raise HTTPException(
@@ -159,7 +159,7 @@ def get_search(
                 ),
             },
         )
-    hits = knn_search(cfg.transcripts.path, norm, query_vec, k=k)
+    hits = knn_search(cfg.vault.path, norm, query_vec, k=k)
     return {
         "tag": norm,
         "query": q.strip(),

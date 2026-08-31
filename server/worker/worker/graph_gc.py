@@ -100,7 +100,7 @@ def run_graph_gc(cfg: Any) -> dict:
         from .semantic_index import drop_dead_tag_indexes
 
         dropped_indexes = drop_dead_tag_indexes(
-            cfg.transcripts.path, _live_tags() + ["untagged"]
+            cfg.vault.path, _live_tags() + ["untagged"]
         )
         if dropped_indexes:
             log.info("graph_gc: dropped %d dead index file(s)", len(dropped_indexes))

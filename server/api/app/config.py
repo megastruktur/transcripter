@@ -87,15 +87,21 @@ class GraphConfig(BaseModel):
         return bool(self.uri)
 
 
-class TranscriptsConfig(BaseModel):
-    """Note-export dir (mirrors worker config). The API only READS the
-    exported notes (digests) — the compose bind for api is read-only;
-    the worker owns writes. Container path is FIXED (/transcripts)."""
+class VaultConfig(BaseModel):
+    """Obsidian-vault dir (mirrors worker config). The API only READS the
+    vault (digests, indexes, exported folders incl. the moved audio when
+    a recording's storage copy is gone) — the compose bind for api is
+    read-only; the worker owns writes. Container path is FIXED
+    (/transcripts)."""
 
     path: Path = Path("/transcripts")
-    # Kept for parity with the worker's TranscriptsConfig: the same yaml
+    # Kept for parity with the worker's VaultConfig: the same yaml
     # section feeds both processes (sentinel is a worker-only knob).
     sentinel: str = ""
+
+
+# Legacy name (pre-vault): the yaml section was `transcripts:`.
+TranscriptsConfig = VaultConfig
 
 
 class ServerConfig(BaseModel):
@@ -106,7 +112,7 @@ class ServerConfig(BaseModel):
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     graph: GraphConfig = Field(default_factory=GraphConfig)
-    transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
 
     @property
     def recordings_root(self) -> Path:
@@ -117,9 +123,17 @@ def load_config() -> ServerConfig:
     path = os.environ.get("TRANSCRIPTER_CONFIG", "/etc/transcripter/config.yaml")
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
+    # Legacy yaml `transcripts:` section (pre-vault naming) folds into
+    # `vault:` — `vault:` keys win where both are present.
+    if isinstance(raw.get("transcripts"), dict):
+        merged = dict(raw["transcripts"])
+        merged.update(raw.get("vault") or {})
+        raw["vault"] = merged
     cfg = ServerConfig.model_validate(raw)
     if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
         cfg.storage.path = Path(env_storage)
+    if env_vault := os.environ.get("VAULT_DIR") or os.environ.get("TRANSCRIPTS_DIR"):
+        cfg.vault.path = Path(env_vault)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
     if env_profiles := os.environ.get("PROFILES_DIR"):

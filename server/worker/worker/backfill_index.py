@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         for t in tags or ["untagged"]:
             try:
-                n = index_segments(rec_id, t, title, meta_dir, cfg.transcripts.path, cfg)
+                n = index_segments(rec_id, t, title, meta_dir, cfg.vault.path, cfg)
                 indexed += n
                 if n == 0:
                     empty += 1

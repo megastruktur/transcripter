@@ -325,7 +325,7 @@ class TestFlockConcurrency:
         root = tmp_path / "out"
         root.mkdir()
         path = folder_path(root, rec("Meet"), UTC) / "transcript.md"
-        path.parent.mkdir()
+        path.parent.mkdir(parents=True)
 
         def write(i):
             write_note_atomic(path, f"content-{i}")
@@ -352,7 +352,7 @@ class TestLegacyMigration:
         cfg = SimpleNamespace(
             database=SimpleNamespace(url="sqlite://"),
             recordings_root=tmp_path / "recordings",
-            transcripts=SimpleNamespace(path=root, sentinel=""),
+            vault=SimpleNamespace(path=root, sentinel=""),
         )
         monkeypatch.setattr("worker.config.load_config", lambda: cfg)
         monkeypatch.setattr("worker.db.init_engine", lambda url: None)
@@ -399,7 +399,7 @@ class TestRenameOnly:
         cfg = SimpleNamespace(
             database=SimpleNamespace(url="sqlite://"),
             recordings_root=tmp_path / "recordings",
-            transcripts=SimpleNamespace(path=root, sentinel=""),
+            vault=SimpleNamespace(path=root, sentinel=""),
         )
         monkeypatch.setattr("worker.config.load_config", lambda: cfg)
         monkeypatch.setattr("worker.db.init_engine", lambda url: None)
@@ -439,7 +439,7 @@ class TestOrphanFolderSweep:
         cfg = SimpleNamespace(
             database=SimpleNamespace(url="sqlite://"),
             recordings_root=tmp_path / "recordings",
-            transcripts=SimpleNamespace(path=root, sentinel=""),
+            vault=SimpleNamespace(path=root, sentinel=""),
         )
         monkeypatch.setattr("worker.config.load_config", lambda: cfg)
         monkeypatch.setattr("worker.db.init_engine", lambda url: None)
@@ -449,7 +449,7 @@ class TestOrphanFolderSweep:
 
     def test_app_only_orphan_folder_removed(self, tmp_path, monkeypatch):
         root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
-        # Two stale folders (double-rename race): the rename-scan renames the
+        # Two stale folders (double-rename race): the move-scan moves the
         # first match; the sweep must remove the remaining app-only one.
         first = root / folder_name("First title", REC_ID, CREATED, UTC)
         first.mkdir()
@@ -462,19 +462,21 @@ class TestOrphanFolderSweep:
         path = run(REC_ID)
 
         assert path is not None and path.is_dir()
-        # Exactly one folder for this recording survives — the renamed one.
-        remaining = [e for e in root.iterdir() if e.is_dir()]
-        assert remaining == [path]
+        # Exactly one folder for this recording survives — the moved one.
+        from worker.export import scan_recording_folders
+
+        assert scan_recording_folders(root, rec("New title")) == [path]
+        assert not first.exists() and not orphan.exists()
 
     def test_orphan_folder_with_user_file_survives(self, tmp_path, monkeypatch, caplog):
         root = self.stub_run(tmp_path, monkeypatch, rec("New title"))
-        # Double-rename race leftover: title2 lost the rename-scan race to
+        # Double-rename race leftover: title2 lost the move-scan race to
         # title3 and was created fresh by the second exporter.
         loser = root / folder_name("Race loser", REC_ID, CREATED, UTC)
         loser.mkdir()
         (loser / "transcript.md").write_text("stale", encoding="utf-8")
-        # A second, older folder WITH user content: the rename-scan must pick
-        # THIS one (rename-first preserves user edits), leaving the app-only
+        # A second, older folder WITH user content: the move-scan must pick
+        # THIS one (move-first preserves user edits), leaving the app-only
         # loser for the sweep.
         edited = root / folder_name("Edited title", REC_ID, CREATED, UTC)
         edited.mkdir()
@@ -484,7 +486,7 @@ class TestOrphanFolderSweep:
             path = run(REC_ID)
 
         assert path is not None and path.is_dir()
-        # The user-content folder was renamed in place — edits preserved.
+        # The user-content folder was moved in place — edits preserved.
         assert (path / "my-notes.md").read_text(encoding="utf-8") == "mine"
         # The app-only race loser was swept.
         assert not loser.exists()

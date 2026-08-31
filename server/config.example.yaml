@@ -8,13 +8,14 @@ storage:
   # point the compose bind-mount at your NAS path on the host.
   path: /storage
 
-transcripts:
-  # Exported notes (one folder per call, per-artifact .md files inside). The
+vault:
+  # Obsidian vault dir (note folders nested YYYY/MM, per-recording audio in
+  # .transcripter/, digests/ + indexes/ + Dashboard.md at the root). The
   # in-container path is FIXED at /transcripts — the host dir is chosen by
-  # TRANSCRIPTS_DIR in .env (compose bind), never overridden in yaml.
+  # VAULT_DIR in .env (compose bind), never overridden in yaml.
   # Optional boot-race guard: when set (e.g. ".transcripter"), export refuses
   # to run unless this marker exists INSIDE the dir (create it once:
-  # touch "$TRANSCRIPTS_DIR/.transcripter") — a bind over an empty NAS
+  # touch "$VAULT_DIR/.transcripter") — a bind over an empty NAS
   # mountpoint is writable but wrong, better to skip than misplace notes.
   sentinel: ""
 

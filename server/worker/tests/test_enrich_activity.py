@@ -509,7 +509,7 @@ def test_done_indexes_segments(recording_id: str, tmp_path: Path) -> None:
     """A successful enrich runs index_segments per namespace and the
     details payload carries indexed_segments."""
     cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     profile = _make_profile(has_enrich=True)
     extracted_graph = MagicMock()
     extracted_graph.events = []
@@ -543,7 +543,7 @@ def test_indexing_failure_never_fails_enrich(recording_id: str, tmp_path: Path) 
     """Best-effort contract: a dead embedder logs and reports 0 — the
     stage still completes."""
     cfg = _cfg(graph_enabled=True, tmp_path=tmp_path)
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     profile = _make_profile(has_enrich=True)
     extracted_graph = MagicMock()
     extracted_graph.events = []

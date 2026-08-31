@@ -47,8 +47,8 @@ def test_transcripts_defaults(tmp_path, monkeypatch):
     cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n  model: small\n")
     monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
     cfg = load_config()
-    assert str(cfg.transcripts.path) == "/transcripts"
-    assert cfg.transcripts.sentinel == ""
+    assert str(cfg.vault.path) == "/transcripts"
+    assert cfg.vault.sentinel == ""
 
 
 def test_transcripts_sentinel_from_yaml(tmp_path, monkeypatch):
@@ -58,8 +58,8 @@ def test_transcripts_sentinel_from_yaml(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
     cfg = load_config()
-    assert cfg.transcripts.sentinel == ".obsidian"
-    assert str(cfg.transcripts.path) == "/transcripts"
+    assert cfg.vault.sentinel == ".obsidian"
+    assert str(cfg.vault.path) == "/transcripts"
 
 
 def test_graph_gc_interval_default_off(tmp_path, monkeypatch):

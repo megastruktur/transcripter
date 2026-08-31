@@ -104,7 +104,7 @@ def search_env(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     expected_index_meta is pinned to the indexes' meta."""
 
     transcripts = tmp_path / "transcripts"
-    monkeypatch.setattr(client.app.state.config.transcripts, "path", transcripts)
+    monkeypatch.setattr(client.app.state.config.vault, "path", transcripts)
 
     near = list(_QVEC)  # == query → distance ~0
     far = [-0.8, -0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1]

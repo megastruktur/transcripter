@@ -225,15 +225,21 @@ if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="do
     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
 fi
 
-echo "== 9b. exported transcript note folder"
-TRANSCRIPTS_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
-# Exported folders carry the recording id8 suffix; exactly one must exist per recording.
-FOLDERS=$(find "$TRANSCRIPTS_DIR_HOST" -maxdepth 1 -type d -name "* ${RID:0:8}" 2>/dev/null)
+echo "== 9b. exported vault folder (nested YYYY/MM, audio + manifest)"
+VAULT_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
+# Nested YYYY/MM layout + legacy root-level flat; exactly one folder per recording.
+FOLDERS=$(find "\$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null)
 N=$(printf '%s\n' "$FOLDERS" | grep -c . || true)  # grep -c exits 1 on zero matches — without ||true set -e/pipefail kills the script silently
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
-test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
+test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$(dirname "$FOLDER")")/$(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
 grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
 grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { echo "  BAD frontmatter: no tags"; exit 1; }
+# The vault feature: the audio FLAC moved into .transcripter/ and a manifest
+# landed beside it; storage's audio.flac is GONE (the move, not a copy).
+test -s "$FOLDER/.transcripter/audio.flac" && echo "  ok: .transcripter/audio.flac" || { echo "  MISSING vault audio"; exit 1; }
+grep -q "\"id\": \"$RID\"" "$FOLDER/.transcripter/manifest.json" && echo "  ok: manifest id" || { echo "  BAD manifest"; exit 1; }
+test ! -e "$STORAGE_DIR/recordings/$RID/audio.flac" && echo "  ok: storage audio moved out" || { echo "  storage audio.flac still present"; exit 1; }
+test -s "\$VAULT_DIR_HOST/Dashboard.md" && echo "  ok: Dashboard.md" || { echo "  MISSING Dashboard.md"; exit 1; }
 # Profile-matched summarize names its artifact per profile.output_artifact and
 # carries `profile:` in frontmatter; asserted only when summarize actually ran.
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
@@ -243,6 +249,7 @@ if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' 
 else
   echo "  skip: summarize not done — session-log.md not asserted"
 fi
+
 
 if [ "${GRAPH:-0}" = "1" ]; then
   echo "== 9c. knowledge graph (enrich stage)"

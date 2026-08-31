@@ -90,7 +90,27 @@ def meta_dir(rec_id: str) -> Path:
 
 
 def audio_file(rec_id: str) -> Path:
-    return cfg().recordings_root / rec_id / "audio.flac"
+    """The recording's FLAC: storage first, the vault copy as fallback.
+
+    After the export stage moved the audio into the vault
+    (``<vault>/YYYY/MM/<folder>/.transcripter/audio.flac``), a transcribe
+    or diarize regenerate reads it from there. Returns the STORAGE path
+    when no vault folder exists (upload in flight / no vault) — callers
+    surface their own FileNotFoundError."""
+    from datetime import UTC, datetime
+
+    from .export import Rec, scan_recording_folders, vault_audio_path
+
+    c = cfg()
+    storage = c.recordings_root / rec_id / "audio.flac"
+    if storage.is_file():
+        return storage
+    scan_rec = Rec(rec_id, "", datetime.now(UTC), None)
+    for folder in scan_recording_folders(c.vault.path, scan_rec):
+        candidate = vault_audio_path(folder)
+        if candidate.is_file():
+            return candidate
+    return storage
 
 
 def budget_transcribe(rec: Recording | None) -> float:
@@ -488,7 +508,7 @@ async def summarize(rec_id: str) -> dict:
                 recap_block = await asyncio.to_thread(
                     build_recap,
                     tags[0],
-                    c.transcripts.path,
+                    c.vault.path,
                     recording_id=rec_id,
                     meta_dir=meta_dir(rec_id),
                     cfg=c,
@@ -846,7 +866,7 @@ async def enrich(rec_id: str) -> dict:
                         graph_tag,
                         title,
                         meta_dir(rec_id),
-                        c.transcripts.path,
+                        c.vault.path,
                         c,
                     )
                 )
@@ -903,7 +923,7 @@ async def _auto_digest_tags(tags: list[str], c: WorkerConfig) -> None:
     """
     from .digest import run_digest, safe_filename
 
-    digests_dir = c.transcripts.path / "digests"
+    digests_dir = c.vault.path / "digests"
     now = time.time()
     for tag in tags:
         digest_file = digests_dir / safe_filename(tag)
@@ -915,7 +935,7 @@ async def _auto_digest_tags(tags: list[str], c: WorkerConfig) -> None:
             continue
         try:
             await _heartbeat_while(
-                asyncio.to_thread(run_digest, tag, _AUTO_DIGEST_LAST_N, c, c.transcripts.path)
+                asyncio.to_thread(run_digest, tag, _AUTO_DIGEST_LAST_N, c, c.vault.path)
             )
         except Exception:
             log.exception("enrich: auto-digest failed for tag %r", tag)
@@ -949,7 +969,7 @@ def timeout_for(duration_sec: float | None, base: float, per_min: float) -> int:
 
 # --- Transcript note export -------------------------------------------------
 
-_EXPORT_TIMEOUT_SEC = 20
+_EXPORT_TIMEOUT_SEC = 120
 _EXPORT_MAX_CHILDREN = 4
 
 
@@ -1069,7 +1089,7 @@ async def tag_digest(args: dict) -> dict:
         from .digest import run_digest
 
         return await _heartbeat_while(
-            asyncio.to_thread(run_digest, tag, last_n, c, c.transcripts.path)
+            asyncio.to_thread(run_digest, tag, last_n, c, c.vault.path)
         )
     except Exception:
         log.exception("tag_digest failed for tag=%s", tag)

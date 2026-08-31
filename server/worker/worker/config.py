@@ -54,16 +54,28 @@ class StorageConfig(BaseModel):
     path: Path = Path("/storage")
 
 
-class TranscriptsConfig(BaseModel):
-    """Note-export settings. Container path is FIXED (/transcripts): the only
-    host-side knob is the compose bind source (TRANSCRIPTS_DIR in .env) — a
-    divergent in-container override would silently write into the container
-    layer and be lost on recreate."""
+class VaultConfig(BaseModel):
+    """Obsidian-vault settings. Container path is FIXED (/transcripts): the
+    only host-side knob is the compose bind source (VAULT_DIR in .env) —
+    a divergent in-container override would silently write into the
+    container layer and be lost on recreate.
+
+    The vault holds the exported note folder per recording (nested
+    YYYY/MM), the recording's audio (moved out of /storage after the
+    pipeline by the export stage — see worker/export.py), digests/ and
+    indexes/. Unset vault → ./storage/transcripts (no vault, storage
+    only)."""
 
     path: Path = Path("/transcripts")
     # Boot-race guard, e.g. ".transcripter": when set, export refuses to run
     # unless this entry exists under path (empty-mountpoint detection).
     sentinel: str = ""
+
+
+# Legacy name (pre-vault): the yaml section was `transcripts:`. Kept as an
+# alias so an un-migrated config.yaml keeps loading; `vault:` wins on
+# overlap. Remove after the shipped config.yaml carries `vault:`.
+TranscriptsConfig = VaultConfig
 
 
 class ProfilesConfig(BaseModel):
@@ -163,7 +175,7 @@ class WorkerConfig(BaseModel):
     chunk: ChunkConfig = Field(default_factory=ChunkConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    transcripts: TranscriptsConfig = Field(default_factory=TranscriptsConfig)
+    vault: VaultConfig = Field(default_factory=VaultConfig)
     profiles: ProfilesConfig = Field(default_factory=ProfilesConfig)
     graph: GraphConfig = Field(default_factory=GraphConfig)
 
@@ -176,6 +188,12 @@ def load_config() -> WorkerConfig:
     path = os.environ.get("TRANSCRIPTER_CONFIG", "/etc/transcripter/config.yaml")
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
+    # Legacy yaml `transcripts:` section (pre-vault naming) folds into
+    # `vault:` — `vault:` keys win where both are present.
+    if isinstance(raw.get("transcripts"), dict):
+        merged = dict(raw["transcripts"])
+        merged.update(raw.get("vault") or {})
+        raw["vault"] = merged
     cfg = WorkerConfig.model_validate(raw)
     if cfg.transcribe.backend == "api" and not cfg.transcribe.base_url:
         raise ValueError(
@@ -187,8 +205,8 @@ def load_config() -> WorkerConfig:
         raise ValueError(
             f"graph.embed.backend must be 'local' or 'http' (got {cfg.graph.embed.backend!r})"
         )
-    if env_storage := os.environ.get("TRANSCRIPTER_STORAGE"):
-        cfg.storage.path = Path(env_storage)
+    if env_vault := os.environ.get("VAULT_DIR") or os.environ.get("TRANSCRIPTS_DIR"):
+        cfg.vault.path = Path(env_vault)
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):

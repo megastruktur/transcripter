@@ -119,7 +119,7 @@ class ProcessRecording:
                 result["export"] = await workflow.execute_activity(
                     "export_transcript",
                     {"recording_id": rec_id},
-                    start_to_close_timeout=timedelta(seconds=30),
+                    start_to_close_timeout=timedelta(seconds=150),
                     retry_policy=RetryPolicy(maximum_attempts=3),
                     cancellation_type=ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
                 )
@@ -224,7 +224,7 @@ class ExportRecording:
         return await workflow.execute_activity(
             "export_transcript",
             {"recording_id": args["recording_id"], "rename_only": args.get("rename_only", False)},
-            start_to_close_timeout=timedelta(seconds=30),
+            start_to_close_timeout=timedelta(seconds=150),
             retry_policy=RetryPolicy(maximum_attempts=3),
             # Same semantics as the ProcessRecording finally-block export:
             # let the activity run to completion even if the workflow is

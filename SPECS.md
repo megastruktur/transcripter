@@ -29,16 +29,23 @@
 - Summarize: enabled via the platform LiteLLM proxy (OpenAI-compatible) —
   local `qwen3.8-27b-q4_k_m` at `http://192.168.3.23:4000/v1`, key from the
   `LITELLM_API_KEY` env var. The stage still self-skips when unconfigured.
-- Transcript export: every finished recording is exported as a folder
-  `{YYYY-MM-DD_HH-MM} {title} {id8}/` in the same configurable host directory
-  (`TRANSCRIPTS_DIR` in `.env`, bind-mounted at `/transcripts`); inside, the
-  meta artifacts 1:1 (`transcript.md`, `diarized-transcript.md`, `summary.md`),
-  each with its own frontmatter; recording rename only renames the folder in
-  place (files are NOT rewritten — Obsidian edits survive, frontmatter title
-  goes stale until the next regenerate); regenerate rewrites artifact files;
-  legacy flat
-  `* {id8}.md` notes are migrated (deleted) on export; best-effort,
-  subprocess-isolated, `worker.backfill` re-exports and migrates all.
+- Vault export (2026-08-31): when `VAULT_DIR` is set in `.env` (replaces
+  `TRANSCRIPTS_DIR`, still accepted as a deprecated alias), every finished
+  recording exports as a self-contained folder
+  `{vault}/YYYY/MM/{YYYY-MM-DD_HH-MM} {title} {id8}/` (grouped by
+  coalesce(recorded_at, created_at)): meta artifacts 1:1 + hidden
+  `.transcripter/` with `audio.flac` (MOVED out of /storage after the
+  pipeline: copy → sha256-verify vs catalog → atomic rename → unlink
+  storage) and `manifest.json` (id/sha256/dates/title/tags/type — future
+  import base). `Dashboard.md` (months + per-tag MOC, wikilinks)
+  regenerates at the vault root after every export. `/recordings/{id}/audio`
+  and transcribe/diarize regenerates read storage first, vault second.
+  DELETE removes catalog row + storage dir + vault folder (id8-scan:
+  nested + legacy flat). Pre-vault layouts migrate on next export/backfill
+  (id8 folder scan; flat `* {id8}.md` notes deleted). No vault →
+  `./storage/transcripts` flat layout, audio stays in /storage. Export
+  subprocess timeout 120 s (audio move budget); rename moves the folder
+  without rewriting files (Obsidian edits survive).
 - Pre-flight opens and probes every selected source before recording. A selected
   system source that cannot start blocks recording; microphone-only capture is
   available only when System audio is explicitly Off.

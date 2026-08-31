@@ -75,7 +75,8 @@ relative `./storage` bind and the `config.yaml` mount depend on it.
 |               | are baked into the image: no HuggingFace token, no runtime download |
 | Summary       | off by default; optionally point at a local LLM server (below)      |
 | Recordings    | `server/storage/recordings/` (bind mount — repoint at any dir)      |
-| Notes         | `./storage/transcripts` unless `TRANSCRIPTS_DIR` is set             |
+| Vault         | `VAULT_DIR` when set — Obsidian vault: notes + audio; else          |
+|               | `./storage/transcripts` (local-only fallback)                        |
 | Metadata      | postgres in the `pgdata` named volume                               |
 
 **One-time downloads, then offline.** The first worker start pulls the
@@ -458,60 +459,82 @@ The worker reads config once — `docker compose restart worker` to apply.
 `summarize.model` in `config.yaml`; unset/empty keeps the yaml value. The API's
 `/settings` endpoint reports the effective model.
 
-### Transcript note export (Obsidian-friendly)
+### Vault export (Obsidian)
 
-Every finished recording is exported as ONE folder
-`{YYYY-MM-DD_HH-MM} {title|call} {id8}/` containing the meta artifacts 1:1 —
-`transcript.md`, `diarized-transcript.md`, `summary.md` (only those that
-exist) — each with its own YAML frontmatter (`recording_id`, `title`,
-`created`, `date`, `tags`, optional `duration_sec`). The host directory is
-chosen in `.env`, not yaml:
+When `VAULT_DIR` is set in `.env`, every finished recording exports into the
+Obsidian vault as ONE self-contained folder, grouped by capture date:
+
+```
+{vault}/2026/08/2026-08-31_14-05 Standup a1b2c3d4/
+├── transcript.md            # meta artifacts 1:1, frontmatter each
+├── diarized-transcript.md   #   (only those that exist)
+├── summary.md               #   (renamed per profile.output_artifact)
+└── .transcripter/           # hidden from Obsidian (dot-dir)
+    ├── audio.flac           # the recording's FLAC, MOVED out of /storage
+    └── manifest.json        # id/sha256/dates/title/tags/type — import base
+```
 
 ```bash
 # .env next to docker-compose.yml — the dir MUST exist before `up`
-TRANSCRIPTS_DIR=/mnt/your-nas/vault/Transcripts
+VAULT_DIR=/mnt/your-nas/vault/Transcripts
 ```
 
-Unset → `./storage/transcripts`. Folder names are UTC; `TRANSCRIPTER_TZ` env
-overrides. **Regenerate rewrites the artifact files in place** (atomic
-tmp+rename, one hidden `.{name}.lock` fence per file; Obsidian hides
-dotfiles), while **renaming a recording renames the folder in place** — your
-edits and extra files inside the folder survive both. Artifacts that
-disappear from meta (e.g. diarization disabled) are mirror-deleted from the
-folder; files the exporter doesn't own are never touched. Old flat
-`* {id8}.md` notes from the pre-folder scheme are migrated (deleted) on the
-next export of that recording.
+Key semantics:
+
+- **Audio lives in the vault** after the pipeline: copy → sha256-verify →
+  atomic rename → only then is the storage copy unlinked. A failed move
+  (NAS down) leaves the storage copy; the next export/backfill retries.
+  `/recordings/{id}/audio` and transcribe regenerates read storage first,
+  vault second — both work after the move.
+- **Folder naming/grouping** uses `recorded_at` (import backdate) or
+  `created_at`; `TRANSCRIPTER_TZ` overrides the timezone (default UTC).
+- **Dashboard.md** — a regenerated map-of-content (months + per-tag
+  sections, wikilinks) at the vault root; overwritten on every export.
+- **Regenerate rewrites artifact files in place** (atomic tmp+rename, one
+  hidden `.{name}.lock` fence per file), **renaming a recording moves the
+  folder in place** — your edits and extra files inside survive both.
+  Artifacts that disappear from meta are mirror-deleted; files the exporter
+  doesn't own are never touched. `digests/` and `indexes/` stay at the
+  vault root.
+- **Deleting a recording** removes the catalog row, the storage dir AND the
+  vault folder (notes + audio + manifest).
+- **Legacy layouts migrate themselves**: pre-vault root-level folders and
+  old flat `* {id8}.md` notes are found by id8-scan and folded into the
+  nested layout on the next export/backfill of that recording.
+- Unset `VAULT_DIR` → no vault: notes go to `./storage/transcripts` (flat,
+  legacy layout) and audio stays in `/storage`.
+- `TRANSCRIPTS_DIR` still works (deprecated alias, wins nothing over
+  `VAULT_DIR`).
 
 Optional boot-race guard in `config.yaml`:
 
 ```yaml
-transcripts:
-  sentinel: ".transcripter"  # marker file you create INSIDE the transcripts
-                             # dir (touch "$TRANSCRIPTS_DIR/.transcripter");
-                             # export refuses to run unless it exists —
-                             # catches a bind over an empty NAS mountpoint
-                             # (docker started before the mount)
+vault:
+  sentinel: ".transcripter"  # marker file you create INSIDE the vault dir
+                             # (touch "$VAULT_DIR/.transcripter"); export
+                             # refuses to run unless it exists — catches a
+                             # bind over an empty NAS mountpoint
 ```
 
 - **Export is best-effort.** A dead NAS mount can't hang the pipeline: the
-  export runs in a subprocess (20 s kill-and-abandon, max 4 live children);
+  export runs in a subprocess (120 s kill-and-abandon, max 4 live children);
   failures land in the workflow result (`transcript_note`) in Temporal UI.
 - **Recovery:** `docker compose exec worker sh -c 'cd /app/worker &&
   .venv/bin/python -m worker.backfill'` re-exports every `done` recording
-  (idempotent, same subprocess isolation, refuses on a missing sentinel).
-- **Keep the NAS mount hard** (default): the export subprocess is killed after
-  20 s, so a hung NAS can't stall the pipeline, and atomic tmp+rename can't
-  truncate an existing note. Soft mounts trade that for faster EIO on a dead
-  server — not worth it for a personal vault.
+  and moves any audio still sitting in storage (idempotent, same subprocess
+  isolation, refuses on a missing sentinel).
+
+- **Keep the NAS mount hard** (default): the export subprocess is killed
+  after 120 s, so a hung NAS can't stall the pipeline, and atomic
+  tmp+rename can't truncate an existing note. Soft mounts trade that for
+  faster EIO on a dead server — not worth it for a personal vault.
   Consider a systemd drop-in `RequiresMountsFor=/mnt/your-nas` on the docker
   unit so binds never capture an empty mountpoint.
-- Renaming a recording (`PATCH /recordings/{id}`) renames its vault folder
+- Renaming a recording (`PATCH /recordings/{id}`) moves its vault folder
   in place (`os.rename`) and does NOT rewrite the files inside — your edits
   survive (the frontmatter `title` goes stale until the next regenerate) —
   fire-and-forget: the rename stands even if Temporal is down
   (`worker.backfill` is the recovery path).
-- Deleting a recording does NOT delete its folder (the `recording_id` in
-  each file's frontmatter is the hook for a future cleanup).
 - Workflow deploy note: the export activity was added to the workflow
   `finally` — deploy when no `ProcessRecording` executions are open and the
   worker isn't restart-looping (in-flight workflows replay against the new

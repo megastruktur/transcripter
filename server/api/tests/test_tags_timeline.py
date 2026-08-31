@@ -236,7 +236,7 @@ def test_timeline_digest_generated_flag(
         '---\ntag: "quest"\n---\n\nbody', encoding="utf-8"
     )
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
 
     body = client.get("/tags/quest/timeline").json()

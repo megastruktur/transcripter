@@ -86,7 +86,7 @@ def _touch_digest(client: TestClient, tmp_path, slug: str, tag: str, *, age_s: f
 
 def _vault(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path) -> list[dict]:
     monkeypatch.setattr(
-        client.app.state.config.transcripts, "path", tmp_path / "transcripts"
+        client.app.state.config.vault, "path", tmp_path / "transcripts"
     )
     return client.get("/vault").json()["items"]
 

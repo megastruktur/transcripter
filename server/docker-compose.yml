@@ -28,10 +28,11 @@ services:
       - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
       - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
       - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
-      # Read-only: the API only serves generated digests + READS the
-      # worker-built semantic index files; the worker owns writes to the
-      # transcripts dir.
-      - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts:ro
+      # Read-write: the API serves generated digests + reads the moved audio +
+      # READS the worker-built semantic index files; DELETE /recordings/{id}
+      # sweeps the recording's vault folder (rmtree) through this mount.
+      # The worker remains the sole writer during pipeline exports.
+      - ${VAULT_DIR:-./storage/transcripts}:/transcripts:rw
       # Phase 3.5 local embed backend: bge-m3 ONNX int8 (read-only) so
       # the api can embed search queries without a separate container.
       - models:/models:ro
@@ -76,9 +77,9 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
     volumes:
       - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
-      # Host-side transcripts dir (Obsidian vault); empty default keeps the
-      # feature working locally (./storage/transcripts) for tests/e2e.
-      - ${TRANSCRIPTS_DIR:-./storage/transcripts}:/transcripts
+      # Host-side vault dir (Obsidian); empty default keeps the feature
+      # working locally (./storage/transcripts, no vault) for tests/e2e.
+      - ${VAULT_DIR:-./storage/transcripts}:/transcripts
       - models:/models
       - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
       - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro

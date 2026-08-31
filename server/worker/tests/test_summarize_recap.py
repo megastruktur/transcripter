@@ -43,7 +43,7 @@ def _cfg(
     cfg.summarize.base_url = "http://x/v1"
     cfg.summarize.recap = recap
     cfg.graph.enabled = graph_enabled
-    cfg.transcripts.path = tmp_path if tmp_path is not None else Path("/tmp")
+    cfg.vault.path = tmp_path if tmp_path is not None else Path("/tmp")
     return cfg
 
 
@@ -312,7 +312,7 @@ def _full_cfg(tmp_path: Path, recap: bool, graph: bool) -> Any:
     cfg.profiles.path = tmp_path / "profiles"
     cfg.storage.path = tmp_path / "storage"
     cfg.recordings_root = tmp_path / "storage" / "recordings"
-    cfg.transcripts.path = tmp_path / "transcripts"
+    cfg.vault.path = tmp_path / "transcripts"
     return cfg
 
 

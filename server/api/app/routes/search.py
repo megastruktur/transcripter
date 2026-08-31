@@ -58,7 +58,7 @@ def global_search(
             },
         )
 
-    indexes = iter_indexes(cfg.transcripts.path)
+    indexes = iter_indexes(cfg.vault.path)
     if not indexes:
         raise HTTPException(
             status_code=503,

@@ -42,6 +42,69 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 # past this many distinct names the UI needs search, not a longer list.
 _ENTITY_CAP = 200
 
+# App-scheme recording folder pattern: `{ts} {anything} {id8}` — pins the
+# id8 suffix only (title/TZ may change). EXACT twin of the worker's
+# export._folder_pattern; the layouts it must find (root-level flat legacy,
+# nested YYYY/MM current) mirror worker.export.scan_recording_folders.
+_FOLDER_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def folder_pattern(recording_id: str) -> re.Pattern[str]:
+    pat = _FOLDER_RE_CACHE.get(recording_id)
+    if pat is None:
+        pat = re.compile(
+            rf"^\d{{4}}-\d{{2}}-\d{{2}}_\d{{2}}-\d{{2}} .+ {re.escape(recording_id[:8].lower())}$"
+        )
+        _FOLDER_RE_CACHE[recording_id] = pat
+    return pat
+
+
+def scan_recording_folders(cfg: ServerConfig, recording_id: str) -> list[Path]:
+    """The recording's app-scheme folder(s) in the vault, nested YYYY/MM or
+    legacy root-level flat. Best-effort: unreadable dirs are skipped."""
+    pattern = folder_pattern(recording_id)
+    found: list[Path] = []
+    root = cfg.vault.path
+    try:
+        parents: list[Path] = [root]
+        for year_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            if year_dir.name.isdigit() and len(year_dir.name) == 4:
+                parents.append(year_dir)
+                parents.extend(m for m in year_dir.iterdir() if m.is_dir())
+        for parent in parents:
+            found.extend(e for e in parent.iterdir() if e.is_dir() and pattern.match(e.name))
+    except OSError as exc:
+        _LOG.warning("vault: scan failed under %s: %s", root, exc)
+    return sorted(found)
+
+
+def vault_audio(cfg: ServerConfig, recording_id: str) -> Path | None:
+    """The recording's FLAC in the vault (``<folder>/.transcripter/audio.flac``)
+    when present — the fallback after the export stage moved it out of
+    storage. None when the vault holds no copy."""
+    for folder in scan_recording_folders(cfg, recording_id):
+        candidate = folder / ".transcripter" / "audio.flac"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def delete_recording_folders(cfg: ServerConfig, recording_id: str) -> list[Path]:
+    """Remove the recording's exported folder(s) from the vault — notes,
+    hidden .transcripter/ (audio + manifest), everything. The DELETE
+    endpoint's vault-side counterpart; returns what was removed. Folder
+    content is entirely app-owned (deterministic id8 match), so no
+    user-file guard applies here — unlike the export sweep."""
+    import shutil
+
+    removed: list[Path] = []
+    for folder in scan_recording_folders(cfg, recording_id):
+        try:
+            shutil.rmtree(folder)
+            removed.append(folder)
+        except OSError as exc:
+            _LOG.warning("vault: could not remove %s: %s", folder, exc)
+    return removed
 
 def find_digest(cfg: ServerConfig, tag: str) -> Path | None:
     """First ``*.md`` under ``<transcripts>/digests/`` whose frontmatter
@@ -53,7 +116,7 @@ def find_digest(cfg: ServerConfig, tag: str) -> Path | None:
     routes/tags.py get_digest (Phase 1) so the vault's ready/stale/none
     computation reuses one regex, one size guard, one matching order.
     """
-    digests = cfg.transcripts.path / "digests"
+    digests = cfg.vault.path / "digests"
     if not digests.is_dir():
         return None
     for md in sorted(digests.glob("*.md")):
