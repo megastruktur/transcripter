@@ -36,7 +36,7 @@ base URL), `TRANSCRIPTER_STORAGE` (server storage dir for artifact asserts),
 `TRANSCRIPTER_TRANSCRIPTS` (default `$TRANSCRIPTER_STORAGE/transcripts`),
 `TRANSCRIPTER_DC` (compose command for the speaches docker-exec probe).
 Step 3c PATCHes the recording `type: ttrpg` (POST /recordings accepts no
-type) so the pathfinder-party-log profile matches — without it the
+type) so the ttrpg-session-log profile matches — without it the
 `session-log.md` assert cannot pass. Fresh transcripts dirs need the
 `.transcripter` sentinel file or export refuses to write (and the 9b
 `grep -c` guard needs its `|| true` — zero matches exit 1 under pipefail).

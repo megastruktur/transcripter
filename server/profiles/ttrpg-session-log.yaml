@@ -1,9 +1,9 @@
-# Example profile: Pathfinder (or any tabletop RPG) session logging.
+# Example profile: tabletop RPG (TTRPG) session logging.
 # Copy and adapt for your own domain. Contract: see README.md in this directory.
-id: pathfinder-party-log
-version: 1.0.0
+id: ttrpg-session-log
+version: 1.0.1
 min_host_version: 0.10.0
-display_name: Pathfinder Party Log
+display_name: TTRPG Session Log
 description: "Chronicle of a tabletop RPG session: events, loot, NPCs, plot hooks"
 type: ttrpg
 summarize:

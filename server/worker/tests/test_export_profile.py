@@ -196,11 +196,11 @@ class TestFrontmatter:
             meta / "transcript.md",
             rec,
             UTC,
-            profile_id="pathfinder-party-log",
+            profile_id="ttrpg-session-log",
             artifact_name="session-log.md",
         )
         d = _parse_frontmatter(summary_text)
-        assert d["profile"] == "pathfinder-party-log"
+        assert d["profile"] == "ttrpg-session-log"
         assert d["artifact"] == "session-log.md"
 
     def test_transcript_frontmatter_has_no_profile_id(self, tmp_path):

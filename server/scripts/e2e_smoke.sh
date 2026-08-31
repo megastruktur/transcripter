@@ -130,8 +130,8 @@ TAGS=$(authf "$API/recordings/$RID" | jq -c .tags)
 test "$TAGS" = '["pathfinder","e2e"]' && echo "tags normalized: $TAGS" || { echo "BAD tags: $TAGS"; exit 1; }
 
 echo "== 3b. profiles registry"
-authf "$API/profiles" | jq -e '.[] | select(.id=="pathfinder-party-log")' >/dev/null \
-  && echo "  ok: pathfinder-party-log listed" || { echo "MISSING pathfinder-party-log in GET /profiles"; exit 1; }
+authf "$API/profiles" | jq -e '.[] | select(.id=="ttrpg-session-log")' >/dev/null \
+  && echo "  ok: ttrpg-session-log listed" || { echo "MISSING ttrpg-session-log in GET /profiles"; exit 1; }
 echo "== 3c. set recording type (profile match — the session-log.md assert below needs it;"
 echo "      POST /recordings takes no type, PATCH is the only way to set it pre-pipeline)"
 UPD=$(authf -X PATCH -H 'content-type: application/json' -d '{"type":"ttrpg"}' "$API/recordings/$RID")
@@ -238,8 +238,8 @@ grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { e
 # carries `profile:` in frontmatter; asserted only when summarize actually ran.
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
   test -s "$STORAGE_DIR/recordings/$RID/meta/summary.md" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
-  test -s "$FOLDER/session-log.md" && grep -q "profile: pathfinder-party-log" "$FOLDER/session-log.md" \
-    && echo "  ok: session-log.md (profile pathfinder-party-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
+  test -s "$FOLDER/session-log.md" && grep -q "profile: ttrpg-session-log" "$FOLDER/session-log.md" \
+    && echo "  ok: session-log.md (profile ttrpg-session-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
 else
   echo "  skip: summarize not done — session-log.md not asserted"
 fi
@@ -249,7 +249,7 @@ if [ "${GRAPH:-0}" = "1" ]; then
   echo "$RESP" | jq -e '.stages[] | select(.kind=="enrich").status=="done"' >/dev/null \
     && echo "  ok: enrich done" || { echo "  enrich NOT done:"; echo "$RESP" | jq -r '.stages[] | select(.kind=="enrich")'; exit 1; }
   # The LLM extraction on the speech fixture legitimately returns EMPTY
-  # (the pathfinder profile demands RPG facts), so node counts from the
+  # (the ttrpg profile demands RPG facts), so node counts from the
   # model are informational only; the deterministic write-path probe
   # (write -> rewrite -> cleanup through worker.enrich.write_to_graph,
   # run inside the worker container because bolt is NOT published) is

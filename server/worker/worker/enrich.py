@@ -69,7 +69,7 @@ _MAX_LLM_ATTEMPTS = 3
 
 # Slug-normalization regex: collapse runs of non-word chars to dashes.
 # Unicode-aware: \w keeps Cyrillic and other letters — the shipped
-# pathfinder profile is Russian, and ASCII-only slugification collapsed
+# ttrpg profile is Russian, and ASCII-only slugification collapsed
 # every Cyrillic label to "unknown", folding distinct entities into one
 # MERGE key. \w also keeps "_" (harmless in a slug).
 _NON_ALNUM = re.compile(r"[^\w]+", re.UNICODE)
@@ -249,8 +249,8 @@ def _render_prompt(
     # Literal replacement of exactly three placeholders — NOT str.format:
     # profile prompts legitimately embed JSON schema examples with braces
     # ({"events": [...]}) which format() would read as replacement fields
-    # and die with KeyError (observed live 2026-08-27 on the pathfinder
-    # profile's enrich prompt).
+    # and die with KeyError (observed live 2026-08-27 on a profile's
+    # enrich prompt).
     return (
         template.replace("{title}", title or "")
         .replace("{transcript}", transcript)

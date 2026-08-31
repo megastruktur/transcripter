@@ -1,7 +1,7 @@
 """Deterministic write-path probe for the enrich stage (e2e smoke, GRAPH=1).
 
 The LLM extraction on the speech fixture legitimately returns EMPTY lists
-(the pathfinder profile demands RPG facts), so the smoke cannot assert on
+(the ttrpg profile demands RPG facts), so the smoke cannot assert on
 model output. This probe exercises worker.enrich.write_to_graph end-to-end
 instead: write synthetic nodes under a probe origin, rewrite with different
 content (DETACH DELETE + MERGE idempotency), then clean up. Runs INSIDE the

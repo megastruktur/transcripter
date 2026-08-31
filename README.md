@@ -198,7 +198,7 @@ needed). A profile applies when the recording's type equals the profile's
 `type`; it overrides the summarize prompt and renames the exported summary
 artifact (`output_artifact`, default `summary.md`; the canonical
 `meta/summary.md` is unchanged). Two examples ship in the repo
-(`pathfinder-party-log` for type `ttrpg`, `meeting-notes` for type
+(`ttrpg-session-log` for type `ttrpg`, `meeting-notes` for type
 `meeting`); the format contract for writing your own is
 `server/profiles/README.md`. A broken profile logs a warning and is
 skipped — the pipeline is never affected.
