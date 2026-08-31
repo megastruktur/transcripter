@@ -25,9 +25,10 @@ services:
       # endpoint the worker indexed with. Harmless when unused.
       LITELLM_API_KEY: ${LITELLM_API_KEY:-}
     volumes:
-      - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
-      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
-      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
+      # c2: staging is a named volume (local NVMe) — no dev-checkout binds.
+      - staging:/storage
+      - /srv/transcripter/config.yaml:/etc/transcripter/config.yaml:ro
+      - /srv/transcripter/profiles:/etc/transcripter/profiles:ro
       # Read-write: the API serves generated digests + reads the moved audio +
       # READS the worker-built semantic index files; DELETE /recordings/{id}
       # sweeps the recording's vault folder (rmtree) through this mount.
@@ -76,13 +77,14 @@ services:
       # stage will report `skipped` without it (best-effort, like diarize).
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
     volumes:
-      - /home/megastruktur/projects/dev/transcripter/server/storage:/storage
+      # c2: staging is a named volume (local NVMe) — no dev-checkout binds.
+      - staging:/storage
       # Host-side vault dir (Obsidian); empty default keeps the feature
       # working locally (./storage/transcripts, no vault) for tests/e2e.
       - ${VAULT_DIR:-./storage/transcripts}:/transcripts
       - models:/models
-      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
-      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
+      - /srv/transcripter/config.yaml:/etc/transcripter/config.yaml:ro
+      - /srv/transcripter/profiles:/etc/transcripter/profiles:ro
     # Note: NO `depends_on: neo4j` — the graph profile is opt-in (like
     # diarization). When `--profile graph` is OFF, the enrich stage checks
     # cfg.graph.enabled at runtime and reports `skipped`; the worker starts
@@ -222,5 +224,7 @@ services:
 volumes:
   pgdata:
   models:
+  # c2: transient staging for api+worker (/storage) — local NVMe.
+  staging:
   speaches-hf-cache:
   neo4jdata:
