@@ -44,12 +44,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push
+      - name: Build and push API image
         uses: docker/build-push-action@v6
         with:
           context: server/
+          file: server/Dockerfile.api
           push: true
           platforms: linux/amd64
-          tags: ghcr.io/megastruktur/transcripter:${{ steps.tag.outputs.tag }}
+          tags: |
+            ghcr.io/megastruktur/transcripter:${{ steps.tag.outputs.tag }}-api
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: server/
+          file: server/Dockerfile.worker
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/megastruktur/transcripter:${{ steps.tag.outputs.tag }}-worker
           cache-from: type=gha
           cache-to: type=gha,mode=max
