@@ -161,9 +161,9 @@ export async function checkServerConnection(
 
 	try {
 		const url = new URL(cfg.baseUrl);
-		if (url.protocol !== 'http:') {
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
 			connection.phase = 'unavailable';
-			connection.detail = 'HTTPS is unsupported by the uploader in this build. Use an HTTP address on your trusted LAN.';
+			connection.detail = 'Only http:// and https:// server addresses are supported.';
 			return false;
 		}
 	} catch {

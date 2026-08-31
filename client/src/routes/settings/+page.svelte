@@ -87,7 +87,7 @@
 		<div class="form-body">
 			<label>
 				<span class="field-label">Server address</span>
-				<input type="url" bind:value={cfg.baseUrl} placeholder="http://192.168.1.10:8090" required />
+				<input type="url" bind:value={cfg.baseUrl} placeholder="http(s)://192.168.1.10:8090" required />
 			</label>
 			<label>
 				<span class="field-label">Bearer token</span>
