@@ -428,6 +428,13 @@
 	:global(.notice strong) { font-size: 10px; font-weight: 700; color: var(--brass); }
 	:global(.notice.error strong) { color: var(--red); }
 	:global(.notice span) { color: #b5aa9c; font-size: 11px; }
+	/* Canonical list-row button (DESIGN_GUIDELINES "Seam": a list is a ruled
+	   manifest directly on the plate — rows separated by seams, never boxed
+	   cards). Use as <button class="list-row <page-class>">; the page adds only
+	   grid-template-columns and row-specific rules. The class carries the UA
+	   button reset — skipping it renders the native white button chrome. */
+	:global(.list-row) { width: 100%; display: grid; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background 120ms ease; }
+	:global(.list-row:hover) { background: rgba(255, 255, 255, 0.02); }
 
 	@media (prefers-reduced-motion: reduce) {
 		*, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

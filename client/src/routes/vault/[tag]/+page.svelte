@@ -349,7 +349,7 @@ async function runSearch(): Promise<void> {
 			<div class="session-list">
 				{#each data.sessions as session (session.recording_id)}
 					<div class="session-card">
-						<button class="session-heading" type="button" onclick={() => toggleSession(session.recording_id)} aria-expanded={openSession === session.recording_id}>
+						<button class="list-row session-heading" type="button" onclick={() => toggleSession(session.recording_id)} aria-expanded={openSession === session.recording_id}>
 							<span class="session-mark" class:open={openSession === session.recording_id} aria-hidden="true"></span>
 							<span class="session-name">
 								<strong>{session.title || 'Untitled capture'}</strong>
@@ -427,7 +427,7 @@ async function runSearch(): Promise<void> {
 							{/if}
 						</div>
 					{:else}
-						<button class="entity-row" type="button" onclick={() => startEdit(entity.slug, entity.label, entity.type)} title={`Rename ${entity.label}`}>
+						<button class="list-row entity-row" type="button" onclick={() => startEdit(entity.slug, entity.label, entity.type)} title={`Rename ${entity.label}`}>
 							<span class="entity-name">
 								<strong>{entity.label}</strong>
 								<small>{entity.type}</small>
@@ -463,8 +463,7 @@ async function runSearch(): Promise<void> {
 	.session-list { display: grid; }
 	.session-card { transition: background 120ms ease; }
 	.session-card:not(:last-child) { border-bottom: 1px solid var(--line); }
-	.session-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-	.session-heading:hover { background: rgba(255,255,255,.02); }
+	.session-heading { grid-template-columns: auto 1fr auto; }
 	.session-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 0 3px rgba(215,167,71,.12); }
 	.session-name { min-width: 0; }
 	.session-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: #ded3c4; }
@@ -485,13 +484,13 @@ async function runSearch(): Promise<void> {
 	.event-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 1px; }
 	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.event-empty { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ash); font-size: 11px; }
+	.entity-row { grid-template-columns: 1fr auto; }
 	.entity-row:not(:last-child) { border-bottom: 1px solid var(--line); }
 	.entity-name { min-width: 0; }
 	.entity-name strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #ded3c4; }
 	.entity-name small { display: block; margin-top: 3px; font-size: 9px; color: #8b8278; text-transform: capitalize; }
 	.entity-meta { display: grid; justify-items: end; gap: 2px; }
 	.entity-meta small { font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; white-space: nowrap; }
-	.entity-row:hover { background: rgba(255,255,255,.02); }
 	.entity-row:hover .entity-name strong { color: var(--bone); }
 	.entity-edit { display: grid; gap: 5px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
 	.entity-edit-form { display: grid; grid-template-columns: 1fr 92px auto auto; align-items: stretch; gap: 6px; }

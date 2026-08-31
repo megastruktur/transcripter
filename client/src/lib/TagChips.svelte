@@ -151,7 +151,7 @@
 
 <div class="tags-input" class:dense role="group" aria-label="Recording tags">
 	{#each tags as tag, index (tag)}
-		<span class="tag-chip">
+		<span class="tag-chip" title={tag}>
 			<span class="tag-chip-text">{tag}</span>
 			<button
 				type="button"
@@ -236,6 +236,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 4px;
+		max-width: 100%;
 		padding: 3px 4px 3px 8px;
 		border-radius: 2px;
 		background: rgba(215, 167, 71, 0.08);
@@ -245,7 +246,7 @@
 		line-height: 1;
 	}
 	.dense .tag-chip { gap: 3px; padding: 2px 3px 2px 7px; font-size: 10px; }
-	.tag-chip-text { white-space: nowrap; }
+	.tag-chip-text { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.tag-chip-remove {
 		display: grid;
 		place-items: center;

@@ -763,7 +763,7 @@
 	.stage-icon.running { color: var(--brass); border-color: rgba(215,167,71,.25); }
 	.stage-icon.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
-	.tags-row { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
+	.tags-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
 	.tags-row.saving { opacity: 0.65; }
 	.tags-label { padding-top: 5px; font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
 	.tags-hint { margin: 0; color: var(--ash); font-size: 10px; }

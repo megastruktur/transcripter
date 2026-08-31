@@ -122,7 +122,7 @@
 		{:else}
 			{#each recordings as recording (recording.id)}
 				<article class="record-card">
-					<button class="record-heading" type="button" onclick={() => goto(`/recordings/${recording.id}`)}>
+					<button class="list-row record-heading" type="button" onclick={() => goto(`/recordings/${recording.id}`)}>
 						<span class={`state-mark ${recording.state}`} aria-hidden="true"></span>
 						<span class="record-name"><strong>{recording.title || 'Untitled capture'}</strong><small>{dateLabel(recording.created_at)} · {durationLabel(recording.duration_sec)}</small>{#if recording.tags.length > 0}<span class="record-tags">{#each recording.tags.slice(0, 3) as tag (tag)}<span class="record-tag">{tag}</span>{/each}{#if recording.tags.length > 3}<span class="record-tag-overflow">+{recording.tags.length - 3}</span>{/if}</span>{/if}</span>
 						<span class={`state-label ${recording.state}`}>{recording.state}</span>
@@ -162,8 +162,7 @@
 	.record-list { display: grid; }
 	.record-card { transition: background 120ms ease; }
 	.record-card:not(:last-child) { border-bottom: 1px solid var(--line); }
-	.record-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-	.record-heading:hover { background: rgba(255,255,255,.02); }
+	.record-heading { grid-template-columns: auto 1fr auto auto; }
 	.state-mark { width: 7px; height: 7px; border-radius: 50%; background: #706960; box-shadow: 0 0 0 3px rgba(112,105,96,.12); }
 	.state-mark.done { background: var(--cyan); box-shadow: 0 0 9px rgba(112,215,208,.55); }
 	.state-mark.processing, .state-mark.uploading { background: var(--brass); box-shadow: 0 0 9px rgba(215,167,71,.5); }

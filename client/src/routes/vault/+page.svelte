@@ -123,7 +123,7 @@
 		{:else}
 			{#each items as item (item.tag)}
 				<article class="tag-card">
-					<button class="tag-heading" type="button" onclick={() => goto(`/vault/${encodeURIComponent(item.tag)}`)}>
+					<button class="list-row tag-heading" type="button" onclick={() => goto(`/vault/${encodeURIComponent(item.tag)}`)}>
 						<span class={`digest-lamp ${DIGEST_LAMP[item.digest]}`} aria-hidden="true"></span>
 						<span class="tag-name">
 							<strong>{item.tag}</strong>
@@ -151,8 +151,7 @@
 	.tag-list { display: grid; }
 	.tag-card { transition: background 120ms ease; }
 	.tag-card:not(:last-child) { border-bottom: 1px solid var(--line); }
-	.tag-heading { width: 100%; display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 9px; padding: 11px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-	.tag-heading:hover { background: rgba(255,255,255,.02); }
+	.tag-heading { grid-template-columns: auto 1fr auto auto; }
 	/* Digest lamp: brass = fresh note, dim brass hollow = stale, ash = none.
 	   Cyan stays reserved for verified state; the text label carries the
 	   meaning so color is never the only signal. */
