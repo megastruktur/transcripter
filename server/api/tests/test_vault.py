@@ -189,9 +189,10 @@ def test_vault_digest_stale_when_note_older_than_newest_recording(
     → the note no longer covers the newest session → stale."""
     rid = client.post("/recordings", json={"tags": ["quest"]}).json()["id"]
     _force_state(rid, "done")
-    _backdate(rid, "2026-08-01T00:00:00")
-    # Note mtime 30 days in the past: older than the 2026-08-01 recording.
-    _touch_digest(client, tmp_path, "quest", "quest", age_s=30 * 24 * 3600)
+    # Both sides relative: recording at now-30d, note mtime at now-90d.
+    # mtime (90d) < recorded_at (30d) is always true → stale.
+    _backdate(rid, (datetime.now(UTC) - timedelta(days=30)).isoformat())
+    _touch_digest(client, tmp_path, "quest", "quest", age_s=90 * 24 * 3600)
     (item,) = _vault(client, monkeypatch, tmp_path)
     assert item["digest"] == "stale"
 
