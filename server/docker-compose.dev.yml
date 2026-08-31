@@ -1,0 +1,38 @@
+# Dev override: run a SECOND transcripter stack next to the Komodo-managed
+# staging stack (project `transcripter`, ports 8090/8082/8070) without
+# conflicts. Usage from server/:
+#   docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.yml up -d
+# Bring it DOWN when testing is done (it doubles RAM: worker + whisper model):
+#   docker compose -p transcripter-dev down
+# Deviations from staging: loopback-only api on :18090, temporal-ui :18082,
+# diarization :18070, separate storage-dev/ bind (never share ./storage with
+# staging — both stacks would write the same recordings), separate named
+# volumes via the -p project prefix (pgdata, models).
+name: transcripter-dev
+
+services:
+  api:
+    ports: !override
+      - "127.0.0.1:18090:8080"
+    volumes:
+      - ./storage-dev:/storage
+      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
+      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
+      - ./storage-dev/transcripts:/transcripts:ro
+      - models:/models:ro
+
+  worker:
+    volumes:
+      - ./storage-dev:/storage
+      - ./storage-dev/transcripts:/transcripts
+      - models:/models
+      - /home/megastruktur/projects/dev/transcripter/server/config.yaml:/etc/transcripter/config.yaml:ro
+      - /home/megastruktur/projects/dev/transcripter/server/profiles:/etc/transcripter/profiles:ro
+
+  temporal-ui:
+    ports: !override
+      - "127.0.0.1:18082:8080"
+
+  diarization:
+    ports: !override
+      - "18070:80"

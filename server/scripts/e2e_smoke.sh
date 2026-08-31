@@ -9,11 +9,14 @@
 
 set -euo pipefail
 
-API="http://localhost:8090"
+API="${TRANSCRIPTER_API:-http://localhost:8090}"
 TOKEN="${TRANSCRIPTER_TOKEN:-test-token-e2e}"
 WAIT="${1:-600}"
 STT="${STT:-local}"
-STORAGE_DIR="$(cd "$(dirname "$0")/.." && pwd)/storage"
+STORAGE_DIR="${TRANSCRIPTER_STORAGE:-$(cd "$(dirname "$0")/.." && pwd)/storage}"
+# Compose command for docker exec probes (speaches preload). Dev stack:
+# TRANSCRIPTER_DC="docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.yml"
+DC="${TRANSCRIPTER_DC:-docker compose -f $(cd "$(dirname "$0")/.." && pwd)/docker-compose.yml}"
 FIXTURES_DIR="$(cd "$(dirname "$0")" && pwd)/fixtures"
 WORK="$(cd "$(dirname "$0")/.." && pwd)/.e2e-work"
 mkdir -p "$WORK"
@@ -68,14 +71,14 @@ if [ "$STT" = "speaches" ]; then
   DEADLINE=$((SECONDS + 600))
   if [ -n "${SPEACHES_PROBE_URL:-}" ]; then
     until curl -sf -H "authorization: Bearer ${SPEACHES_API_KEY:-}" "$SPEACHES_PROBE_URL" >/dev/null 2>&1 \
-        && curl -sf "http://localhost:8090/health" >/dev/null; do
+        && curl -sf "$API/health" >/dev/null; do
       [ $SECONDS -ge $DEADLINE ] && { echo "external speaches probe timeout"; exit 1; }
       sleep 5
     done
   else
-    until docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T speaches \
+    until $DC exec -T speaches \
         python -c "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/v1/models',timeout=5)" 2>/dev/null \
-        && curl -sf "http://localhost:8090/health" >/dev/null; do
+        && curl -sf "$API/health" >/dev/null; do
       [ $SECONDS -ge $DEADLINE ] && { echo "speaches preload timeout"; exit 1; }
       sleep 5
     done
@@ -129,6 +132,11 @@ test "$TAGS" = '["pathfinder","e2e"]' && echo "tags normalized: $TAGS" || { echo
 echo "== 3b. profiles registry"
 authf "$API/profiles" | jq -e '.[] | select(.id=="pathfinder-party-log")' >/dev/null \
   && echo "  ok: pathfinder-party-log listed" || { echo "MISSING pathfinder-party-log in GET /profiles"; exit 1; }
+echo "== 3c. set recording type (profile match — the session-log.md assert below needs it;"
+echo "      POST /recordings takes no type, PATCH is the only way to set it pre-pipeline)"
+UPD=$(authf -X PATCH -H 'content-type: application/json' -d '{"type":"ttrpg"}' "$API/recordings/$RID")
+echo "$UPD" | jq -e '.type == "ttrpg"' >/dev/null \
+  && echo "  ok: type=ttrpg" || { echo "BAD type set: $UPD"; exit 1; }
 
 echo "== 4. upload first half, simulate connection drop"
 HALF=$((SIZE / 2))
@@ -218,10 +226,10 @@ if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="do
 fi
 
 echo "== 9b. exported transcript note folder"
-TRANSCRIPTS_DIR_HOST="$(cd "$(dirname "$0")/.." && pwd)/storage/transcripts"
+TRANSCRIPTS_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
 # Exported folders carry the recording id8 suffix; exactly one must exist per recording.
 FOLDERS=$(find "$TRANSCRIPTS_DIR_HOST" -maxdepth 1 -type d -name "* ${RID:0:8}" 2>/dev/null)
-N=$(printf '%s\n' "$FOLDERS" | grep -c .)
+N=$(printf '%s\n' "$FOLDERS" | grep -c . || true)  # grep -c exits 1 on zero matches — without ||true set -e/pipefail kills the script silently
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
 test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
 grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }

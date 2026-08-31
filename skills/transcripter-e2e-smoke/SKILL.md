@@ -20,6 +20,26 @@ STT=speaches TRANSCRIPTER_TOKEN=dev-local-token bash scripts/e2e_smoke.sh   # ap
 ```
 
 The token env var is required to match your `server/.env` — the script's built-in default is a different token, so an unset `TRANSCRIPTER_TOKEN` fails with 401 at step 3.
+Against the **dev stack** (next to Komodo staging — see `transcripter-stack-up`):
+
+```bash
+cd server && set -a && . ./.env && set +a
+STT=speaches SPEACHES_PROBE_URL=http://192.168.3.23:8010/v1/models \
+  TRANSCRIPTER_API=http://localhost:18090 \
+  TRANSCRIPTER_STORAGE=$PWD/storage-dev \
+  TRANSCRIPTER_DC="docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.yml" \
+  bash scripts/e2e_smoke.sh
+```
+
+Env overrides (defaults preserve staging behavior): `TRANSCRIPTER_API` (api
+base URL), `TRANSCRIPTER_STORAGE` (server storage dir for artifact asserts),
+`TRANSCRIPTER_TRANSCRIPTS` (default `$TRANSCRIPTER_STORAGE/transcripts`),
+`TRANSCRIPTER_DC` (compose command for the speaches docker-exec probe).
+Step 3c PATCHes the recording `type: ttrpg` (POST /recordings accepts no
+type) so the pathfinder-party-log profile matches — without it the
+`session-log.md` assert cannot pass. Fresh transcripts dirs need the
+`.transcripter` sentinel file or export refuses to write (and the 9b
+`grep -c` guard needs its `|| true` — zero matches exit 1 under pipefail).
 
 `STT=speaches` requires: stack up with `--profile stt` (+ `--profile diarization` for the full path), config.yaml routed to `backend: api` / `base_url: http://speaches:8000/v1` / `model: Systran/faster-whisper-small`, and a worker restart (see `transcripter-stack-up` mode C). It uses the committed speech fixture `server/scripts/fixtures/speech-2voices.flac` instead of tones (Speaches' Silero VAD rejects non-speech), waits for the model preload (first run downloads weights), and asserts non-empty word timestamps in `segments.json` — the end-to-end proof that the granularities/words-parsing path works.
 
@@ -44,9 +64,9 @@ E2E SMOKE PASSED (recording <uuid>)
 
 ## Reading the stage line
 
-Step 8 prints statuses for the four pipeline stages in fixed `kind` order: `transcribe,diarize,merge_speakers,summarize`.
+Step 8 prints statuses for the six pipeline stages in fixed `kind` order: `chunk,transcribe,diarize,merge_speakers,summarize,enrich`.
 
-- `done,done,done,skipped` is the expected SUCCESS on the default config — `summarize` is disabled until a model is configured in `config.yaml`, so it lands `skipped`, not `done`.
+- `done,done,done,done,done,done` is SUCCESS on the full config (summarize model set, diarization on, graph profile up). `skipped` in any slot is honest state for a disabled stage (e.g. `summarize` without a model, `enrich` without `graph.uri`), not a failure.
 - `done,skipped,skipped,skipped` is SUCCESS when `diarization.enabled: false` — skipped is the honest state for a disabled stage, not a failure.
 - Any `failed` element → the script already exited with `PIPELINE FAILED` and the stage's `last_error`; hand off to `transcripter-troubleshooting`.
 - Non-terminal statuses (e.g. `running`) persisting past the wait window → `TIMEOUT waiting`; check `docker compose logs -f worker` before re-running.

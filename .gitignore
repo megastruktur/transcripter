@@ -21,3 +21,4 @@ MEMORY.md
 design-shots/
 *.bak*
 local:
+storage-dev/

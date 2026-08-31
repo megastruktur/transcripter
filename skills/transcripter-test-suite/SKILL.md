@@ -3,7 +3,7 @@ name: transcripter-test-suite
 description: >-
   Run and interpret the transcripter unit test and lint gates: pytest for the
   FastAPI API (server/api) and Temporal worker (server/worker), cargo test for
-  the Tauri client Rust code (client/src-tauri: uploader scheme gate, FLAC
+  the Tauri client Rust code (client/src-tauri: uploader retry classification, FLAC
   encode, spool), plus ruff, pyright, cargo clippy, and pnpm check. Use when
   asked to run the tests, test this codebase, verify a change, check the lint
   or quality gates, or validate a commit before opening a PR. These suites are
@@ -77,9 +77,7 @@ Expect all green (17 passed at time of writing — counts grow as the client
 gains coverage, so treat **0 failed** as the gate, not a fixed number). Tests
 are inline in the modules:
 
-- `src/uploader.rs` — the scheme gate blocks `https` variants (any
-  capitalization, whitespace, malformed) and allows `http` plus unparseable
-  passthrough (LAN MVP is http-only); error classification — permanent
+- `src/uploader.rs` — error classification — permanent
   rejections (400/401/403/409/413/422) are not retried, transient ones
   (408/429/5xx/507) stay retryable.
 - `src/encode.rs` — FLAC encoding: write + finish, multi-block streams
@@ -120,6 +118,12 @@ without a local install.
 - **`cargo test` must run in `client/src-tauri`, not `client/`.** `client/`
   is the pnpm/SvelteKit package; the Rust crate (`transcripter`) lives in
   `src-tauri/`.
+- **On the cachyos dev host `cargo test`/`cargo build` cannot link the full
+  crate** (no system `glib-2.0`/`gobject-2.0`/`asound` — tauri+cpal deps, no
+  sudo to install). The honest host gates are `cargo check` + `cargo clippy`;
+  `cargo test` runs in CI. With `rustls-tls` in reqwest, ring also needs the
+  zig wrappers (`~/.local/bin/cc` → `cc-zig`, `ar` → `ar-zig`) — plain `zigcc`
+  fails ring's build with "UnknownOperatingSystem".
 - **The API suite prints a `StarletteDeprecationWarning` about httpx.**
   Expected noise from `TestClient`'s httpx version; not a failure. Judge by
   the `passed` count, not the warning.

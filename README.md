@@ -408,6 +408,23 @@ docker compose up -d --profile diarization
 Recordings land in `server/storage/recordings/<uuid>/` — point the compose
 bind-mount at your NAS/export path to store elsewhere.
 
+### Dev stack next to staging (megaserver)
+
+On megaserver the running `transcripter` project IS the Komodo-managed staging
+(api :8090; `https://megaserver-1.tail6fa4ba.ts.net:8090` via tailscale serve).
+A second, isolated stack for testing:
+
+```bash
+mkdir -p storage-dev/transcripts && touch storage-dev/transcripts/.transcripter
+docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.yml --profile graph up -d
+# …test… then tear down (doubles RAM):
+docker compose -p transcripter-dev down
+```
+
+Deviations: api `127.0.0.1:18090`, temporal-ui `127.0.0.1:18082`, diarization
+`:18070`, separate `storage-dev/` bind. The client speaks both `http://` and
+`https://` base URLs (reqwest `rustls-tls`).
+
 ### Configuration (`server/config.yaml`)
 
 ```yaml

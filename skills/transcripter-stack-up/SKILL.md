@@ -83,6 +83,31 @@ Speaches (mode C): wait for `docker compose ps speaches` → healthy, or poll
 Prove a mode end-to-end: `STT=speaches bash scripts/e2e_smoke.sh` (asserts
 non-empty word timestamps) or plain `bash scripts/e2e_smoke.sh` for A/B.
 
+## Dev stack NEXT TO Komodo staging (ports 18xxx)
+
+The running `transcripter` project on megaserver IS the Komodo-managed staging
+(api :8090, temporal-ui :8082, diarization :8070; tailscale serve exposes
+`https://megaserver-1.tail6fa4ba.ts.net:8090`). A second local stack for
+testing uses `server/docker-compose.dev.yml`:
+
+```bash
+mkdir -p storage-dev/transcripts && touch storage-dev/transcripts/.transcripter  # sentinel is REQUIRED (config.yaml transcripts.sentinel)
+docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.yml --profile graph up -d
+# …test… then ALWAYS tear down when no human testing is pending (doubles RAM: worker + whisper):
+docker compose -p transcripter-dev down
+```
+
+- Deviations: loopback-only api `127.0.0.1:18090`, temporal-ui `127.0.0.1:18082`,
+  diarization `18070`; separate `storage-dev/` bind (never share `./storage`
+  with staging); named volumes isolated via the `-p` prefix.
+- `--profile graph` is needed when config.yaml `graph.uri` is set — otherwise
+  the enrich stage fails with `Failed to DNS resolve address neo4j:7687`.
+- Compose APPENDS `ports` from override files instead of replacing them —
+  the dev file must mark each `ports:` list with `!override` or the dev stack
+  tries to bind staging's ports (`Bind for 127.0.0.1:8082 failed`).
+- Shares `.env`, `config.yaml`, `profiles/` (read-only) with staging — dev
+  transcriptions hit the same external LiteLLM/speaches backends.
+
 ## Gotchas
 
 - `base_url` without `/v1` → 404 on every transcription (valid URL, wrong path).
