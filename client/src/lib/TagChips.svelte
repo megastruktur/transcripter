@@ -7,7 +7,6 @@
 		onChange,
 		disabled = false,
 		placeholder = 'Add tag',
-		dense = false,
 		draft = $bindable(''),
 		suggestions = []
 	}: {
@@ -15,9 +14,6 @@
 		onChange: (next: string[]) => void;
 		disabled?: boolean;
 		placeholder?: string;
-		/** Compact variant for meta rows (recording detail) vs the record
-		 * form's full-size field. */
-		dense?: boolean;
 		/** In-progress input text; bindable so the parent can flush it
 		 * before an action (see the record page's beginRecording). */
 		draft?: string;
@@ -149,7 +145,7 @@
 	}
 </script>
 
-<div class="tags-input" class:dense role="group" aria-label="Recording tags">
+<div class="tags-input" role="group" aria-label="Recording tags">
 	{#each tags as tag, index (tag)}
 		<span class="tag-chip" title={tag}>
 			<span class="tag-chip-text">{tag}</span>
@@ -226,11 +222,6 @@
 		background: rgba(7, 6, 5, 0.58);
 		transition: border-color 120ms ease, background 120ms ease;
 	}
-	.tags-input.dense {
-		min-height: 32px;
-		padding: 4px 6px;
-		border-radius: 2px;
-	}
 	.tags-input:focus-within { border-color: var(--brass); background: rgba(7, 6, 5, 0.82); }
 	.tag-chip {
 		display: inline-flex;
@@ -245,7 +236,6 @@
 		font-weight: 650;
 		line-height: 1;
 	}
-	.dense .tag-chip { gap: 3px; padding: 2px 3px 2px 7px; font-size: 10px; }
 	.tag-chip-text { white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.tag-chip-remove {
 		display: grid;
@@ -261,7 +251,6 @@
 		line-height: 0;
 		opacity: 0.7;
 	}
-	.dense .tag-chip-remove { width: 14px; height: 14px; }
 	.tag-chip-remove:hover:not(:disabled) { opacity: 1; background: rgba(213, 45, 36, 0.18); color: #ff8b7c; }
 	.tag-chip-remove:disabled { cursor: default; }
 	.tags-draft {
@@ -274,7 +263,6 @@
 		color: var(--bone);
 		font-size: 12px;
 	}
-	.dense .tags-draft { flex-basis: 60px; min-width: 60px; min-height: 22px; font-size: 11px; }
 	.tags-draft::placeholder { color: #665f58; }
 	.tags-draft:focus { outline: none; }
 

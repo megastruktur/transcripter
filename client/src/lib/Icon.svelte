@@ -30,7 +30,8 @@
 	| 'vault'
 	| 'timeline'
 	| 'events'
-	| 'dots';
+	| 'dots'
+	| 'plus';
 </script>
 
 <script lang="ts">
@@ -141,6 +142,8 @@
 		<circle cx="5" cy="12" r="1.6" fill="currentColor" stroke="none" />
 		<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
 		<circle cx="19" cy="12" r="1.6" fill="currentColor" stroke="none" />
+	{:else if name === 'plus'}
+		<path d="M12 5.5v13M5.5 12h13" />
 	{:else if name === 'import'}
 		<path d="M12 3v11M8 10l4 4 4-4" />
 		<path d="M4 17v2.5A1.5 1.5 0 0 0 5.5 21h13a1.5 1.5 0 0 0 1.5-1.5V17" />

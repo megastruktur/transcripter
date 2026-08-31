@@ -4,7 +4,7 @@
 	import { page } from '$app/state';
 	import Icon from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
-	import TagChips from '$lib/TagChips.svelte';
+	import TagEditor from '$lib/TagEditor.svelte';
 	import BackButton from '$lib/BackButton.svelte';
 	import DigestPanel from '$lib/DigestPanel.svelte';
 	import NoticePanel from '$lib/NoticePanel.svelte';
@@ -604,27 +604,25 @@
 					<button class="meta-edit-save" type="button" onclick={() => void commitType()} disabled={typeSaving}>Save</button>
 					<button class="meta-edit-cancel" type="button" onclick={() => (typeEditing = false)} disabled={typeSaving}>Cancel</button>
 				{:else}
-					<span class="type-badge">{typeProfile ? typeProfile.display_name : recording.type}</span>
+					{#if recording.type}
+						<span class="type-badge">{typeProfile ? typeProfile.display_name : recording.type}</span>
+					{/if}
 					{#if typeSaving}<span class="meta-saving">saving…</span>{/if}
 				{/if}
 				{#if whenDraft !== null}
 					<input class="when-edit" type="datetime-local" bind:value={whenDraft} aria-label="Recorded at" disabled={whenSaving} />
 					<button class="meta-edit-save" type="button" onclick={() => void commitWhen()} disabled={whenSaving}>Save</button>
 					<button class="meta-edit-cancel" type="button" onclick={() => (whenDraft = null)} disabled={whenSaving}>Cancel</button>
-				{:else}
-					<span class="when-badge">{recording.recorded_at ? dateLabel(recording.recorded_at) : 'date = upload time'}</span>
-					{#if whenSaving}<span class="meta-saving">saving…</span>{/if}
 				{/if}
+				{#if whenSaving}<span class="meta-saving">saving…</span>{/if}
 				{#if typeError}<span class="inline-error" role="alert">{typeError}</span>{/if}
 				{#if whenError}<span class="inline-error" role="alert">{whenError}</span>{/if}
 			</div>
 		</div>
 		<div class="tags-row" class:saving={tagSaving}>
 			<span class="tags-label">Tags</span>
-			<TagChips
+			<TagEditor
 				tags={recording.tags}
-				dense
-				placeholder="Add a tag and press Enter"
 				suggestions={tagSuggestions}
 				onChange={(next) => void saveTags(next)}
 			/>
@@ -723,7 +721,6 @@
 .detail-meta { display: flex; flex-direction: column; gap: 8px; }
 .type-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .type-badge { padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
-.when-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; }
 .type-edit, .when-edit { padding: 4px 6px; border: 1px solid rgba(215,167,71,.4); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 11px; color-scheme: dark; }
 .meta-edit-save { padding: 4px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,0.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
 .meta-edit-cancel { padding: 4px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; cursor: pointer; }
@@ -740,9 +737,9 @@
 	.state-label.processing, .state-label.uploading { color: var(--brass); }
 	.state-label.failed { color: #f36b60; }
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
-	.tags-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
+	.tags-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
 	.tags-row.saving { opacity: 0.65; }
-	.tags-label { padding-top: 5px; font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
+	.tags-label { font-size: 10px; font-weight: 650; color: #8b8278; letter-spacing: 0.02em; }
 	.tags-hint { margin: 0; color: var(--ash); font-size: 10px; }
 	.digest-row { display: flex; flex-wrap: wrap; gap: 6px; }
 	.digest-button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 10px; font-weight: 650; cursor: pointer; }
