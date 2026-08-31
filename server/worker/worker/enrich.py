@@ -304,7 +304,7 @@ def extract_from_transcript(
             )
             r.raise_for_status()
             content = r.json()["choices"][0]["message"]["content"]
-            payload = json.loads(content)
+            payload = json.loads(_json_payload(content))
             return _parse_extraction(payload)
         except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError) as exc:
             last_err = exc
@@ -317,6 +317,19 @@ def extract_from_transcript(
             continue
     assert last_err is not None
     raise last_err
+
+
+def _json_payload(content: str) -> str:
+    """Model output → raw JSON text. qwen3.6 via llama.cpp with server-side
+    reasoning budget 0 leaks a bare `</think>` and wraps the JSON in ```json
+    fences even when response_format=json_object is set — strip both or
+    json.loads dies at char 0."""
+    s = content.split("</think>")[-1].strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[-1]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+    return s.strip()
 
 
 def _dedup_prompt(

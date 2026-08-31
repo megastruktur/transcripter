@@ -568,3 +568,15 @@ def test_indexing_failure_never_fails_enrich(recording_id: str, tmp_path: Path) 
     with session() as s:
         st = s.query(Stage).filter_by(recording_id=recording_id, kind="enrich").one()
         assert st.status == StageStatus.done
+
+
+def test_json_payload_strips_think_tag_and_fences() -> None:
+    """qwen3.6 via llama.cpp (reasoning budget 0) leaks a bare `</think>`
+    and wraps JSON in ```json fences despite response_format=json_object —
+    json.loads on the raw content dies at char 0."""
+    from worker.enrich import _json_payload
+
+    raw = '</think>\n\n```json\n{\n  "entities": []\n}\n```'
+    assert _json_payload(raw) == '{\n  "entities": []\n}'
+    # Plain JSON passes through untouched.
+    assert _json_payload('{"entities": []}') == '{"entities": []}'
