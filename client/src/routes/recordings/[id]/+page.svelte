@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import Icon, { type IconName } from '$lib/Icon.svelte';
+	import Icon from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
 	import TagChips from '$lib/TagChips.svelte';
 	import BackButton from '$lib/BackButton.svelte';
@@ -26,17 +26,9 @@
 	import { dateLabel, durationLabel } from '$lib/format';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
-	import { artifactTab, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
+	import { artifactTab, recordActions, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? '';
-	const stageIcons: Record<StageKind, IconName> = {
-		chunk: 'chunk',
-		transcribe: 'transcript',
-		diarize: 'diarize',
-		merge_speakers: 'speakers',
-		summarize: 'summary',
-		enrich: 'enrich'
-	};
 
 	let recording = $state<Recording | null>(null);
 	let loading = $state(true);
@@ -47,7 +39,6 @@
 	let pendingTitle = $state<string | null>(null);
 	let renameError = $state('');
 	let rerunError = $state('');
-	let deleteArmed = $state(false);
 	let deleting = $state(false);
 	let deleteError = $state('');
 	let pollTimer: ReturnType<typeof globalThis.setInterval> | null = null;
@@ -68,7 +59,9 @@
 	let digestGenerating = $state(false);
 	let digestNote = $state('');
 	let digestPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
-	/** Pipeline-type editor state: null = editing closed; string = draft value. */
+	/** Pipeline-type editor state: typeEditing opens the editor; typeDraft is the draft value
+	 * (null = "None — default pipeline", a real selectable value). */
+	let typeEditing = $state(false);
 	let typeDraft = $state<string | null>(null);
 	let typeSaving = $state(false);
 	let typeError = $state('');
@@ -178,11 +171,30 @@
 		tabGeneration += 1;
 	}
 
+	function publishRecordActions(): void {
+		recordActions.rename = startRename;
+		recordActions.editDate = openWhenEditor;
+		recordActions.editType = openTypeEditor;
+		recordActions.remove = confirmDelete;
+	}
+
+	function clearRecordActions(): void {
+		recordActions.loaded = false;
+		recordActions.deletable = false;
+		recordActions.rename = null;
+		recordActions.editDate = null;
+		recordActions.editType = null;
+		recordActions.remove = null;
+	}
+
 	function applyRecording(next: Recording): void {
 		const previous = recording;
 		recording = pendingTitle !== null ? { ...next, title: pendingTitle } : next;
 		stageRetry.stages = next.stages;
 		stageRetry.enabled = next.state === 'done' || next.state === 'failed';
+		publishRecordActions();
+		recordActions.loaded = true;
+		recordActions.deletable = next.state === 'done' || next.state === 'failed';
 		if (previous?.state === 'processing' && next.state !== 'processing') {
 			invalidateArtifacts();
 			void loadTab(activeTab, true);
@@ -204,6 +216,7 @@
 				stopPoll();
 				stageRetry.stages = [];
 				stageRetry.enabled = false;
+				clearRecordActions();
 			} else {
 				error = String(caught);
 				if (status === 401) stopPoll();
@@ -228,6 +241,7 @@
 			stageRetry.stages = [];
 			stageRetry.enabled = false;
 			stageRetry.rerun = null;
+			clearRecordActions();
 		};
 	});
 
@@ -257,6 +271,17 @@
 	function cancelRename(): void {
 		renaming = false;
 		draft = '';
+	}
+
+	function openTypeEditor(): void {
+		if (!recording || typeEditing) return;
+		typeEditing = true;
+		typeDraft = recording.type ?? null;
+	}
+
+	function openWhenEditor(): void {
+		if (!recording || whenDraft !== null) return;
+		whenDraft = toLocalDatetimeValue(recording.recorded_at ?? recording.created_at ?? null);
 	}
 
 	async function commitRename(): Promise<void> {
@@ -302,10 +327,10 @@
 	}
 
 	async function commitType(): Promise<void> {
-		if (!recording || typeDraft === null || typeSaving) return;
+		if (!recording || !typeEditing || typeSaving) return;
 		const next = typeDraft;
 		const previous = recording.type;
-		typeDraft = null;
+		typeEditing = false;
 		if (next === previous) return;
 		recording = { ...recording, type: next };
 		typeSaving = true;
@@ -490,17 +515,6 @@
 		}
 	}
 
-	function armDelete(): void {
-		deleteArmed = true;
-		deleteError = '';
-	}
-
-	function handleDeleteKeydown(event: KeyboardEvent): void {
-		if (event.key !== 'Escape') return;
-		event.stopPropagation();
-		deleteArmed = false;
-	}
-
 	async function confirmDelete(): Promise<void> {
 		if (!recording || deleting) return;
 		deleting = true;
@@ -516,7 +530,6 @@
 		} catch (caught) {
 			if (audioEl) audioEl.src = audioUrl(loadApiConfig(), recording.id);
 			deleteError = `Delete failed: ${caught instanceof Error ? caught.message : String(caught)}`;
-			deleteArmed = false;
 			deleting = false;
 		}
 	}
@@ -551,7 +564,6 @@
 			</div>
 		{:else if recording}
 			<h1 class="page-title detail-title">{recording.title || 'Untitled capture'}</h1>
-			<button class="rename-edit" type="button" title="Rename recording" aria-label="Rename recording" onclick={startRename}><Icon name="pencil" size={14} /></button>
 		{:else}
 			<h1 class="page-title detail-title">Recording</h1>
 		{/if}
@@ -559,6 +571,9 @@
 
 	{#if renameError}
 		<p class="inline-error" role="alert">{renameError}</p>
+	{/if}
+	{#if deleteError}
+		<p class="inline-error" role="alert">{deleteError}</p>
 	{/if}
 
 	{#if loading}
@@ -579,7 +594,7 @@
 				<span class={`state-label ${recording.state}`}>{recording.state}</span>
 			</div>
 			<div class="meta-row type-row">
-				{#if typeDraft !== null}
+				{#if typeEditing}
 					<select class="type-edit" bind:value={typeDraft} aria-label="Pipeline type" disabled={typeSaving}>
 						<option value={null}>None — default pipeline</option>
 						{#each profilesCache.items as profile (profile.id)}
@@ -587,11 +602,9 @@
 						{/each}
 					</select>
 					<button class="meta-edit-save" type="button" onclick={() => void commitType()} disabled={typeSaving}>Save</button>
-					<button class="meta-edit-cancel" type="button" onclick={() => (typeDraft = null)} disabled={typeSaving}>Cancel</button>
+					<button class="meta-edit-cancel" type="button" onclick={() => (typeEditing = false)} disabled={typeSaving}>Cancel</button>
 				{:else}
-					<button class="type-badge" type="button" title="Change pipeline type" onclick={() => (typeDraft = recording?.type ?? null)}>
-						{typeProfile ? typeProfile.display_name : recording.type}
-					</button>
+					<span class="type-badge">{typeProfile ? typeProfile.display_name : recording.type}</span>
 					{#if typeSaving}<span class="meta-saving">saving…</span>{/if}
 				{/if}
 				{#if whenDraft !== null}
@@ -599,27 +612,12 @@
 					<button class="meta-edit-save" type="button" onclick={() => void commitWhen()} disabled={whenSaving}>Save</button>
 					<button class="meta-edit-cancel" type="button" onclick={() => (whenDraft = null)} disabled={whenSaving}>Cancel</button>
 				{:else}
-					<button class="when-badge" type="button" title="Edit recorded date" onclick={() => (whenDraft = toLocalDatetimeValue(recording?.recorded_at ?? recording?.created_at ?? null))}>
-						<Icon name="pencil" size={11} strokeWidth={1.5} />
-						{recording.recorded_at ? dateLabel(recording.recorded_at) : 'date = upload time'}
-					</button>
+					<span class="when-badge">{recording.recorded_at ? dateLabel(recording.recorded_at) : 'date = upload time'}</span>
 					{#if whenSaving}<span class="meta-saving">saving…</span>{/if}
 				{/if}
 				{#if typeError}<span class="inline-error" role="alert">{typeError}</span>{/if}
 				{#if whenError}<span class="inline-error" role="alert">{whenError}</span>{/if}
 			</div>
-			<span class="stage-icons" role="group" aria-label="Pipeline stages">
-				{#each recording.stages as stage (stage.kind)}
-					<span
-						class={`stage-icon ${stage.status}`}
-						role="img"
-						title="{stageNames[stage.kind]} · {stage.status}"
-						aria-label="{stageNames[stage.kind]}: {stage.status}"
-					>
-						<Icon name={stageIcons[stage.kind]} size={16} strokeWidth={1.4} />
-					</span>
-				{/each}
-			</span>
 		</div>
 		<div class="tags-row" class:saving={tagSaving}>
 			<span class="tags-label">Tags</span>
@@ -715,33 +713,17 @@
 			{/if}
 		</div>
 
-		{#if recording.state === 'done' || recording.state === 'failed'}
-			{#if deleteArmed}
-				<div class="delete-confirm">
-					<span>Permanently delete?</span>
-					<button class="delete-yes" type="button" disabled={deleting} onkeydown={handleDeleteKeydown} onclick={confirmDelete}>{deleting ? 'Deleting…' : 'Confirm'}</button>
-					<button class="delete-no" type="button" disabled={deleting} {@attach autofocus} onkeydown={handleDeleteKeydown} onclick={() => (deleteArmed = false)}>Cancel</button>
-				</div>
-			{:else}
-				<button class="delete-button" type="button" onclick={armDelete}><Icon name="trash" size={14} /> Delete</button>
-			{/if}
-			{#if deleteError}
-				<p class="inline-error" role="alert">{deleteError}</p>
-			{/if}
-		{/if}
 	{/if}
 </section>
 
 <style>
 	.detail-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
-	.detail-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+	.detail-header { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
 	.detail-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
 .detail-meta { display: flex; flex-direction: column; gap: 8px; }
 .type-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.type-badge { padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer; }
-.type-badge:hover { border-color: var(--brass); background: rgba(215,167,71,0.08); }
-.when-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; cursor: pointer; }
-.when-badge:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
+.type-badge { padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: transparent; color: var(--brass); font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+.when-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; }
 .type-edit, .when-edit { padding: 4px 6px; border: 1px solid rgba(215,167,71,.4); border-radius: 2px; background: rgba(0,0,0,0.25); color: var(--bone); font-size: 11px; color-scheme: dark; }
 .meta-edit-save { padding: 4px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,0.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
 .meta-edit-cancel { padding: 4px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; font-size: 10px; cursor: pointer; }
@@ -757,11 +739,6 @@
 	.state-label.done { color: var(--cyan); }
 	.state-label.processing, .state-label.uploading { color: var(--brass); }
 	.state-label.failed { color: #f36b60; }
-	.stage-icons { display: flex; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
-	.stage-icon { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid transparent; background: rgba(255,255,255,.03); border-radius: 2px; color: #6f685f; line-height: 0; }
-	.stage-icon.done { color: var(--cyan); border-color: rgba(112,215,208,.25); }
-	.stage-icon.running { color: var(--brass); border-color: rgba(215,167,71,.25); }
-	.stage-icon.failed { color: #f36b60; border-color: rgba(213,45,36,.35); }
 	.stage-error { margin: 0; color: #f36b60; font-size: 11px; }
 	.tags-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding-top: 8px; border-top: 1px solid var(--line); transition: opacity 120ms ease; }
 	.tags-row.saving { opacity: 0.65; }
@@ -787,22 +764,10 @@
 	.artifact-panel pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
 	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
-	.delete-button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border: 1px solid rgba(213,45,36,.4); border-radius: 2px; background: rgba(213,45,36,.08); color: #f36b60; font-size: 10px; font-weight: 700; cursor: pointer; line-height: 0; }
-	.delete-button:hover { border-color: var(--red); background: rgba(213,45,36,.14); }
-	.delete-confirm { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; }
-	.delete-confirm > span { font-size: 10px; font-weight: 650; color: #f36b60; }
-	.delete-confirm button { min-height: 32px; padding: 0 10px; border-radius: 2px; font-size: 9px; font-weight: 700; cursor: pointer; line-height: 0; }
-	.delete-yes { border: 1px solid var(--red); background: var(--red); color: var(--bone); }
-	.delete-yes:hover:not(:disabled) { background: #b3251d; }
-	.delete-no { border: 1px solid rgba(215,167,71,.26); background: rgba(215,167,71,.06); color: var(--brass); }
-	.delete-no:hover:not(:disabled) { border-color: var(--brass); background: rgba(215,167,71,.12); }
-	.delete-confirm button:disabled { opacity: 0.55; cursor: default; }
 	.rename-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; }
 	.rename-row input { min-height: 32px; height: 32px; }
 	.rename-row button { min-height: 32px; padding: 0 10px; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 9px; font-weight: 700; cursor: pointer; line-height: 0; }
 	.rename-row button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
-	.rename-edit { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); cursor: pointer; line-height: 0; }
-	.rename-edit:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
 	.inline-error { margin: 0; color: #f36b60; font-size: 11px; }
 	.archive-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.archive-error strong { color: var(--red); font-size: 10px; font-weight: 700; }

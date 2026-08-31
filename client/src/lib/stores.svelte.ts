@@ -4,6 +4,7 @@ import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
 import type { ApiConfig, Stage } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
 import { ANDROID_MIC_ID, isAndroidTauri } from '$lib/mobile-recorder';
+import type { IconName } from '$lib/Icon.svelte';
 
 export type UploadState = {
 	sessionId: string;
@@ -32,7 +33,7 @@ export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 
 export const artifactTab = $state<{ active: ArtifactTabKey }>({ active: 'transcript' });
 
 /** Canonical pipeline stage order and display names. Shared by the detail
- * page (stage chips, error lines) and the layout context-bar (re-run cluster). */
+ * page (stage error lines) and the layout context-bar (status icons, re-run menu). */
 export const STAGES = ['chunk', 'transcribe', 'diarize', 'merge_speakers', 'summarize', 'enrich'] as const;
 export type StageKind = (typeof STAGES)[number];
 export const stageNames: Record<StageKind, string> = {
@@ -43,24 +44,36 @@ export const stageNames: Record<StageKind, string> = {
 	summarize: 'Summary',
 	enrich: 'Enrich'
 };
-/** Short labels for the compact re-run buttons in the context bar; the full
- * stageNames go into tooltips and accessible names. */
-export const stageShortNames: Record<StageKind, string> = {
-	chunk: 'Chk',
-	transcribe: 'Trn',
-	diarize: 'Dia',
-	merge_speakers: 'Spk',
-	summarize: 'Sum',
-	enrich: 'Enr'
+/** Per-stage glyphs for the pipeline status icons in the layout context-bar. */
+export const stageIcons: Record<StageKind, IconName> = {
+	chunk: 'chunk',
+	transcribe: 'transcript',
+	diarize: 'diarize',
+	merge_speakers: 'speakers',
+	summarize: 'summary',
+	enrich: 'enrich'
 };
 
 /** Re-run context published by the recording detail page. The layout
- * context-bar reads it to render per-stage re-run buttons above the title. */
+ * context-bar reads it to render the pipeline status icons next to the
+ * title and the re-run entries inside the ellipsis actions menu. */
 export const stageRetry = $state<{
 	stages: Stage[];
 	enabled: boolean;
 	rerun: ((kind: StageKind) => void) | null;
 }>({ stages: [], enabled: false, rerun: null });
+
+/** Recording-detail actions published to the layout context-bar ellipsis
+ * menu. Populated by the detail page once a recording loads; cleared on
+ * unmount and on 404 so the menu never shows stale or no-op actions. */
+export const recordActions = $state<{
+	loaded: boolean;
+	deletable: boolean;
+	rename: (() => void) | null;
+	editDate: (() => void) | null;
+	editType: (() => void) | null;
+	remove: (() => Promise<void>) | null;
+}>({ loaded: false, deletable: false, rename: null, editDate: null, editType: null, remove: null });
 
 /** Live upload ledger: session id → current upload state. */
 export const uploads = $state<{ [id: string]: UploadState }>({});

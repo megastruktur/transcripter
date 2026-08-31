@@ -5,7 +5,7 @@
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, stageNames, stageRetry, stageShortNames, uploads } from '$lib/stores.svelte';
+	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 
@@ -17,6 +17,11 @@
 	// Android-only navigation drawer: the rail is too wide for a phone screen,
 	// so it slides in over the workspace instead of pinning a column.
 	let navOpen = $state(false);
+	// Recording-detail actions menu (ellipsis at the right edge of the context
+	// bar). The detail page publishes its actions through recordActions.
+	let menuOpen = $state(false);
+	let menuDeleteArmed = $state(false);
+	let menuWrap = $state<HTMLDivElement>();
 	let dragOrigin: { x: number; y: number } | null = null;
 	let draggedCollapsedMark = $state(false);
 	const navItems = [
@@ -36,6 +41,12 @@
 	] as const;
 
 	const onRecordingDetail = $derived(page.url.pathname.startsWith('/recordings/'));
+	// Route changes close the actions menu: the detail page unpublishes its
+	// actions on unmount, and the menu must not linger over another page.
+	$effect(() => {
+		void page.url.pathname;
+		closeMenu();
+	});
 
 	const uploadStates = $derived(Object.values(uploads));
 	const uploadingCount = $derived(uploadStates.filter((u) => u.state === 'uploading' || u.state === 'queued').length);
@@ -149,12 +160,44 @@
 
 	function handleKeydown(event: KeyboardEvent): void {
 		if (event.key !== 'Escape') return;
+		// An open actions menu swallows Escape before anything else sees it.
+		if (menuOpen) {
+			closeMenu();
+			return;
+		}
 		// Drawer swallows Escape before the desktop collapse toggle sees it.
 		if (android && navOpen) {
 			navOpen = false;
 			return;
 		}
 		if (!collapsed) toggleCollapsed();
+	}
+
+	function closeMenu(): void {
+		menuOpen = false;
+		menuDeleteArmed = false;
+	}
+
+	function toggleMenu(): void {
+		if (menuOpen) closeMenu();
+		else menuOpen = true;
+	}
+
+	function runMenuAction(action: (() => void) | null): void {
+		closeMenu();
+		action?.();
+	}
+
+	async function confirmMenuDelete(): Promise<void> {
+		const remove = recordActions.remove;
+		closeMenu();
+		await remove?.();
+	}
+
+	function handleMenuPointerDown(event: PointerEvent): void {
+		if (!menuOpen || !menuWrap) return;
+		if (event.target instanceof Node && menuWrap.contains(event.target)) return;
+		closeMenu();
 	}
 
 	function beginCollapsedDrag(event: PointerEvent): void {
@@ -183,7 +226,7 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onpointerdown={handleMenuPointerDown} />
 
 <svelte:head>
 	<meta name="theme-color" content="#160f0d" />
@@ -263,22 +306,54 @@
 					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={56} /></span></button>
 					{/if}
 					<span class="context-name">{routeName}</span>
-					{#if onRecordingDetail && stageRetry.rerun && stageRetry.enabled && stageRetry.stages.length}
-						<div class="stage-retry" role="group" aria-label="Re-run pipeline stages">
+					{#if onRecordingDetail && stageRetry.stages.length}
+						<span class="context-stages" role="group" aria-label="Pipeline stages">
 							{#each stageRetry.stages as stage (stage.kind)}
-								<button
-									type="button"
-									class="stage-retry-button {stage.status}"
-									title="Re-run {stageNames[stage.kind]} ({stage.status})"
-									aria-label="Re-run {stageNames[stage.kind]} ({stage.status})"
-									onclick={() => stageRetry.rerun?.(stage.kind)}
+								<span
+									class="ctx-stage {stage.status}"
+									role="img"
+									title="{stageNames[stage.kind]} · {stage.status}"
+									aria-label="{stageNames[stage.kind]}: {stage.status}"
 								>
-									{stageShortNames[stage.kind]}
-								</button>
+									<Icon name={stageIcons[stage.kind]} size={13} strokeWidth={1.5} />
+								</span>
 							{/each}
-						</div>
+						</span>
 					{/if}
 					<span class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'} class="status-lamp" aria-hidden="true"></span>
+					{#if onRecordingDetail && recordActions.loaded}
+						<div class="menu-wrap" bind:this={menuWrap}>
+							<button class="menu-toggle" type="button" aria-label="Recording actions" aria-haspopup="menu" aria-expanded={menuOpen} onclick={toggleMenu}><Icon name="dots" size={15} /></button>
+							{#if menuOpen}
+								<div class="context-menu" role="menu" aria-label="Recording actions">
+									{#if stageRetry.enabled && stageRetry.rerun}
+										{#each stageRetry.stages as stage (stage.kind)}
+											<button type="button" role="menuitem" class="menu-item" onclick={() => { stageRetry.rerun?.(stage.kind); closeMenu(); }}>
+												<span>Re-run {stageNames[stage.kind]}</span>
+												<span class="menu-status {stage.status}">{stage.status}</span>
+											</button>
+										{/each}
+										<div class="menu-sep" role="separator"></div>
+									{/if}
+									<button type="button" role="menuitem" class="menu-item" onclick={() => runMenuAction(recordActions.rename)}>Rename…</button>
+									<button type="button" role="menuitem" class="menu-item" onclick={() => runMenuAction(recordActions.editDate)}>Edit date…</button>
+									<button type="button" role="menuitem" class="menu-item" onclick={() => runMenuAction(recordActions.editType)}>Change type…</button>
+									{#if recordActions.deletable}
+										<div class="menu-sep" role="separator"></div>
+										{#if menuDeleteArmed}
+											<div class="menu-confirm">
+												<span>Delete permanently?</span>
+												<button class="menu-confirm-yes" type="button" onclick={() => void confirmMenuDelete()}>Confirm</button>
+												<button class="menu-confirm-no" type="button" onclick={() => (menuDeleteArmed = false)}>Cancel</button>
+											</div>
+										{:else}
+											<button type="button" role="menuitem" class="menu-item menu-danger" onclick={() => (menuDeleteArmed = true)}>Delete…</button>
+										{/if}
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
 				</div>
 				<div class="page-scroll">
 					{@render children()}
@@ -358,14 +433,34 @@
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
-	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 0 16px; min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
-	.stage-retry { display: flex; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-	.stage-retry-button { display: flex; align-items: center; min-height: 22px; padding: 0 5px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; font-size: 9px; font-weight: 700; cursor: pointer; }
-	.stage-retry-button.done { color: var(--cyan); border-color: rgba(112, 215, 208, 0.25); }
-	.stage-retry-button.running { color: var(--brass); border-color: rgba(215, 167, 71, 0.25); }
-	.stage-retry-button.failed { color: #f36b60; border-color: rgba(213, 45, 36, 0.35); }
-	.stage-retry-button.skipped, .stage-retry-button.pending { color: #6f685f; }
-	.stage-retry-button:hover { border-color: var(--brass); background: rgba(215, 167, 71, 0.12); }
+	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 0 16px; min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	/* Pipeline status icons ride next to the page title; every cluster in the
+	   bar must stay shrinkable so a 360px phone never clips the right edge. */
+	.context-stages { display: flex; gap: 3px; min-width: 0; }
+	.ctx-stage { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 2px; background: rgba(255, 255, 255, 0.03); color: #6f685f; line-height: 0; }
+	.ctx-stage.done { color: var(--cyan); }
+	.ctx-stage.running { color: var(--brass); }
+	.ctx-stage.failed { color: #f36b60; }
+	.menu-wrap { position: relative; display: flex; min-width: 0; }
+	.menu-toggle { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; cursor: pointer; line-height: 0; }
+	.menu-toggle:hover, .menu-toggle[aria-expanded='true'] { color: var(--bone); border-color: rgba(215, 167, 71, 0.4); background: rgba(215, 167, 71, 0.08); }
+	.context-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 196px; padding: 4px; display: flex; flex-direction: column; gap: 1px; background: #14100e; border: 1px solid rgba(215, 167, 71, 0.28); border-radius: 3px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55); }
+	.menu-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 28px; padding: 0 9px; border: 0; border-radius: 2px; background: transparent; color: #c8bbaa; font-size: 11px; text-align: left; cursor: pointer; white-space: nowrap; }
+	.menu-item:hover { background: rgba(215, 167, 71, 0.1); color: var(--bone); }
+	.menu-status { font-size: 9px; font-weight: 700; color: #6f685f; text-transform: uppercase; letter-spacing: 0.04em; }
+	.menu-status.done { color: var(--cyan); }
+	.menu-status.running { color: var(--brass); }
+	.menu-status.failed { color: #f36b60; }
+	.menu-sep { height: 1px; margin: 3px 5px; background: var(--line); }
+	.menu-danger { color: #f36b60; }
+	.menu-danger:hover { background: rgba(213, 45, 36, 0.12); color: #f36b60; }
+	.menu-confirm { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; padding: 4px 5px; }
+	.menu-confirm > span { font-size: 10px; font-weight: 650; color: #f36b60; white-space: nowrap; }
+	.menu-confirm button { min-height: 24px; padding: 0 8px; border-radius: 2px; font-size: 9px; font-weight: 700; cursor: pointer; line-height: 0; }
+	.menu-confirm-yes { border: 1px solid var(--red); background: var(--red); color: var(--bone); }
+	.menu-confirm-yes:hover { background: #b3251d; }
+	.menu-confirm-no { border: 1px solid rgba(215, 167, 71, 0.26); background: rgba(215, 167, 71, 0.06); color: var(--brass); }
+	.menu-confirm-no:hover { border-color: var(--brass); background: rgba(215, 167, 71, 0.12); }
 	.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 650; color: #c8bbaa; }
 	.status-lamp, .status-strip i { width: 6px; height: 6px; border-radius: 50%; background: #6b655e; box-shadow: 0 0 0 2px rgba(107, 101, 94, 0.12); }
 	.status-lamp.unavailable, .status-strip i.unavailable { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }
@@ -392,8 +487,8 @@
 	   titlebar at all; the rail becomes an overlay drawer. */
 	.shell--android { grid-template-rows: 4px minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top, 0px); }
 	/* The context bar becomes the top chrome: sigil toggle + page title +
-	   stage re-runs + connection lamp. */
-	.shell--android .context-bar { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; padding: 0 10px; }
+	   stage icons + connection lamp + actions menu. */
+	.shell--android .context-bar { grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 8px; padding: 0 10px; }
 
 	/* Android is edge-to-edge fullscreen: the desktop window frame (brass
 	   border + drop shadow) has no window to frame and reads as a stray
