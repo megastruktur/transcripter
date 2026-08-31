@@ -2,9 +2,7 @@ name: transcripter
 
 services:
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    image: ghcr.io/megastruktur/transcripter:v0.0.1-api
     ports:
       # LAN + loopback only — never 0.0.0.0 (Docker publish bypasses UFW).
       - "127.0.0.1:8090:8080"
@@ -51,9 +49,7 @@ services:
     restart: unless-stopped
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    image: ghcr.io/megastruktur/transcripter:v0.0.1-worker
     environment:
       TRANSCRIPTER_CONFIG: /etc/transcripter/config.yaml
       TEMPORAL_ADDRESS: temporal:7233
