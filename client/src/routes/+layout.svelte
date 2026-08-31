@@ -358,15 +358,15 @@
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
-	.context-bar { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
-	.stage-retry { display: flex; gap: 5px; }
+	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 0 16px; min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	.stage-retry { display: flex; gap: 5px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 	.stage-retry-button { display: flex; align-items: center; min-height: 22px; padding: 0 5px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; font-size: 9px; font-weight: 700; cursor: pointer; }
 	.stage-retry-button.done { color: var(--cyan); border-color: rgba(112, 215, 208, 0.25); }
 	.stage-retry-button.running { color: var(--brass); border-color: rgba(215, 167, 71, 0.25); }
 	.stage-retry-button.failed { color: #f36b60; border-color: rgba(213, 45, 36, 0.35); }
 	.stage-retry-button.skipped, .stage-retry-button.pending { color: #6f685f; }
 	.stage-retry-button:hover { border-color: var(--brass); background: rgba(215, 167, 71, 0.12); }
-	.context-name { font-size: 14px; font-weight: 650; color: #c8bbaa; }
+	.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 650; color: #c8bbaa; }
 	.status-lamp, .status-strip i { width: 6px; height: 6px; border-radius: 50%; background: #6b655e; box-shadow: 0 0 0 2px rgba(107, 101, 94, 0.12); }
 	.status-lamp.unavailable, .status-strip i.unavailable { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }
 	.status-lamp.ready, .status-strip i.ready { background: var(--cyan); box-shadow: 0 0 0 3px rgba(112, 215, 208, 0.1), 0 0 10px rgba(112, 215, 208, 0.65); }
@@ -393,7 +393,7 @@
 	.shell--android { grid-template-rows: 4px minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top, 0px); }
 	/* The context bar becomes the top chrome: sigil toggle + page title +
 	   stage re-runs + connection lamp. */
-	.shell--android .context-bar { grid-template-columns: auto 1fr auto auto; gap: 8px; padding: 0 10px; }
+	.shell--android .context-bar { grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 8px; padding: 0 10px; }
 
 	/* Android is edge-to-edge fullscreen: the desktop window frame (brass
 	   border + drop shadow) has no window to frame and reads as a stray
