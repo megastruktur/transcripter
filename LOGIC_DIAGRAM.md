@@ -4,6 +4,10 @@
 дайджеста по тегу и семантического поиска. Каждая стадия: что принимает,
 что извлекает, что дедуплицирует, что и куда пишет, что может упасть.
 
+Сверено с кодом v0.19.0 (2026-09-01). Главные перемены с прошлого
+пересмотра — волт стал долговечным домом записи: аудио и всё meta-дерево
+переезжают в Obsidian-волт, /storage — рабочий черновик конвейера.
+
 ---
 
 ## 0. Картина целиком (одна диаграмма)
@@ -22,10 +26,10 @@ flowchart TB
         API["FastAPI :8090"]
         PG[("Postgres: recordings + stages")]
         WF["Temporal worker<br/>ProcessRecording"]
-        ST[("/storage/recordings/{id}/<br/>audio.flac + meta/*")]
+        ST[("/storage/recordings/{id}/<br/>audio.flac + meta/*<br/>(vault-mode: pipeline scratch,<br/>после export пустеет)")]
         N4J[("Neo4j (profile graph):<br/>entities/events per tag")]
         IDX["indexes/{tag}.sqlite<br/>(sqlite-vec bge-m3)"]
-        TR["/transcripts (Obsidian vault):<br/>папки записей + digests/"]
+        TR["/transcripts — Obsidian vault (долговечный дом):<br/>YYYY/MM/папки записей + .transcripter/{audio, meta},<br/>digests/ + indexes/ + Dashboard.md"]
 
         API --> PG
         API -->|on_finalize| WF
@@ -34,9 +38,10 @@ flowchart TB
         WF --> N4J
         WF --> IDX
         WF --> TR
+        API -.->|"артефакты/аудио из волта (fallback)"| TR
     end
 
-    EXT["Внешние ML:<br/>Speaches large-v3 (STT)<br/>LinTO pyannote (diarization)<br/>LiteLLM :4000 → qwen3.6-35b (summarize/enrich/digest)<br/>LiteLLM embed-bge-m3 (embeddings)"]
+    EXT["Внешние ML:<br/>Speaches large-v3 (STT)<br/>LinTO pyannote (diarization)<br/>LiteLLM :4000 → qwen3.6-35b (summarize/enrich/digest)<br/>embed-bge-m3: ONNX int8 в контейнере (default) или LiteLLM (http backend)"]
 
     UPL --> API
     WF <--> EXT
@@ -162,19 +167,42 @@ meta/
   events.json                  ← таймлайн-артефакт enrich (контракт UI)
 ```
 
-### 2.3 Vault (`TRANSCRIPTS_DIR`, в контейнере `/transcripts`)
+**Vault-режим** (`TRANSCRIPTER_VAULT_MODE=vault`; compose ставит его,
+когда задан `VAULT_DIR`): после успешного экспорта всё meta-дерево
+переезжает в `<vault>/YYYY/MM/<папка>/.transcripter/meta/`, а каталог
+`/storage/recordings/{id}` удаляется — /storage становится
+pipeline-scratch. Каждая стадия на входе вызывает `_rehydrate_if_vault`:
+если scratch пуст, meta-дерево копируется из vault-зеркала обратно —
+регенерация любой стадии работает и после того, как export снёс рабочую
+область. Режим `storage` (`VAULT_DIR` не задан) — легаси: meta живёт
+в /storage, в волт уходят только заметки и аудио.
+
+### 2.3 Vault (`VAULT_DIR`, легаси-алиас `TRANSCRIPTS_DIR`; в контейнере `/transcripts`)
 
 ```
-{YYYY-MM-DD_HH-MM} {title} {id8}/   ← папка на запись (export)
-  transcript.md                     ← frontmatter + тело
-  diarized-transcript.md            ← если merge отработал
-  summary.md | {output_artifact}    ← имя может переименовать профиль
-digests/{slug}.md                   ← заметка-дайджест на тег
-indexes/{slug}.sqlite               ← семантический индекс на тег (vec0)
+{vault}/
+  YYYY/MM/{YYYY-MM-DD_HH-MM} {title} {id8}/  ← папка на запись (export;
+                          месяц — по coalesce(recorded_at, created_at))
+    transcript.md                     ← frontmatter + тело
+    diarized-transcript.md            ← если merge отработал
+    summary.md | {output_artifact}    ← имя может переименовать профиль
+    .transcripter/                    ← скрытый служебный подкаталог
+      audio.flac                      ← перенесён из /storage (copy-verify-unlink)
+      manifest.json                   ← самодостаточное описание записи
+      meta/                           ← зеркало всего meta-дерева (vault-mode)
+  digests/{slug}.md                   ← заметка-дайджест на тег
+  indexes/{slug}.sqlite               ← семантический индекс на тег (vec0)
+  Dashboard.md                        ← MOC-оглавление (месяцы + теги),
+                                       регенерируется после каждого экспорта
 ```
 
-Сентинел `.transcripter` в корне: без него экспорт отказывается писать
-(защита от записи в пустой маунтпойнт до поднятия NFS).
+Ключи `digests/` и `indexes/` — Unicode-aware slug тега (кириллица
+проходит); идентичность заметки — frontmatter `tag:`, а не имя файла.
+
+Сентинел (`vault.sentinel`, например `.transcripter`) — опциональный
+guard от boot-race: если задан, экспорт отказывается писать, пока
+маркер не существует в корне волта (bind поверх пустого NAS-маунтпойнта
+writable, но неверен — лучше скипнуть, чем разложить заметки не туда).
 
 ### 2.4 Neo4j (compose-профиль `graph`, bolt://neo4j:7687)
 
@@ -200,6 +228,12 @@ indexes/{slug}.sqlite               ← семантический индекс 
 summarize → enrich`. Запуск с `start_stage` пропускает стадии выше
 (это и есть механика regenerate: `idx = order.index(start)`,
 условия `if idx <= k`).
+
+В vault-режиме вход каждой стадии — `_rehydrate_if_vault(rec_id)` (§2.2):
+возврат meta-дерева из vault-зеркала в /storage, если scratch пуст.
+Sync-хелпер без `@activity.defn` — дешевле и надёжнее воркфлоу-активности:
+каждая стадия самолечит scratch, даже если предыдущая упала посреди
+rehydrate.
 
 Retry-политики:
 
@@ -465,6 +499,12 @@ transcribe после merge честно говорит: «чанки удале
   свойства `embedding`. Реализация — `embed_texts` (единая точка:
   локальный ONNX bge-m3 int8 или HTTP `/embeddings` LiteLLM — по
   `graph.embed.backend`).
+  Статус BERT-идей (таблица в docs/PLANS/knowledge-timeline.md): в сборке —
+  только bge-m3 в этих двух ролях (дедуп-префильтр + индекс поиска).
+  Классификатор типа записи (ruBERT/XML-R) отвергнут — тип выбирается
+  до записи; кросс-энкодер bge-reranker для серой зоны отложен
+  (зона уже 3-слойная, mismerge-жалоб нет); тематическая сегментация
+  (change-point) отложена — Events-таймлайн уже даёт адресуемые главы.
 - `ask_same_entity`: промпт «Existing … New … same real-world entity?
   Y or N», парсинг лояльный (Y/yes/true/same/да/是的 vs N/no/false/
   different/нет/不 — первое слово до пунктуации). **Ошибки и невнятное
@@ -634,16 +674,31 @@ inline `run_digest(tag, last_n=5)` (не сигнал — так дайджес�
 
 Вызывается из `finally` пайплайна, из воркфлоу `ExportRecording`, из
 `worker.backfill`. Полностью **процесс-изолирован**
-(`python -m worker.export_once`, own process group; таймаут 20 с →
+(`python -m worker.export_once`, own process group; таймаут 120 с →
 SIGKILL группе и **abandon** — D-state на мёртвом NFS нельзя ждать;
-максимум 4 застрявших ребёнка, дальше честный skip).
+максимум 4 застрявших ребёнка, дальше честный skip. 120 с — бюджет
+NFS-переноса аудио в волт; до audio-move таймаут был 20 с).
 
-- Папка: `{YYYY-MM-DD_HH-MM} {title|call} {id8}` — детерминированно из
-  `created_at` + TZ (`TRANSCRIPTER_TZ`, default UTC); title санитизируется
+- Папка: `YYYY/MM/{YYYY-MM-DD_HH-MM} {title|call} {id8}` —
+  детерминированно из `coalesce(recorded_at, created_at)` + TZ
+  (`TRANSCRIPTER_TZ`, default UTC); title санитизируется
   (`/\:*?"<>|#[]^` + контрольные → `-`, ≤240 байт).
 - Каждый артефакт: frontmatter (`recording_id, title, created, date,
   tags: [transcripter/call, ...теги записи], duration_sec?, artifact,
   profile?`) + сырое тело из `meta/`.
+- **Перенос аудио**: `audio.flac` copy-verify-unlink из /storage в
+  `<папка>/.transcripter/audio.flac` (сверка sha256 с каталогом;
+  размер-only, когда хеша в строке нет), рядом — `manifest.json`
+  (самодостаточное описание записи — база будущего импорта). Заметки
+  пишутся ДО переноса: упавший перенос оставляет валидную папку +
+  оригинал в /storage, следующий export/backfill доедет.
+- **Перенос meta (vault-mode)**: всё meta-дерево тем же
+  copy-verify-unlink уезжает в `<папка>/.transcripter/meta/`, каталог
+  `/storage/recordings/{id}` сносится (§2.2).
+- **Dashboard.md**: после каждого успешного экспорта перегенерируется
+  MOC по всему волту — обратная хронология по месяцам с викиссылками
+  + секции по тегам; пользовательские правки в нём перезаписываются
+  (файл app-owned, шапка об этом предупреждает).
 - **Rename-only** (PATCH title): папка переименовывается in place
   (`os.rename` по паттерну `{ts} * {id8}`), файлы внутри НЕ трогаются —
   правки пользователя в Obsidian священны; frontmatter title устаревает
@@ -699,7 +754,7 @@ SIGKILL группе и **abandon** — D-state на мёртвом NFS нель
 | Индекс | DELETE+INSERT по recording_id | rowid |
 | Дайджест | overwrite по frontmatter tag | тег |
 | Экспорт | mirror-delete по whitelist + atomic rename | имя файла |
-| Папка записи в vault | детерминированное имя + id8 | (created, title, id8) |
+| Папка записи в vault | детерминированное имя + id8 | (coalesce(recorded_at, created), title, id8) |
 | Удалённые записи в графе | GraphGc: origin ∉ каталога | origin_recording_id |
 | Индексы мёртвых тегов | drop_dead_tag_indexes (в GC) | имя файла |
 
@@ -710,7 +765,8 @@ SIGKILL группе и **abandon** — D-state на мёртвом NFS нель
 `PATCH /recordings/{id}` — побочные эффекты по радиусу поражения:
 
 - **title** → `ExportRecording(rename_only=True)` (папка, файлы не трогаем);
-- **recorded_at** (один) → обычный экспорт (frontmatter перезаписывается);
+- **recorded_at** (один) → полный экспорт (frontmatter + месяц папки
+  YYYY/MM пересчитываются; старая папка подметается id8-scan'ом);
 - **tags** (done-запись) → regenerate со стадии `enrich`: новые
   namespace'ы получают копии, origin-scoped purge чистит старые,
   дальше по воркфлоу — events.json, индексы, экспорт;
@@ -718,8 +774,9 @@ SIGKILL группе и **abandon** — D-state на мёртвом NFS нель
   имя артефакта) → каскадом enrich + export;
 - **regenerate {stage}** — новый запуск того же workflow id с
   `start_stage`; всё ниже по порядку всегда перезапускается.
-- **DELETE** — строка + дерево на диске; граф/индексы дочищает GraphGc
-  (следующий тик или первый после включения).
+- **DELETE** — строка + дерево в /storage + папка записи в волте
+  (id8-scan по всем раскладкам, включая легаси-плоские); граф/индексы
+  дочищает GraphGc (следующий тик или первый после включения).
 
 ---
 
