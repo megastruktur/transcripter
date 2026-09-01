@@ -131,9 +131,21 @@
 		if (!isTauri()) return;
 		await getCurrentWindow().setSize(new LogicalSize(width, height));
 	}
+	// Browser fallback mirrors the Rust command: remember the expanded size
+	// when collapsing, restore it (>= 440x720) on expand. In Tauri the native
+	// command handles this and the fallback never runs.
+	let lastExpandedSize: { width: number; height: number } | null = null;
 	async function applyWindowMode(collapsed: boolean): Promise<void> {
 		if (!isTauri()) {
-			resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
+			if (collapsed) {
+				lastExpandedSize = { width: window.innerWidth, height: window.innerHeight };
+				await resizeWindow(76, 76);
+			} else {
+				const restore = lastExpandedSize && lastExpandedSize.width >= 440 && lastExpandedSize.height >= 720
+					? lastExpandedSize
+					: { width: 440, height: 720 };
+				await resizeWindow(restore.width, restore.height);
+			}
 			return;
 		}
 		try {
@@ -246,8 +258,14 @@
 		aria-label={`Expand Transcriptor Maximus. ${collapsedStatus}`}
 		title={collapsedStatus}
 	>
-		<span class="collapsed-icon" aria-hidden="true"><Icon name="mark" size={56} /></span>
-		<span class="collapsed-state"></span>
+		<span class="collapsed-icon" aria-hidden="true">
+			<Icon name="mark" size={56} />
+			<span class="collapsed-wave">
+				{#each [10, 17, 21, 17, 10] as barHeight, index (index)}
+					<i style={`--bar-height: ${barHeight}px; --delay: ${index * -74}ms`}></i>
+				{/each}
+			</span>
+		</span>
 	</button>
 {:else}
 	<div class="app-shell" class:shell--android={android}>
@@ -420,14 +438,17 @@
 	.window-actions button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.55); background: rgba(215, 167, 71, 0.08); }
 	.window-actions .close:hover { color: white; border-color: var(--red); background: var(--red-dark); }
 	.hazard-rule { background: repeating-linear-gradient(120deg, var(--brass) 0 8px, #17110b 8px 16px); opacity: 0.72; z-index: 0; }
-	.shell-body { display: grid; grid-template-columns: 80px minmax(0, 1fr); min-height: 0; position: relative; z-index: 1; }
-	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 10px 7px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
+	.shell-body { display: grid; grid-template-columns: 72px minmax(0, 1fr); min-height: 0; position: relative; z-index: 1; }
+	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 10px 5px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail a:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.rail a[aria-current='page'] { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); box-shadow: inset 2px 0 var(--red); }
 	.rail-divider { height: 1px; margin: 3px 4px; background: var(--line); }
-	.rail-tabs { display: flex; flex-direction: column; gap: 5px; }
-	.rail-tab { display: grid; place-items: center; gap: 5px; min-height: 56px; padding: 0; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #8e857c; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; cursor: pointer; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
+	.rail-tabs { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	/* Artifact tabs are a compact sub-tier of the detail page, not primary
+	   navigation: icon over label at 40px keeps all five tabs within the
+	   634px rail budget (5×66 + 5×56 overflowed and clipped the last tab). */
+	.rail-tab { display: grid; place-items: center; gap: 2px; width: 100%; min-height: 40px; padding: 3px 2px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #8e857c; font-size: 10px; font-weight: 650; letter-spacing: normal; cursor: pointer; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
+	.rail-tab .nav-icon { width: 24px; height: 24px; }
 	.rail-tab:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
 	.rail-tab.active { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); box-shadow: inset 2px 0 var(--red); }
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
@@ -498,14 +519,20 @@
 	.shell--android .shell-body { grid-template-columns: minmax(0, 1fr); }
 	.nav-scrim { position: absolute; inset: 0; z-index: 5; padding: 0; border: 0; border-radius: 0; background: rgba(5, 4, 3, 0.55); opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
 	.nav-scrim.open { opacity: 1; pointer-events: auto; }
-	.shell--android .rail { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 192px; background: #14100e; border-right: 1px solid rgba(215, 167, 71, 0.28); box-shadow: 14px 0 34px rgba(0, 0, 0, 0.5); transform: translateX(-105%); transition: transform 160ms ease; }
+	.shell--android .rail { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 168px; background: #14100e; border-right: 1px solid rgba(215, 167, 71, 0.28); box-shadow: 14px 0 34px rgba(0, 0, 0, 0.5); transform: translateX(-105%); transition: transform 160ms ease; }
 	.shell--android .rail.open { transform: translateX(0); }
 	.shell--android .status-strip { min-height: 28px; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
 	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; transition: transform 180ms ease; touch-action: none; }
-	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }
-	.collapsed-state { position: absolute; right: 12px; bottom: 12px; width: 9px; height: 9px; border: 2px solid #100d0b; border-radius: 50%; background: #7c756d; }
-	.collapsed-mark.recording .collapsed-state { background: var(--red); box-shadow: none; }
+	/* Recording indicator inside the red ring: a mini waveform using the same
+	   signal vocabulary as the Record page meter (780ms alternate, red→brass
+	   gradient, staggered delays). The bone cross yields the ring's center
+	   while capture runs. */
+	.collapsed-wave { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 3px; line-height: 0; }
+	.collapsed-mark.recording .collapsed-wave { display: flex; }
+	.collapsed-mark.recording :global(.mark-sigil) { opacity: 0; transition: opacity 120ms ease; }
+	.collapsed-wave i { width: 2px; height: calc(var(--bar-height) * 0.5); background: linear-gradient(to top, var(--red), var(--brass)); border-radius: 1px; transform-origin: center; animation: signal 780ms ease-in-out infinite alternate; animation-delay: var(--delay); box-shadow: 0 0 7px rgba(213, 45, 36, 0.25); }
+	@keyframes signal { to { height: var(--bar-height); } }
 	.collapsed-mark:hover .collapsed-icon { transform: rotate(9deg); }
 	.collapsed-mark.dragging { cursor: grabbing; }
 	.collapsed-mark.dragging .collapsed-icon { transform: scale(0.96); }

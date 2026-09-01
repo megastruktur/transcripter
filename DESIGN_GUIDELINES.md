@@ -24,7 +24,7 @@ The interface should be recognizable through these traits even when no cog, haza
 2. **Ritual through sequence.** Checks, recording, sealing, upload, and processing are explicit state transitions. Motion and copy should acknowledge those transitions without theatrical delay.
 3. **Structure is ornament.** Borders, rails, dividers, inset panels, hazard marks, and alignment create the character. Do not add decoration that has no structural role.
 4. **Evidence over reassurance.** Cyan means a check actually passed. Red means recording, failure, or danger. Never use a success color for an assumed or unchecked state.
-5. **Compact, never cramped.** The expanded desktop client is a 440×720 instrument. Primary routes should fit that frame in their normal state; long results and diagnostic failures may scroll.
+5. **Compact, never cramped.** The expanded desktop client is a 440×720 instrument at its design minimum. The user may enlarge the window by native resize (never below 440×720); primary routes must fit that minimum frame in their normal state, and layouts stay fluid above it.
 6. **One visual language.** Reuse existing tokens, panel treatments, icon stroke, and control geometry. A locally attractive component is wrong if it looks imported from another product.
 
 ## Palette
@@ -60,7 +60,7 @@ Use semantic tokens rather than introducing nearby one-off colors.
 - Keep edges aligned across neighboring controls. Inputs and selects in one tool row must share exact top and bottom edges.
 - Use compact spacing increments: `4`, `6`, `8`, `10`, `12`, `16`, `18`, and `24px`. Repeated groups should reveal a consistent rhythm.
 - The left rail is navigation machinery, not a sidebar card. Active state uses brass text, a restrained red inset marker, and an iron surface shift.
-- Preserve the 440×720 expanded frame and 76×76 collapsed mark. Do not solve overflow by enlarging the window.
+- Preserve the 440×720 minimum expanded frame and 76×76 collapsed mark. The user may resize the window larger by hand; the app itself never changes the size except for collapse/expand transitions. Do not solve overflow by enlarging the window programmatically.
 - Normal task states should fit without scroll where practical. Scroll belongs to variable-length archives, artifacts, and diagnostic messages.
 
 ## Typography
@@ -183,8 +183,9 @@ presentations from diverging:
   REST API. Platform-specific code is limited to input adapters (capture:
   MediaRecorder vs cpal/FLAC) and OS integration, never to features.
 - **Standardize behavior, not pixels.** Do not unify the views to "avoid
-  differences"; the fixed 440×720 desktop frame and the edge-to-edge Android
-  presentation are both canonical. Divergence is a bug only when the same
+  differences"; the 440×720-minimum desktop frame (user-resizable upward)
+  and the edge-to-edge Android presentation are both canonical. Divergence
+  is a bug only when the same
   state reads differently (color, status, affordance) — not when the same
   component sits differently.
 - **Two-viewport smoke check.** After any layout/shell change, verify BOTH

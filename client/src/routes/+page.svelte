@@ -3,6 +3,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		audioDevices,
+		captureDraft,
 		clearWarnings,
 		ensureAudioDevices,
 		pushNotice,
@@ -32,9 +33,8 @@
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
 	// session's written-frame count, so elapsed time survives window collapse.
 	const CAPTURE_RATE = 48_000;
-	let title = $state('');
-	let tagDraft = $state('');
-	let tags = $state<string[]>([]);
+	// Draft (title/tags/tagDraft/recType) lives in captureDraft (stores) so it
+	// survives window collapse→expand, which unmounts this page mid-session.
 	let starting = $state(false);
 	let android = $state(false);
 	let mobile: MobileRecorder | null = null;
@@ -88,8 +88,6 @@
 	let failedUpload: { blob: Blob; title: string; tags: string[]; durationSec: number } | null =
 		$state(null);
 	let retrying = $state(false);
-	/** Selected pipeline type slug; null = default pipeline. */
-	let recType = $state<string | null>(null);
 	let tagSuggestions = $derived(tagSuggestionsCache.items);
 
 	onMount(() => {
@@ -150,12 +148,12 @@
 		clearWarnings();
 		// Flush the draft before the recording starts so any in-progress
 		// chip the user did not press Enter for is not silently dropped.
-		tags = mergeDraftTags(tags, tagDraft);
-		tagDraft = '';
+		captureDraft.tags = mergeDraftTags(captureDraft.tags, captureDraft.tagDraft);
+		captureDraft.tagDraft = '';
 		try {
 			await startRecording(
-				title,
-				tags,
+				captureDraft.title,
+				captureDraft.tags,
 				audioDevices.selectedMicrophone,
 				audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
 				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF
@@ -171,8 +169,8 @@
 		if (mobile || recorder.recording || recorder.stopping) return;
 		starting = true;
 		clearWarnings();
-		tags = mergeDraftTags(tags, tagDraft);
-		tagDraft = '';
+		captureDraft.tags = mergeDraftTags(captureDraft.tags, captureDraft.tagDraft);
+		captureDraft.tagDraft = '';
 		let handle: MobileRecorder;
 		try {
 			handle = startMobileRecorder({});
@@ -257,15 +255,15 @@
 			return;
 		}
 		try {
-			const result = await uploadDirect(cfg, blob, title, tags, durationSec, {
-				type: recType ?? undefined
+			const result = await uploadDirect(cfg, blob, captureDraft.title, captureDraft.tags, durationSec, {
+				type: captureDraft.recType ?? undefined
 			});
 			announceQueued(result.id);
 		} catch (error) {
 			// Do NOT discard the audio: the desktop path survives via the
 			// on-disk spool; the mobile PoC keeps the blob in memory and
 			// offers a manual retry instead of silently losing the take.
-			failedUpload = { blob, title, tags: [...tags], durationSec };
+			failedUpload = { blob, title: captureDraft.title, tags: [...captureDraft.tags], durationSec };
 			recorder.warnings.push(`upload failed: ${String(error)}`);
 		} finally {
 			recorder.stopping = false;
@@ -283,7 +281,7 @@
 				pending.title,
 				pending.tags,
 				pending.durationSec,
-				{ type: recType ?? undefined }
+				{ type: captureDraft.recType ?? undefined }
 			);
 			failedUpload = null;
 			announceQueued(result.id);
@@ -329,22 +327,22 @@
 	</div>
 
 	<div class="capture-fields">
-		<TypeProfileField bind:value={recType} disabled={recorder.recording} />
+		<TypeProfileField bind:value={captureDraft.recType} disabled={recorder.recording} />
 
 		<label class="title-field">
 			<span class="field-label">Recording name</span>
-			<input type="text" placeholder="e.g. Product sync — August 22" bind:value={title} disabled={recorder.recording} />
+			<input type="text" placeholder="e.g. Product sync — August 22" bind:value={captureDraft.title} disabled={recorder.recording} />
 		</label>
 
 		<label class="tags-field" class:disabled={recorder.recording}>
 			<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
 			<TagChips
-				{tags}
-				bind:draft={tagDraft}
+				tags={captureDraft.tags}
+				bind:draft={captureDraft.tagDraft}
 				disabled={recorder.recording}
 				suggestions={tagSuggestions}
 				placeholder="e.g. doctronic, dnd dark castle"
-				onChange={(next) => (tags = next)}
+				onChange={(next) => (captureDraft.tags = next)}
 			/>
 		</label>
 	</div>

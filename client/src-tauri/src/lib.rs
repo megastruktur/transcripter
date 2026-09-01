@@ -42,6 +42,11 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
+/// Last user-chosen expanded window size (logical px), captured right before
+/// collapsing so expand restores it instead of resetting to the 440x720
+/// default. Session-only by design.
+static LAST_EXPANDED_SIZE: std::sync::Mutex<Option<tauri::LogicalSize<f64>>> =
+    std::sync::Mutex::new(None);
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
@@ -49,13 +54,26 @@ fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
         return;
     };
     // Collapsed: pinned 76x76 mark that floats above other apps (on every
-    // macOS space). Expanded: a regular window in the normal z-order.
-    let size = if collapsed {
-        tauri::LogicalSize::new(76u32, 76u32)
+    // macOS space) and must not be user-resizable. Expanded: a regular
+    // window in the normal z-order that the user may freely grow (never
+    // below the 440x720 design minimum, enforced by the window's min size).
+    // The last user-chosen expanded size survives collapse→expand within
+    // this app session; it is deliberately not persisted across launches.
+    if collapsed {
+        LAST_EXPANDED_SIZE
+            .lock()
+            .map(|mut guard| *guard = window.inner_size().ok().map(|s| s.to_logical(window.scale_factor().unwrap_or(1.0))))
+            .ok();
+        let _ = window.set_resizable(false);
+        let _ = window.set_size(tauri::LogicalSize::new(76u32, 76u32));
     } else {
-        tauri::LogicalSize::new(440u32, 720u32)
-    };
-    let _ = window.set_size(size);
+        let _ = window.set_resizable(true);
+        let restore = LAST_EXPANDED_SIZE
+            .lock()
+            .ok()
+            .and_then(|guard| guard.filter(|s| s.width >= 440.0 && s.height >= 720.0));
+        let _ = window.set_size(restore.unwrap_or(tauri::LogicalSize::new(440f64, 720f64)));
+    }
     let _ = window.set_always_on_top(collapsed);
     #[cfg(target_os = "macos")]
     let _ = window.set_visible_on_all_workspaces(collapsed);

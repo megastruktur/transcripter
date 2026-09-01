@@ -25,6 +25,16 @@ export const recorder = $state({
 });
 
 export const preflight = $state<{ current: PreFlightReport | null }>({ current: null });
+/** Capture-form draft (name, type, tags). The Record page binds its fields
+ * here instead of local $state: collapsing the window to the mark unmounts
+ * the page, and — like the recorder session itself — the draft must survive
+ * the round-trip. */
+export const captureDraft = $state({
+	title: '',
+	tags: [] as string[],
+	tagDraft: '',
+	recType: null as string | null
+});
 
 export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 'json';
 
