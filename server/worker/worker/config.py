@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -70,6 +71,15 @@ class VaultConfig(BaseModel):
     # Boot-race guard, e.g. ".transcripter": when set, export refuses to run
     # unless this entry exists under path (empty-mountpoint detection).
     sentinel: str = ""
+    # "vault": the vault is the durable home — after the pipeline the
+    # export moves the WHOLE meta tree into the folder's .transcripter/meta
+    # mirror and deletes /storage/recordings/{id} (storage = scratch; a
+    # regenerate rehydrates the meta tree from the mirror first).
+    # "storage" (default): meta stays in storage; only notes + audio are
+    # exported under path. The container cannot tell a real vault from the
+    # ./storage/transcripts fallback (both bind to /transcripts), so
+    # compose sets TRANSCRIPTER_VAULT_MODE=vault when VAULT_DIR is set.
+    mode: Literal["storage", "vault"] = "storage"
 
 
 # Legacy name (pre-vault): the yaml section was `transcripts:`. Kept as an
@@ -207,6 +217,12 @@ def load_config() -> WorkerConfig:
         )
     if env_vault := os.environ.get("VAULT_DIR") or os.environ.get("TRANSCRIPTS_DIR"):
         cfg.vault.path = Path(env_vault)
+    if env_mode := os.environ.get("TRANSCRIPTER_VAULT_MODE"):
+        if env_mode not in ("storage", "vault"):
+            raise ValueError(
+                f"TRANSCRIPTER_VAULT_MODE must be 'storage' or 'vault' (got {env_mode!r})"
+            )
+        cfg.vault.mode = env_mode
     if env_db := os.environ.get("TRANSCRIPTER_DB_URL"):
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):

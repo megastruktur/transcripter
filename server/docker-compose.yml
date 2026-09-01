@@ -23,7 +23,10 @@ services:
       # graph.embed.api_key_env references this when the embed backend is
       # http (LiteLLM) — the api embeds search queries through the same
       # endpoint the worker indexed with. Harmless when unused.
-      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
+      # Vault mode: VAULT_DIR set → the vault is the durable home (meta
+      # tree moves there after the pipeline; storage = scratch). Empty →
+      # storage mode (legacy, meta stays in /storage).
+      TRANSCRIPTER_VAULT_MODE: ${TRANSCRIPTER_VAULT_MODE:-}
     volumes:
       # c2: staging is a named volume (local NVMe) — no dev-checkout binds.
       - staging:/storage
@@ -76,6 +79,10 @@ services:
       # in config.yaml). Empty default = graph layer disabled; the enrich
       # stage will report `skipped` without it (best-effort, like diarize).
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-}
+      # Vault mode: VAULT_DIR set → vault is the durable home (the export
+      # moves the meta tree + audio into the vault; /storage/recordings/{id}
+      # is deleted — storage = scratch). Empty → storage mode (legacy).
+      TRANSCRIPTER_VAULT_MODE: ${TRANSCRIPTER_VAULT_MODE:-}
     volumes:
       # c2: staging is a named volume (local NVMe) — no dev-checkout binds.
       - staging:/storage

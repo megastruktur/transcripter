@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import shutil
 import signal
 import sys
 import threading
@@ -111,6 +112,73 @@ def audio_file(rec_id: str) -> Path:
         if candidate.is_file():
             return candidate
     return storage
+
+def rehydrate_meta(rec_id: str) -> dict:
+    """Vault-mode regenerate support: bring the recording's meta tree from
+    the vault mirror (``<folder>/.transcripter/meta``) back into storage
+    scratch so pipeline stages read/write their usual /storage paths.
+
+    Plain sync helper (no @activity.defn): called at the top of the
+    chunk/transcribe/diarize/merge/summarize/enrich entry points via
+    _rehydrate_if_vault() — cheaper and more robust than a workflow-level
+    activity (every stage self-heals storage even when a previous stage
+    crashed mid-rehydrate)."""
+    from .export import Rec, vault_meta_dir
+
+    c = cfg()
+    if getattr(c.vault, "mode", "storage") != "vault":
+        return {"rehydrated": 0}
+    storage_meta = c.recordings_root / rec_id / "meta"
+    if (storage_meta / "transcript.md").is_file() or (
+        storage_meta / "diarized-transcript.md"
+    ).is_file():
+        return {"rehydrated": 0}  # storage already populated (or never moved)
+    from datetime import UTC, datetime
+
+    scan_rec = Rec(rec_id, "", datetime.now(UTC), None)
+    for folder in scan_rec_listing_safe(c.vault.path, scan_rec):
+        mirror = vault_meta_dir(folder)
+        if not (mirror / "transcript.md").is_file() and not (
+            mirror / "diarized-transcript.md"
+        ).is_file():
+            continue
+        storage_meta.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for src in sorted(mirror.rglob("*")):
+            if not src.is_file():
+                continue
+            rel = src.relative_to(mirror)
+            dst = storage_meta / rel
+            if dst.exists():
+                continue  # partial previous rehydrate
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            n += 1
+        if n:
+            log.info("rehydrate: restored %d meta files for %s from vault", n, rec_id)
+        return {"rehydrated": n}
+    return {"rehydrated": 0}
+
+
+def scan_rec_listing_safe(root: Path, scan_rec: object) -> list[Path]:
+    """scan_recording_folders without raising on an unreadable root (the
+    vault may be down while storage paths still work)."""
+    from .export import scan_recording_folders
+
+    try:
+        return scan_recording_folders(root, scan_rec)  # type: ignore[arg-type]
+    except OSError:
+        return []
+
+
+def _rehydrate_if_vault(rec_id: str) -> None:
+    """Stage-entry guard: in vault mode with empty storage meta, pull the
+    tree from the vault mirror. Failures are logged and swallowed — the
+    stage's own read then fails with its usual loud FileNotFoundError."""
+    try:
+        rehydrate_meta(rec_id)
+    except Exception:
+        log.exception("rehydrate failed for %s (continuing)", rec_id)
 
 
 def budget_transcribe(rec: Recording | None) -> float:
@@ -257,6 +325,41 @@ async def _transcribe_file(
     return await _heartbeat_while(asyncio.to_thread(local.transcribe, audio))
 
 
+@activity.defn
+async def transcribe(rec_id: str) -> dict:
+    _rehydrate_if_vault(rec_id)
+    c = cfg()
+    set_stage(rec_id, "transcribe", StageStatus.running, inc_attempts=True)
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        assert rec is not None, f"recording {rec_id} not found"
+        timeout_sec = budget_transcribe(rec)
+    try:
+        manifest = load_manifest(meta_dir(rec_id))
+        if manifest is not None:
+            result = await _transcribe_chunked(rec_id, manifest, c)
+        else:
+            result = await _transcribe_file(c, audio_file(rec_id), timeout_sec)
+
+        result.to_json(meta_dir(rec_id) / "segments.json")
+        segments_to_markdown(result, meta_dir(rec_id) / "transcript.md")
+        details: dict = {"language": result.language, "segments": len(result.segments)}
+        if manifest is not None:
+            details["chunks"] = len(manifest.chunks)
+            suspect = sum(1 for ch in manifest.chunks if ch.transcribe_suspect)
+            if suspect:
+                details["suspect_chunks"] = suspect
+        set_stage(rec_id, "transcribe", StageStatus.done, details=details)
+        return details
+    except asyncio.CancelledError:
+        set_stage(rec_id, "transcribe", StageStatus.failed, error="cancelled")
+        raise
+    except Exception as e:
+        log.exception("transcribe failed for %s", rec_id)
+        set_stage(rec_id, "transcribe", StageStatus.failed, error=str(e))
+        raise
+
+
 async def _transcribe_chunked(
     rec_id: str, manifest: Manifest, c: WorkerConfig
 ) -> TranscriptionResult:
@@ -316,39 +419,6 @@ async def _transcribe_chunked(
     return TranscriptionResult(language, segments, words)
 
 
-@activity.defn
-async def transcribe(rec_id: str) -> dict:
-    c = cfg()
-    set_stage(rec_id, "transcribe", StageStatus.running, inc_attempts=True)
-    with session() as s:
-        rec = s.get(Recording, rec_id)
-        assert rec is not None, f"recording {rec_id} not found"
-        timeout_sec = budget_transcribe(rec)
-    try:
-        manifest = load_manifest(meta_dir(rec_id))
-        if manifest is not None:
-            result = await _transcribe_chunked(rec_id, manifest, c)
-        else:
-            result = await _transcribe_file(c, audio_file(rec_id), timeout_sec)
-
-        result.to_json(meta_dir(rec_id) / "segments.json")
-        segments_to_markdown(result, meta_dir(rec_id) / "transcript.md")
-        details: dict = {"language": result.language, "segments": len(result.segments)}
-        if manifest is not None:
-            details["chunks"] = len(manifest.chunks)
-            suspect = sum(1 for ch in manifest.chunks if ch.transcribe_suspect)
-            if suspect:
-                details["suspect_chunks"] = suspect
-        set_stage(rec_id, "transcribe", StageStatus.done, details=details)
-        return details
-    except asyncio.CancelledError:
-        set_stage(rec_id, "transcribe", StageStatus.failed, error="cancelled")
-        raise
-    except Exception as e:
-        log.exception("transcribe failed for %s", rec_id)
-        set_stage(rec_id, "transcribe", StageStatus.failed, error=str(e))
-        raise
-
 
 async def _diarize_chunked(rec_id: str, manifest: Manifest, c: WorkerConfig):
     """Sequential per-chunk diarization (never parallel — same CPU voice
@@ -391,6 +461,7 @@ async def _diarize_chunked(rec_id: str, manifest: Manifest, c: WorkerConfig):
 
 @activity.defn
 async def diarize(rec_id: str) -> dict:
+    _rehydrate_if_vault(rec_id)
     c = cfg()
     if not c.diarization.enabled:
         # Diarization disabled by config: no HTTP, no attempt counted, and no
@@ -437,6 +508,7 @@ async def diarize(rec_id: str) -> dict:
 
 @activity.defn
 async def merge_speakers(rec_id: str) -> dict:
+    _rehydrate_if_vault(rec_id)
     set_stage(rec_id, "merge_speakers", StageStatus.running, inc_attempts=True)
     try:
         from .merge import write_diarized_transcript
@@ -471,6 +543,7 @@ async def merge_speakers(rec_id: str) -> dict:
 
 @activity.defn
 async def summarize(rec_id: str) -> dict:
+    _rehydrate_if_vault(rec_id)
     set_stage(rec_id, "summarize", StageStatus.running, inc_attempts=True)
     c = cfg()
     if not (c.summarize.enabled and c.summarize.model):
@@ -618,6 +691,7 @@ async def enrich(rec_id: str) -> dict:
     ``enrich.write_to_graph``), so tag edits between regenerates leave
     no stale copies behind.
     """
+    _rehydrate_if_vault(rec_id)
     set_stage(rec_id, "enrich", StageStatus.running, inc_attempts=True)
     c = cfg()
     if not c.graph.enabled:

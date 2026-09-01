@@ -11,15 +11,13 @@ namespace; subsequent runs are only needed after a model switch (the
 index meta mismatch rebuild catches those lazily anyway — this script
 is the eager path).
 """
-
-from __future__ import annotations
-
 import argparse
 import logging
 import sys
 
 from .config import load_config
 from .db import Recording, RecordingState, init_engine, session
+from .export import resolve_meta_dir
 from .semantic_index import index_segments
 
 log = logging.getLogger("transcripter.backfill_index")
@@ -55,7 +53,6 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config()
     init_engine(cfg.database.url)
-    roots = cfg.recordings_root
 
     recs = _recordings(args.tag)
     log.info("backfill_index: %d candidate recordings", len(recs))
@@ -63,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     empty = 0
     failed = 0
     for rec_id, title, tags in recs:
-        meta_dir = roots / rec_id / "meta"
+        meta_dir = resolve_meta_dir(cfg, rec_id)
         if not (meta_dir / "transcript.md").is_file():
             continue
         for t in tags or ["untagged"]:

@@ -88,6 +88,17 @@ def vault_audio(cfg: ServerConfig, recording_id: str) -> Path | None:
             return candidate
     return None
 
+def vault_meta_artifact(cfg: ServerConfig, recording_id: str, rel: str) -> Path | None:
+    """A meta artifact (``transcript.md``, ``events.json``, …) from the
+    vault mirror (``<folder>/.transcripter/meta/``) when the storage copy
+    is gone — the read-side counterpart of the worker's meta move. None
+    when the vault holds no copy (never-generated artifact)."""
+    for folder in scan_recording_folders(cfg, recording_id):
+        candidate = folder / ".transcripter" / "meta" / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
 
 def delete_recording_folders(cfg: ServerConfig, recording_id: str) -> list[Path]:
     """Remove the recording's exported folder(s) from the vault — notes,
@@ -157,7 +168,15 @@ def _read_events_json(cfg: ServerConfig, recording_id: str) -> dict | None:
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return None
+        # Vault mode: the meta tree moved into the vault mirror.
+        mirror = vault_meta_artifact(cfg, recording_id, "events.json")
+        if mirror is None:
+            return None
+        try:
+            raw = mirror.read_text(encoding="utf-8")
+        except OSError as exc:
+            _LOG.warning("vault: unreadable events.json for %s: %s", recording_id, exc)
+            return None
     except OSError as exc:
         _LOG.warning("vault: unreadable events.json for %s: %s", recording_id, exc)
         return None

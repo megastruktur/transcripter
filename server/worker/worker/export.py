@@ -35,7 +35,7 @@ import shutil
 import uuid
 from dataclasses import dataclass
 from dataclasses import field as _dataclass_field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -285,6 +285,77 @@ def vault_audio_path(folder: Path) -> Path:
     """``<note-folder>/.transcripter/audio.flac`` — the vault-side audio
     location (worker regen + API streaming read it when storage is empty)."""
     return folder / HIDDEN_DIR / AUDIO_NAME
+
+def vault_meta_dir(folder: Path) -> Path:
+    """``<note-folder>/.transcripter/meta`` — the vault-side mirror of the
+    pipeline's ``/storage/recordings/{id}/meta``. The export stage moves
+    every meta artifact here once the recording is done; storage becomes
+    disposable scratch (regenerate rehydrates from this mirror first)."""
+    return folder / HIDDEN_DIR / "meta"
+
+
+def resolve_meta_dir(c: object, rec_id: str) -> Path:
+    """Where a recording's meta artifacts live RIGHT NOW: storage when the
+    pipeline (or a rehydrate) put them there, else the vault mirror after
+    the export move. Storage wins whenever it holds a transcript — partial
+    trees (mid-pipeline) always resolve to storage. Vault scan only in
+    vault mode (in storage mode path IS the storage-derived transcripts
+    dir; scanning it would be a tautology)."""
+    storage = Path(c.recordings_root) / rec_id / "meta"  # type: ignore[attr-defined]
+    if (storage / "transcript.md").is_file() or (storage / "diarized-transcript.md").is_file():
+        return storage
+    vault_cfg = c.vault  # type: ignore[attr-defined]
+    if getattr(vault_cfg, "mode", "storage") == "vault":
+        scan_rec = Rec(rec_id, "", datetime.now(UTC), None)
+        for folder in scan_recording_folders(vault_cfg.path, scan_rec):  # type: ignore[attr-defined]
+            cand = vault_meta_dir(folder)
+            if (cand / "transcript.md").is_file() or (cand / "diarized-transcript.md").is_file():
+                return cand
+    return storage
+
+
+def move_meta_to_vault(meta: Path, folder: Path) -> int:
+    """Copy-verify-unlink every file under ``meta`` into
+    ``folder/.transcripter/meta/`` (same move semantics as the audio:
+    nothing is removed from storage until the vault copy is verified by
+    size). Idempotent per file — a retry skips already-moved pairs.
+    Returns the number of files moved this run."""
+    moved = 0
+    mirror = vault_meta_dir(folder)
+    for src in sorted(meta.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(meta)
+        dst = mirror / rel
+        if dst.is_file() and dst.stat().st_size == src.stat().st_size:
+            src.unlink()  # idempotent completion of a previous partial move
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(f".{dst.name}.{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            shutil.copyfile(src, tmp)
+            if tmp.stat().st_size != src.stat().st_size:
+                raise ExportError(
+                    f"meta copy {rel} failed size verify; storage copy kept"
+                )
+            os.replace(tmp, dst)
+        finally:
+            tmp.unlink(missing_ok=True)
+        src.unlink()
+        moved += 1
+    # Prune the emptied storage tree (dirs only — every file is gone or
+    # was already gone; a non-empty survivor keeps its dirs).
+    for d in sorted(meta.rglob("*"), reverse=True):
+        if d.is_dir():
+            try:
+                d.rmdir()
+            except OSError:
+                break  # non-empty (partial move) — keep for the retry
+    try:
+        meta.rmdir()
+    except OSError:
+        pass
+    return moved
 
 
 def _sha256_of(path: Path) -> str:
@@ -707,7 +778,7 @@ def run(rec_id: str, rename_only: bool = False) -> Path | None:
     profiles_dir = profiles_dir.path if profiles_dir is not None else None
     if rename_only:
         return rename_folder(cfg.vault.path, rec, zone, cfg.vault.sentinel)
-    meta = cfg.recordings_root / rec_id / "meta"
+    meta = resolve_meta_dir(cfg, rec_id)
     audio = cfg.recordings_root / rec_id / "audio.flac"
     path = export_recording(
         cfg.vault.path,
@@ -719,6 +790,29 @@ def run(rec_id: str, rename_only: bool = False) -> Path | None:
         audio_src=audio,
     )
     if path is not None:
+        # Vault mode: storage is scratch — carry the meta tree into the
+        # vault mirror and drop what remains of the storage dir. Only when
+        # the meta actually lived in storage (a re-export after a
+        # rehydrate reads the vault mirror directly; moving it "into
+        # itself" would unlink the vault copy as already-moved).
+        storage_meta = cfg.recordings_root / rec_id / "meta"
+        if (
+            getattr(cfg.vault, "mode", "storage") == "vault"
+            and meta == storage_meta
+            and storage_meta.is_dir()
+        ):
+            moved = move_meta_to_vault(storage_meta, path)
+            if moved:
+                log.info("export: moved %d meta files for %s to vault", moved, rec_id)
+        # With the meta tree gone there is nothing app-owned left in the
+        # storage dir (audio moved earlier); drop the dir itself — storage
+        # is scratch in vault mode. rmdir: refuses a non-empty dir (a
+        # stranded file keeps its dir; backfill retries).
+        rec_dir = cfg.recordings_root / rec_id
+        try:
+            rec_dir.rmdir()
+        except OSError:
+            pass
         sweep_stale_notes(cfg.vault.path, rec, path, _whitelist(profiles_dir))
         _refresh_dashboard(cfg, zone)
     return path

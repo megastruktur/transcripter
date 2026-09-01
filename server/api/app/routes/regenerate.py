@@ -97,9 +97,15 @@ def get_artifact(
 
     cfg = _cfg(request)
     rec_root = cfg.recordings_root / recording_id
+    from app.vault import vault_meta_artifact
+
     for rel in candidates:
-        p: Path = rec_root / rel
-        if p.exists():
+        p: Path | None = rec_root / rel
+        if not p.exists():
+            # Vault mode: the export moved the meta tree into the vault
+            # mirror; serve artifacts from there.
+            p = vault_meta_artifact(cfg, recording_id, rel.removeprefix("meta/"))
+        if p is not None and p.exists():
             media = "text/markdown" if p.suffix == ".md" else "application/json"
             return FileResponse(p, media_type=media)
     raise HTTPException(status_code=404, detail="artifact not generated yet")
@@ -175,5 +181,10 @@ def summary_plain(
     cfg = _cfg(request)
     p = cfg.recordings_root / recording_id / "meta" / "summary.md"
     if not p.exists():
+        # Vault mode: the meta tree moved into the vault mirror.
+        from app.vault import vault_meta_artifact
+
+        p = vault_meta_artifact(cfg, recording_id, "summary.md")
+    if p is None or not p.exists():
         raise HTTPException(status_code=404, detail="summary not generated")
     return PlainTextResponse(p.read_text(encoding="utf-8"), media_type="text/markdown")
