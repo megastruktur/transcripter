@@ -676,52 +676,60 @@
 		{:else}
 		<audio bind:this={audioEl} class="audio-player" controls preload="metadata" src={audioUrl(loadApiConfig(), recording.id)} onloadedmetadata={handleAudioMetadata}></audio>
 		{/if}
-		{#if activeTab === 'summary' && recapUsed}
-			<p class="recap-chip">
-				<Icon name="enrich" size={11} />
-				Memory applied
-			</p>
-		{/if}
-
 		<ViewTabs tabs={ARTIFACT_VIEWS} active={activeTab} ariaLabel="Artifact views" onchange={(key) => (activeTab = key as ArtifactTabKey)} />
-		<div class="artifact-panel" role="tabpanel" aria-label={TAB_SPECS[activeTab].label}>
-			{#if tabLoading}
-				<p class="tab-placeholder">Retrieving archive…</p>
-			{:else if currentTab?.kind === 'ready' && activeTab === 'events'}
-				{@const events = parseEventsArtifact(currentTab.text)}
-				{#if events === null}
-					<p class="tab-placeholder">No events extracted yet.</p>
-				{:else}
-					<div class="events-body">
-						{#each events.events as event, index (index + event.ts + event.summary)}
-							<button class="event-row" type="button" title="Jump to {event.ts}" onclick={() => seekToEvent(event.ts)}>
-								<span class="event-ts">{event.ts}</span>
-								<span class="event-kind">{event.kind}</span>
-								<span class="event-summary">{event.summary}</span>
-								{#if event.mentions.length > 0}
-									<span class="event-mentions">
-										{#each event.mentions as mention (mention)}
-											<span class="event-mention">{mention}</span>
-										{/each}
-									</span>
-								{/if}
-							</button>
-						{:else}
-							<p class="tab-placeholder">No events extracted yet.</p>
-						{/each}
+		<div class="artifact-panel">
+			{#each ARTIFACT_VIEWS as view (view.key)}
+				{#if view.key === activeTab || tabData[view.key] !== undefined}
+					<div class="artifact-view" class:hidden={view.key !== activeTab} role="tabpanel" aria-label={TAB_SPECS[view.key].label} data-tab={view.key}>
+						{#if view.key === activeTab && tabLoading}
+							<p class="tab-placeholder">Retrieving archive…</p>
+						{:else if tabData[view.key]?.kind === 'ready' && view.key === 'events'}
+							{@const data = tabData[view.key] as { kind: 'ready'; text: string }}
+							{@const events = parseEventsArtifact(data.text)}
+							{#if events === null}
+								<p class="tab-placeholder">No events extracted yet.</p>
+							{:else}
+								<div class="events-body">
+									{#each events.events as event, index (index + event.ts + event.summary)}
+										<button class="event-row" type="button" title="Jump to {event.ts}" onclick={() => seekToEvent(event.ts)}>
+											<span class="event-ts">{event.ts}</span>
+											<span class="event-kind">{event.kind}</span>
+											<span class="event-summary">{event.summary}</span>
+											{#if event.mentions.length > 0}
+												<span class="event-mentions">
+													{#each event.mentions as mention (mention)}
+														<span class="event-mention">{mention}</span>
+													{/each}
+												</span>
+											{/if}
+										</button>
+									{:else}
+										<p class="tab-placeholder">No events extracted yet.</p>
+									{/each}
+								</div>
+							{/if}
+						{:else if tabData[view.key]?.kind === 'ready'}
+							{@const data = tabData[view.key] as { kind: 'ready'; text: string }}
+							{#if view.key === 'summary' && recapUsed}
+								<p class="recap-chip">
+									<Icon name="enrich" size={11} />
+									Memory applied
+								</p>
+							{/if}
+							{#if TAB_SPECS[view.key].markdown}
+								<Markdown text={data.text} />
+							{:else}
+								<pre>{data.text}</pre>
+							{/if}
+						{:else if tabData[view.key]?.kind === 'missing'}
+							<p class="tab-placeholder">{view.key === 'events' ? 'No events extracted yet.' : 'This artifact has not been generated yet.'}</p>
+						{:else if tabData[view.key]?.kind === 'error'}
+							{@const errData = tabData[view.key] as { kind: 'error'; message: string }}
+							<p class="tab-error" role="alert">{errData.message}</p>
+						{/if}
 					</div>
 				{/if}
-			{:else if currentTab?.kind === 'ready'}
-				{#if TAB_SPECS[activeTab].markdown}
-					<Markdown text={currentTab.text} />
-				{:else}
-					<pre>{currentTab.text}</pre>
-				{/if}
-			{:else if currentTab?.kind === 'missing'}
-				<p class="tab-placeholder">{activeTab === 'events' ? 'No events extracted yet.' : 'This artifact has not been generated yet.'}</p>
-			{:else if currentTab?.kind === 'error'}
-				<p class="tab-error" role="alert">{currentTab.message}</p>
-			{/if}
+			{/each}
 		</div>
 
 	{/if}
@@ -757,10 +765,14 @@
 	.digest-row { display: flex; flex-wrap: wrap; gap: 6px; }
 	.digest-button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid rgba(215,167,71,.26); border-radius: 2px; background: rgba(215,167,71,.06); color: var(--brass); font-size: 10px; font-weight: 650; cursor: pointer; }
 	.digest-button:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
-	.digest-button.active { border-color: var(--brass); background: rgba(215,167,71,.16); }
+	/* The chip belongs to the Summary artifact content, not to the page flow:
+	 * when it sat above the tab strip, entering Summary shifted the tabs down.
+	 * Inside the panel it scrolls with the summary; the margin keeps it clear
+	 * of the markdown body below. inline-flex — display:flex would stretch
+	 * the chip banner-wide across the view. */
+	.recap-chip { display: inline-flex; align-self: flex-start; align-items: center; gap: 5px; margin: 0 0 8px; padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; color: var(--brass); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 	.audio-player { width: 100%; height: 36px; border-radius: 2px; background: rgba(0,0,0,.14); color-scheme: dark; accent-color: var(--brass); }
 	.audio-note { margin: 0; font-size: 11px; color: var(--ash); }
-	.recap-chip { display: inline-flex; align-items: center; gap: 5px; margin: 0; padding: 2px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; color: var(--brass); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 	.events-body { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
 	.event-row { width: 100%; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 4px 8px; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: inherit; text-align: left; cursor: pointer; transition: background 120ms ease; }
 	.event-row:hover { background: rgba(255,255,255,.03); }
@@ -771,7 +783,18 @@
 	.event-mentions { grid-column: 3; display: flex; flex-wrap: wrap; gap: 4px; }
 	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.artifact-panel { flex: 1 1 auto; min-height: 220px; display: flex; flex-direction: column; overflow: hidden; background: rgba(0,0,0,.22); border-radius: 3px; box-shadow: inset 0 1px 3px rgba(0,0,0,.4); }
-	.artifact-panel pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	/* Keep-alive shell: visited views stay mounted (switching back is free —
+	 * no re-parse of marked/DOMPurify), hidden ones skip layout and paint
+	 * entirely. Only views whose tab was ever activated render content, so
+	 * the mount of a single view never parses all five artifacts at once. */
+	.artifact-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+	.artifact-view.hidden { display: none; }
+	.artifact-view pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	/* JSON artifacts are one huge <pre> — no block boundaries to skip per
+	 * child, so windowed rendering needs the pre itself to be the
+	 * content-visibility root. Markdown bodies get the same treatment on
+	 * their children inside Markdown.svelte. */
+	.artifact-view pre { content-visibility: auto; contain-intrinsic-size: auto 500px; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
 	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
 	.rename-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; }

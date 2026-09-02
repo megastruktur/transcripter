@@ -66,6 +66,14 @@
 		scrollbar-width: thin;
 		scrollbar-color: var(--red-dark) transparent;
 	}
+	/* Render only the blocks inside the visible window of the scroller:
+	 * transcripts and summaries are hundreds of top-level blocks, and
+	 * laying out all of them on mount is the single heaviest render in the
+	 * app (Android WebView especially). c-v on the *children* (not the
+	 * .markdown-body root — the root is always in view, so root-level
+	 * skipping never triggers) lets the engine skip off-screen blocks and
+	 * keep their measured size once visited (contain-intrinsic-size auto). */
+	.markdown-body > :global(*) { content-visibility: auto; contain-intrinsic-size: auto 120px; }
 	.markdown-body > :global(:first-child) { margin-top: 0; }
 	.markdown-body > :global(:last-child) { margin-bottom: 0; }
 	.markdown-body :global(h1),
