@@ -210,6 +210,76 @@ def test_apply_event_update_patches_graph_and_artifact(tmp_path: Path) -> None:
     assert set_calls and "$summary" in _query_text(set_calls[0])
 
 
+def test_apply_event_update_legacy_node_without_event_key(tmp_path: Path) -> None:
+    """Nodes enriched before event_key existed carry no such property in
+    the graph; the API timeline still serves their computed key. The
+    anchor fallback must match by (origin, ts, kind, before_summary),
+    verify the computed key, and stamp the property (self-heal)."""
+    cfg = _Cfg(tmp_path / "recordings", tmp_path / "vault")
+    rid = "rec-legacy"
+    key = compute_event_key(rid, "00:10", "note", "Glennis built it")
+    doc = {
+        "events": [
+            {"ts": "00:10", "kind": "note", "summary": "Glennis built it", "mentions": []}
+        ]
+    }
+    path = _write_doc(tmp_path / "recordings", rid, doc)
+
+    driver = MagicMock()
+    session = MagicMock()
+    session.__enter__ = MagicMock(return_value=session)
+    session.__exit__ = MagicMock(return_value=False)
+
+    legacy_row = {
+        "id": "elem-legacy",
+        "ts": "00:10",
+        "kind": "note",
+        "summary": "Glennis built it",
+        "origin": rid,
+        "title": "t",
+    }
+
+    def run(q=None, *, query=None, **params):
+        q = query if q is None else q
+        if "SET e.event_key" in q:
+            return _Row({"n": 1})
+        if "event_key IS NULL" in q:
+            return _Iter([legacy_row])
+        if "$key" in q and "event_key" in q:
+            # Property match misses: no node carries the key yet.
+            class _NoneRow:
+                def single(self):
+                    return None
+
+            return _NoneRow()
+        return _Row({"n": 0})
+
+    session.run = MagicMock(side_effect=run)
+    driver.session = MagicMock(return_value=session)
+    driver.__enter__ = MagicMock(return_value=driver)
+    driver.__exit__ = MagicMock(return_value=False)
+
+    with patch("worker.graph_edit.GraphDatabase.driver", return_value=driver):
+        out = apply_event_update(
+            cfg,
+            _paths(tmp_path),
+            "quest",
+            key,
+            {"summary": "The operator built it"},
+            {
+                "origin_recording_id": rid,
+                "kind": "note",
+                "ts": "00:10",
+                "before_summary": "Glennis built it",
+            },
+        )
+    assert out["ok"] is True
+    assert _read_doc(path)["events"][0]["summary"] == "The operator built it"
+    # Self-heal: the node got stamped with the served key.
+    heal = [c for c in session.run.call_args_list if "SET e.event_key" in str(c)]
+    assert heal and heal[0].kwargs["key"] == key
+
+
 def test_apply_event_delete_removes_from_graph_and_artifact(tmp_path: Path) -> None:
     cfg = _Cfg(tmp_path / "recordings", tmp_path / "vault")
     rid = "rec-4"

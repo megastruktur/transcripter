@@ -1407,7 +1407,9 @@ async def apply_graph_edit(args: dict) -> dict:
                 )
             paths = vault_paths_for(c, origin)
             if edit["op"] == EditOp.delete:
-                result = apply_event_delete(c, paths, tag, edit["obj_key"])
+                result = apply_event_delete(
+                    c, paths, tag, edit["obj_key"], edit["anchor"]
+                )
             else:
                 result = apply_event_update(
                     c, paths, tag, edit["obj_key"], edit["after"], edit["anchor"]
@@ -1606,7 +1608,20 @@ async def fix_apply(args: dict) -> dict:
                 rid, key = _locate_event(current_events, op["event_key"])
                 paths = vault_paths_for(c, rid)
                 if kind == "event_delete":
-                    result = apply_event_delete(c, paths, tag, key)
+                    result = apply_event_delete(
+                        c,
+                        paths,
+                        tag,
+                        key,
+                        {
+                            "origin_recording_id": rid,
+                            "kind": _event_field(current_events, key, "kind"),
+                            "ts": _event_field(current_events, key, "ts"),
+                            "before_summary": _event_field(
+                                current_events, key, "summary"
+                            ),
+                        },
+                    )
                 else:
                     anchor = {
                         "origin_recording_id": rid,

@@ -149,11 +149,19 @@ def _driver(cfg: Any):
     )
 
 
-def _find_event_node(session: Any, tag: str, event_key: str) -> dict | None:
+def _find_event_node(
+    session: Any, tag: str, event_key: str, anchor: dict[str, Any] | None = None
+) -> dict | None:
     """The (tag, event_key) event node as a plain dict, None when absent.
-    Legacy nodes without the property never match — the API serves
-    computed keys and the events.json rewrite SETs the property on
-    first edit, so within one generation addressing is exact."""
+
+    Legacy fallback: recordings enriched before event_key existed have
+    NO such property in the graph, while the API timeline still serves
+    their computed keys (the app.vault twin) — a property-only MATCH
+    made every legacy event uneditable (the edit row went orphaned with
+    "event not found in namespace"). When the property match misses and
+    the edit carries its anchor, match legacy nodes by the anchor
+    fields and verify the computed key, then SET the property so the
+    next edit hits the fast path."""
     row = session.run(
         "MATCH (e {tag: $tag, event_key: $key}) "
         "RETURN elementId(e) AS id, e.ts AS ts, e.kind AS kind, "
@@ -162,7 +170,46 @@ def _find_event_node(session: Any, tag: str, event_key: str) -> dict | None:
         tag=tag,
         key=event_key,
     ).single()
-    return dict(row) if row is not None else None
+    if row is not None:
+        return dict(row)
+    anchor = anchor or {}
+    origin = anchor.get("origin_recording_id") or ""
+    if not origin:
+        return None
+    rows = session.run(
+        "MATCH (e {tag: $tag}) WHERE e.event_key IS NULL "
+        "AND e.origin_recording_id = $origin "
+        "RETURN elementId(e) AS id, e.ts AS ts, e.kind AS kind, "
+        "e.summary AS summary, e.origin_recording_id AS origin, "
+        "e.recording_title AS title",
+        tag=tag,
+        origin=origin,
+    )
+    anchor_ts = anchor.get("ts") or ""
+    anchor_kind = anchor.get("kind") or ""
+    anchor_summary = anchor.get("before_summary") or ""
+    for cand in rows:
+        c = dict(cand)
+        base = compute_event_key(
+            origin, c.get("ts") or "", c.get("kind") or "", c.get("summary") or ""
+        )
+        if event_key != base and not event_key.startswith(f"{base}-"):
+            continue
+        if anchor_ts and (c.get("ts") or "") != anchor_ts:
+            continue
+        if anchor_kind and (c.get("kind") or "") != anchor_kind:
+            continue
+        if anchor_summary and (c.get("summary") or "") != anchor_summary:
+            continue
+        # Self-heal: stamp the served key so subsequent edits match on
+        # the property directly.
+        session.run(
+            "MATCH (e) WHERE elementId(e) = $id SET e.event_key = $key",
+            id=c["id"],
+            key=event_key,
+        )
+        return c
+    return None
 
 
 def _recording_events(session: Any, origin: str) -> list[dict]:
@@ -194,7 +241,7 @@ def apply_event_update(
     payload (missing fields filled from the current node) + re-anchor
     context for the edit row."""
     with _driver(cfg) as driver, driver.session(database=cfg.graph.database) as session:
-        node = _find_event_node(session, tag, event_key)
+        node = _find_event_node(session, tag, event_key, anchor)
         if node is None:
             return {"ok": False, "reason": "event not found in namespace"}
         sets: list[str] = []
@@ -247,9 +294,11 @@ def node_kind(node: dict) -> str:
     return node.get("kind") or ""
 
 
-def apply_event_delete(cfg: Any, paths: VaultPaths, tag: str, event_key: str) -> dict[str, Any]:
+def apply_event_delete(
+    cfg: Any, paths: VaultPaths, tag: str, event_key: str, anchor: dict[str, Any] | None = None
+) -> dict[str, Any]:
     with _driver(cfg) as driver, driver.session(database=cfg.graph.database) as session:
-        node = _find_event_node(session, tag, event_key)
+        node = _find_event_node(session, tag, event_key, anchor)
         if node is None:
             return {"ok": False, "reason": "event not found in namespace"}
         session.run("MATCH (e) WHERE elementId(e) = $id DETACH DELETE e", id=node["id"])
