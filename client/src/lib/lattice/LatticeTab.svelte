@@ -14,8 +14,12 @@
 	import Skeleton from '$lib/Skeleton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import {
+		createGraphRelation,
+		deleteGraphEntity,
+		deleteGraphRelation,
 		fetchGraph,
 		loadApiConfig,
+		mergeGraphEntities,
 		type GraphEntity,
 		type GraphRelation
 	} from '$lib/api.svelte';
@@ -148,6 +152,106 @@
 	function labelOf(slug: string): string {
 		return entities.find((e) => e.slug === slug)?.label ?? slug;
 	}
+
+	// --- Drawer edit actions (phase A surface): entity delete/merge,
+	// relation create/delete. Deletes are two-step (arm → confirm) —
+	// never a native dialog; one recess open at a time.
+	let actSaving = $state(false);
+	let actError = $state('');
+	let mergeOpen = $state(false);
+	let linkOpen = $state(false);
+	let delArmed = $state(false);
+	let mergeTarget = $state('');
+	let linkTarget = $state('');
+	let linkType = $state('');
+	let actionFeedback = $state('');
+	let edgeArmed = $state('');
+
+	const drawerTargets = $derived(entities.filter((e) => e.slug !== pickedSlug));
+
+	function resetActions(): void {
+		mergeOpen = false;
+		linkOpen = false;
+		delArmed = false;
+		edgeArmed = '';
+		actError = '';
+		actionFeedback = '';
+	}
+
+	function openMerge(): void {
+		resetActions();
+		mergeOpen = true;
+		mergeTarget = '';
+	}
+
+	function openLink(): void {
+		resetActions();
+		linkOpen = true;
+		linkTarget = '';
+		linkType = '';
+	}
+
+	async function runAction(work: () => Promise<unknown>): Promise<boolean> {
+		actSaving = true;
+		actError = '';
+		try {
+			await work();
+			await refresh();
+			return true;
+		} catch {
+			actError = 'The server refused the edit — nothing changed.';
+			return false;
+		} finally {
+			actSaving = false;
+		}
+	}
+
+	async function doDeleteEntity(): Promise<void> {
+		if (!picked) return;
+		const slug = picked.slug;
+		if (await runAction(() => deleteGraphEntity(loadApiConfig(), tag, slug))) {
+			pickedSlug = null;
+			resetActions();
+		} else {
+			delArmed = false;
+		}
+	}
+
+	async function doMerge(): Promise<void> {
+		if (!picked || !mergeTarget) return;
+		const source = picked.slug;
+		if (await runAction(() =>
+			mergeGraphEntities(loadApiConfig(), tag, source, mergeTarget, actionFeedback.trim())
+		)) {
+			pickedSlug = mergeTarget; // the survivor keeps the drawer open
+			resetActions();
+		}
+	}
+
+	async function doLink(): Promise<void> {
+		if (!picked || !linkTarget || !linkType.trim()) return;
+		if (await runAction(() =>
+			createGraphRelation(
+				loadApiConfig(),
+				tag,
+				picked!.slug,
+				linkTarget,
+				linkType.trim(),
+				actionFeedback.trim()
+			)
+		)) {
+			resetActions();
+		}
+	}
+
+	async function doDeleteEdge(rel: GraphRelation): Promise<void> {
+		await runAction(() => deleteGraphRelation(loadApiConfig(), tag, rel.from, rel.to, rel.type));
+		edgeArmed = '';
+	}
+
+	function edgeKey(rel: GraphRelation): string {
+		return `${rel.from}|${rel.to}|${rel.type}`;
+	}
 </script>
 
 {#if loading}
@@ -220,10 +324,63 @@
 		<header class="lattice-drawer-head">
 			<strong>{picked.label}</strong>
 			<small>{picked.type || 'entity'} · {picked.sessions} session{picked.sessions === 1 ? '' : 's'}</small>
-			<button class="lattice-drawer-close" type="button" onclick={() => (pickedSlug = null)} aria-label="Close entity panel">
+			<button class="lattice-drawer-close" type="button" onclick={() => { pickedSlug = null; resetActions(); }} aria-label="Close entity panel">
 				<Icon name="close" size={11} strokeWidth={1.6} />
 			</button>
 		</header>
+		{#if mergeOpen}
+			<form
+				class="lattice-act-form"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void doMerge();
+				}}
+			>
+				<label class="lattice-act-label" for="lattice-merge-target">Fold “{picked.label}” into</label>
+				<select id="lattice-merge-target" class="lattice-act-select" bind:value={mergeTarget} disabled={actSaving}>
+					<option value="" disabled>pick the surviving entity…</option>
+					{#each drawerTargets as ent (ent.slug)}
+						<option value={ent.slug}>{ent.label}</option>
+					{/each}
+				</select>
+				<input class="lattice-act-input" type="text" aria-label="Correction rule (optional)" bind:value={actionFeedback} disabled={actSaving} maxlength="500" placeholder="correction rule — teaches future extractions" />
+				<div class="lattice-act-row">
+					<button class="lattice-act-save" type="submit" disabled={actSaving || !mergeTarget}>
+						<Icon name="refresh" size={11} strokeWidth={1.6} />
+						{actSaving ? 'Merging…' : 'Merge'}
+					</button>
+					<button class="lattice-act-cancel" type="button" disabled={actSaving} onclick={resetActions}>Cancel</button>
+				</div>
+			</form>
+		{:else if linkOpen}
+			<form
+				class="lattice-act-form"
+				onsubmit={(e) => {
+					e.preventDefault();
+					void doLink();
+				}}
+			>
+				<label class="lattice-act-label" for="lattice-link-target">Link “{picked.label}” to</label>
+				<select id="lattice-link-target" class="lattice-act-select" bind:value={linkTarget} disabled={actSaving}>
+					<option value="" disabled>pick an entity…</option>
+					{#each drawerTargets as ent (ent.slug)}
+						<option value={ent.slug}>{ent.label}</option>
+					{/each}
+				</select>
+				<input class="lattice-act-input" type="text" aria-label="Relation type" bind:value={linkType} disabled={actSaving} maxlength="100" placeholder="relation type (e.g. member_of)" />
+				<input class="lattice-act-input" type="text" aria-label="Correction rule (optional)" bind:value={actionFeedback} disabled={actSaving} maxlength="500" placeholder="correction rule — teaches future extractions" />
+				<div class="lattice-act-row">
+					<button class="lattice-act-save" type="submit" disabled={actSaving || !linkTarget || !linkType.trim()}>
+						<Icon name="refresh" size={11} strokeWidth={1.6} />
+						{actSaving ? 'Linking…' : 'Create'}
+					</button>
+					<button class="lattice-act-cancel" type="button" disabled={actSaving} onclick={resetActions}>Cancel</button>
+				</div>
+			</form>
+		{/if}
+		{#if actError}
+			<p class="lattice-act-error" role="alert">{actError}</p>
+		{/if}
 		{#if pickedEdges.length === 0}
 			<p class="lattice-empty">No relations touch this entity.</p>
 		{:else}
@@ -233,9 +390,42 @@
 					<strong>{labelOf(rel.from === picked.slug ? rel.to : rel.from)}</strong>
 					<em>{rel.type}</em>
 					<small>{rel.sessions}×</small>
+					{#if edgeArmed === edgeKey(rel)}
+						<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => void doDeleteEdge(rel)} title="Confirm delete">Del?</button>
+						<button class="lattice-edge-act" type="button" disabled={actSaving} onclick={() => (edgeArmed = '')} title="Cancel delete">No</button>
+					{:else}
+						<button
+							class="lattice-edge-act lattice-edge-danger"
+							type="button"
+							disabled={actSaving}
+							onclick={() => { resetActions(); edgeArmed = edgeKey(rel); }}
+							title="Delete relation"
+							aria-label={`Delete relation ${rel.type}`}
+						>
+							<Icon name="trash" size={10} strokeWidth={1.6} />
+						</button>
+					{/if}
 				</div>
 			{/each}
 		{/if}
+		<footer class="lattice-drawer-actions">
+			<button class="lattice-edge-act" type="button" disabled={actSaving || mergeOpen} onclick={openLink} title="Create a relation from this entity">
+				<Icon name="link" size={11} strokeWidth={1.6} />
+				Link…
+			</button>
+			<button class="lattice-edge-act" type="button" disabled={actSaving || linkOpen || drawerTargets.length === 0} onclick={openMerge} title="Fold this entity into another">
+				<Icon name="plus" size={11} strokeWidth={1.6} />
+				Merge…
+			</button>
+			{#if delArmed}
+				<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => void doDeleteEntity()} title="Confirm delete">Delete?</button>
+				<button class="lattice-edge-act" type="button" disabled={actSaving} onclick={() => (delArmed = false)} title="Cancel delete">No</button>
+			{:else}
+				<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => { resetActions(); delArmed = true; }} title="Delete entity" aria-label={`Delete entity ${picked.label}`}>
+					<Icon name="trash" size={11} strokeWidth={1.6} />
+				</button>
+			{/if}
+		</footer>
 	</aside>
 {/if}
 
@@ -279,4 +469,24 @@
 	.lattice-drawer-edge strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #ded3c4; }
 	.lattice-drawer-edge em { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; font-style: normal; }
 	.lattice-drawer-edge small { margin-left: auto; font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; }
+	.lattice-edge-act { display: inline-flex; align-items: center; gap: 4px; min-height: 20px; padding: 0 5px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); font-size: 9px; font-weight: 700; cursor: pointer; line-height: 0; }
+	.lattice-edge-act:hover:not(:disabled) { color: var(--bone); border-color: rgba(215,167,71,.4); }
+	.lattice-edge-act:disabled { opacity: 0.5; cursor: default; }
+	.lattice-edge-danger { color: #f36b60; }
+	.lattice-edge-danger:hover:not(:disabled) { color: #f36b60; border-color: var(--red); background: rgba(213,45,36,.1); }
+	.lattice-drawer-actions { display: flex; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); margin-top: 4px; }
+	.lattice-act-form { display: grid; gap: 6px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+	.lattice-act-label { font-size: 10px; color: var(--ash); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.lattice-act-select, .lattice-act-input { min-width: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 11px; font-family: inherit; }
+	.lattice-act-select:focus, .lattice-act-input:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
+	.lattice-act-input::placeholder { color: var(--ash); }
+	.lattice-act-select:disabled, .lattice-act-input:disabled { opacity: 0.6; }
+	.lattice-act-row { display: flex; gap: 6px; }
+	.lattice-act-save { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; min-height: 24px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.lattice-act-save:hover:not(:disabled) { background: rgba(215,167,71,.2); }
+	.lattice-act-save:disabled { opacity: 0.6; cursor: default; }
+	.lattice-act-cancel { display: inline-flex; align-items: center; gap: 5px; padding: 0 10px; min-height: 24px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.lattice-act-cancel:hover:not(:disabled) { color: var(--bone); border-color: rgba(215,167,71,.4); }
+	.lattice-act-cancel:disabled { opacity: 0.6; cursor: default; }
+	.lattice-act-error { margin: 0; padding: 4px 2px 0; color: #f36b60; font-size: 10px; }
 </style>
