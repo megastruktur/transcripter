@@ -11,12 +11,17 @@
 	import ViewTabs from '$lib/ViewTabs.svelte';
 	import Skeleton from '$lib/Skeleton.svelte';
 	import LatticeTab from '$lib/lattice/LatticeTab.svelte';
+	import CorrectionsTab from '$lib/vault/CorrectionsTab.svelte';
+	import EventCard from '$lib/vault/EventCard.svelte';
 	import {
 		fetchTimeline,
 		fetchDigest,
+		fetchDigestStatus,
 		regenerateDigest,
 		searchTag,
 		patchEntity,
+		patchGraphEvent,
+		deleteGraphEvent,
 		loadApiConfig,
 		type TimelineResponse,
 		type TimelineSession,
@@ -27,12 +32,13 @@
 
 	const tag = decodeURIComponent(page.params.tag ?? '');
 
-	type TabKey = 'timeline' | 'entities' | 'lattice' | 'digest';
-	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'summary' }[] = [
+	type TabKey = 'timeline' | 'entities' | 'lattice' | 'digest' | 'corrections';
+	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'summary' | 'shield' }[] = [
 		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
 		{ key: 'entities', label: 'Entities', icon: 'speakers' },
 		{ key: 'lattice', label: 'Lattice', icon: 'speakers' },
-		{ key: 'digest', label: 'Digest', icon: 'summary' }
+		{ key: 'digest', label: 'Digest', icon: 'summary' },
+		{ key: 'corrections', label: 'Corrections', icon: 'shield' }
 	];
 	let tab = $state<TabKey>('timeline');
 	let data = $state<TimelineResponse | null>(null);
@@ -54,6 +60,8 @@
 	let digestNote = $state('');
 	let digestPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
 	let digestLoaded = false;
+	let digestStatus = $state<{ state: 'fresh' | 'queued'; last_edit_at: string | null; debounce_sec: number } | null>(null);
+	let digestStatusTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
 
 	// Phase 3.5 semantic search: query embedded server-side (same backend
 	// that indexed the tag's segments), hits listed under the input; a hit
@@ -261,11 +269,73 @@ async function runSearch(): Promise<void> {
 			digestLoaded = true;
 			void loadDigest();
 		}
+		if (next === 'digest') {
+			void refreshDigestStatus();
+		} else {
+			clearDigestStatusPoll();
+		}
 	}
+
 
 	function toggleSession(id: string): void {
 		openSession = openSession === id ? null : id;
 	}
+
+	// Digest renewal status poll: 10s tick while on the digest tab — the lamp shows the maintenance workflow's state.
+	async function refreshDigestStatus(): Promise<void> {
+		try {
+			digestStatus = await fetchDigestStatus(loadApiConfig(), tag);
+		} catch {
+			digestStatus = null;
+		}
+		if (tab === 'digest') {
+			if (digestStatusTimer) globalThis.clearTimeout(digestStatusTimer);
+			digestStatusTimer = globalThis.setTimeout(() => void refreshDigestStatus(), 10_000);
+		}
+	}
+
+	function clearDigestStatusPoll(): void {
+		if (digestStatusTimer) {
+			globalThis.clearTimeout(digestStatusTimer);
+			digestStatusTimer = null;
+		}
+	}
+
+	// Phase A event edit handlers: a single 202 then a settle refetch; the Digest lamp flips on its own poll.
+	let eventSaving = $state(false);
+
+	async function applyEventEdit(
+		eventKey: string,
+		fields: { ts?: string; kind?: string; summary?: string; mentions?: string[] },
+		feedback: string
+	): Promise<boolean> {
+		if (eventSaving) return false;
+		eventSaving = true;
+		try {
+			await patchGraphEvent(loadApiConfig(), tag, eventKey, { ...fields, feedback_text: feedback || undefined });
+			globalThis.setTimeout(() => void refresh(), 2_000);
+			return true;
+		} catch {
+			return false;
+		} finally {
+			eventSaving = false;
+		}
+	}
+
+	async function removeEvent(eventKey: string): Promise<boolean> {
+		if (eventSaving) return false;
+		eventSaving = true;
+		try {
+			await deleteGraphEvent(loadApiConfig(), tag, eventKey);
+			globalThis.setTimeout(() => void refresh(), 2_000);
+			return true;
+		} catch {
+			return false;
+		} finally {
+			eventSaving = false;
+		}
+	}
+
 
 	function sessionDate(session: TimelineSession): string {
 		return dateLabel(session.date);
@@ -349,20 +419,14 @@ async function runSearch(): Promise<void> {
 						{#if openSession === session.recording_id}
 							<div class="event-list">
 								{#each session.events as event, index (index + event.ts + event.summary)}
-									<div class="event-card" style="--event-accent: {kindAccent(event.kind)}">
-										<div class="event-head">
-											<span class="event-ts">{event.ts}</span>
-											<span class="event-kind" title={event.kind}>{event.kind}</span>
-										</div>
-										<p class="event-summary">{event.summary}</p>
-										{#if event.mentions.length > 0}
-											<div class="event-mentions">
-												{#each event.mentions as mention (mention)}
-													<span class="event-mention">{mention}</span>
-												{/each}
-											</div>
-										{/if}
-									</div>
+									<EventCard
+										{event}
+										eventKey={event.event_key}
+										accent={kindAccent(event.kind)}
+										saving={eventSaving}
+										onedit={(fields, feedback) => applyEventEdit(event.event_key, fields, feedback)}
+										ondelete={() => removeEvent(event.event_key)}
+									/>
 								{:else}
 									<p class="event-empty">No events extracted for this session.</p>
 								{/each}
@@ -437,8 +501,10 @@ async function runSearch(): Promise<void> {
 				entitiesSeed={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type, sessions: e.sessions }))}
 				relationsSeed={[]}
 			/>
+		{:else if tab === 'corrections'}
+			<CorrectionsTab {tag} onchanged={() => { void refresh(); void refreshDigestStatus(); }} />
 		{:else}
-			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} onregen={() => void regenerateDigestNow()} />
+			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} queued={digestStatus?.state === 'queued'} onregen={() => void regenerateDigestNow()} />
 		{/if}
 	{/if}
 </section>
@@ -464,14 +530,6 @@ async function runSearch(): Promise<void> {
 	   form the timeline spine. Cyan is deliberately absent — it belongs to
 	   verified state, not taxonomy. */
 	.event-list { display: grid; padding: 0 11px 8px 27px; }
-	.event-card { display: grid; gap: 5px; padding: 8px 10px 8px 9px; border-left: 2px solid var(--event-accent, var(--brass)); background: rgba(0,0,0,.18); border-radius: 0 3px 3px 0; box-shadow: inset 0 1px 3px rgba(0,0,0,.32); }
-	.event-card + .event-card { margin-top: 6px; }
-	.event-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-	.event-ts { font: 10px/1.4 "SFMono-Regular", Consolas, monospace; color: var(--brass); font-variant-numeric: tabular-nums; }
-	.event-kind { color: var(--ash); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.event-summary { margin: 0; color: #c7bbad; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
-	.event-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 1px; }
-	.event-mention { padding: 1px 6px; border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 650; line-height: 1.4; }
 	.event-empty { margin: 0; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ash); font-size: 11px; }
 	.entity-row { grid-template-columns: 1fr auto; }
 	.entity-row:not(:last-child) { border-bottom: 1px solid var(--line); }

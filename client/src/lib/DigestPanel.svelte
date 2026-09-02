@@ -10,11 +10,14 @@
 		note: string;
 		missing: boolean;
 		text: string | null;
+		/** Phase D: true while the newest graph edit is newer than the digest note — the maintenance workflow will rewrite it
+		 * after the debounce. The lamp carries "Digest renewal queued". */
+		queued?: boolean;
 		onregen: () => void;
 		onclose?: () => void;
 	};
 
-	let { tag, loading, generating, error, note, missing, text, onregen, onclose }: Props = $props();
+	let { tag, loading, generating, error, note, missing, text, queued, onregen, onclose }: Props = $props();
 </script>
 
 <section class="digest-panel" aria-label={`Digest · ${tag}`}>
@@ -24,6 +27,9 @@
 			Digest
 			<span class="digest-tag-name">{tag}</span>
 		</span>
+		{#if queued}
+			<span class="digest-queued" title="The newest edit is newer than this digest — the maintenance workflow will rewrite it shortly.">Digest renewal queued</span>
+		{/if}
 		<button type="button" class="digest-regen" disabled={generating} onclick={onregen}>
 			<Icon name="refresh" size={11} strokeWidth={1.5} />
 			Regenerate
@@ -58,6 +64,7 @@
 	.digest-header { display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px; border-bottom: 1px solid var(--line); }
 	.digest-title { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
 	.digest-tag-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; color: var(--bone); font-size: 10px; letter-spacing: 0.02em; }
+	.digest-queued { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; background: rgba(215,167,71,.08); color: var(--brass); font-size: 9px; font-weight: 700; letter-spacing: 0.04em; white-space: nowrap; }
 	.digest-regen { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
 	.digest-regen:hover:not(:disabled) { background: rgba(215,167,71,.2); }
 	.digest-regen:disabled { opacity: 0.6; cursor: default; }

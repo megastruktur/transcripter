@@ -147,6 +147,9 @@ export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
 }
 
 export type TimelineEvent = {
+	/** Deterministic event identity (server-computed for legacy files) —
+	 * the address for phase-A event edits. */
+	event_key: string;
 	/** In-recording offset as written by enrich ("mm:ss" / "hh:mm:ss"). */
 	ts: string;
 	kind: string;
@@ -309,7 +312,6 @@ export async function fetchGraph(cfg: ApiConfig, tag: string): Promise<GraphResp
 	}
 	return resp.json();
 }
-
 export type GraphEditRow = {
 	id: number;
 	tag: string;
@@ -324,6 +326,223 @@ export type GraphEditRow = {
 	status: 'applied' | 'orphaned' | 'retired';
 	created_at: string;
 };
+
+// ---------------------------------------------------------------------------
+// Phase A edit surface (deterministic ops) — every call is 202 + a Temporal
+// workflow that applies the mutation to the graph + events.json copies and
+// signals digest maintenance. Throws with .status 404 (unknown target) /
+// 409 (graph off) / 503 (temporal down).
+// ---------------------------------------------------------------------------
+
+async function _editReq(
+	cfg: ApiConfig,
+	path: string,
+	method: string,
+	body?: unknown
+): Promise<{ workflow_id: string; edit_id: number; tag: string }> {
+	const resp = await req(cfg, path, {
+		method,
+		body: body === undefined ? undefined : JSON.stringify(body)
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `edit ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
+/** Edit one event (any of ts/kind/summary/mentions); feedback_text is the
+ * natural-language rule stored for the enrich prompt block. */
+export async function patchGraphEvent(
+	cfg: ApiConfig,
+	tag: string,
+	eventKey: string,
+	patch: { ts?: string; kind?: string; summary?: string; mentions?: string[]; feedback_text?: string }
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/events/${encodeURIComponent(eventKey)}`, 'PATCH', patch);
+}
+
+/** Delete one event from the timeline. */
+export async function deleteGraphEvent(
+	cfg: ApiConfig,
+	tag: string,
+	eventKey: string
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/events/${encodeURIComponent(eventKey)}`, 'DELETE');
+}
+
+/** Create a user-authored relation (overlay re-creates it after every
+ * regenerate). */
+export async function createGraphRelation(
+	cfg: ApiConfig,
+	tag: string,
+	fromSlug: string,
+	toSlug: string,
+	type: string,
+	feedbackText?: string
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/relations`, 'POST', {
+		from_slug: fromSlug,
+		to_slug: toSlug,
+		type,
+		feedback_text: feedbackText || undefined
+	});
+}
+
+/** Delete a relation (tombstone — user decisions outrank the model). */
+export async function deleteGraphRelation(
+	cfg: ApiConfig,
+	tag: string,
+	fromSlug: string,
+	toSlug: string,
+	type: string
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/relations`, 'DELETE', {
+		from_slug: fromSlug,
+		to_slug: toSlug,
+		type
+	});
+}
+
+/** Delete an entity (node + edges, slug pruned from every events.json). */
+export async function deleteGraphEntity(
+	cfg: ApiConfig,
+	tag: string,
+	slug: string
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/entities/${encodeURIComponent(slug)}`, 'DELETE');
+}
+
+/** Fold source into target (redirect edges, union sessions, tombstone
+ * the source slug). */
+export async function mergeGraphEntities(
+	cfg: ApiConfig,
+	tag: string,
+	sourceSlug: string,
+	targetSlug: string,
+	feedbackText?: string
+): Promise<{ workflow_id: string; edit_id: number }> {
+	return _editReq(cfg, `/tags/${encodeURIComponent(tag)}/entities/merge`, 'POST', {
+		source_slug: sourceSlug,
+		target_slug: targetSlug,
+		feedback_text: feedbackText || undefined
+	});
+}
+
+/** Retire a correction rule: the row leaves the {corrections} prompt
+ * block and the overlay stops re-applying it. Deterministic, no workflow. */
+export async function retireGraphEdit(cfg: ApiConfig, tag: string, editId: number): Promise<void> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/edits/${editId}/retire`, { method: 'POST' });
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `retire ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+}
+
+export type DigestStatus = { state: 'fresh' | 'queued'; last_edit_at: string | null; debounce_sec: number };
+
+/** Digest renewal state — `queued` while the newest edit is younger than
+ * the digest note's mtime (the Digest tab's brass lamp). */
+export async function fetchDigestStatus(cfg: ApiConfig, tag: string): Promise<DigestStatus> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest/status`);
+	if (!resp.ok) throw Object.assign(new Error(`digest status ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// Phase C: "Correct the record" — AI-translated fixes (preview → confirm →
+// apply). The LLM proposes; the user confirms; fix-apply re-validates and
+// mutates all-or-nothing through the phase-A updaters.
+// ---------------------------------------------------------------------------
+
+export type FixOp = {
+	op: 'update_event' | 'delete_event' | 'update_entity' | 'delete_entity' | 'create_relation' | 'delete_relation';
+	event_key?: string;
+	slug?: string;
+	from_slug?: string;
+	to_slug?: string;
+	ts?: string;
+	kind?: string;
+	summary?: string;
+	mentions?: string[];
+	label?: string;
+	type?: string;
+	before?: Record<string, unknown>;
+	[key: string]: unknown;
+};
+
+export type FixProposal = { ops: FixOp[]; rationale?: string[] };
+
+export type FixPreviewPoll =
+	| { state: 'running' | 'unknown' | 'busy' | 'unparseable' | 'invalid' | 'failed'; detail?: string }
+	| { state: 'ready'; proposal: FixProposal; context?: Record<string, unknown> };
+
+/** Request a proposal for ONE natural-language instruction (ONE LLM
+ * call in one activity). 202 + workflow id; poll with pollFixPreview.
+ * Throws .status 409 (one already running) / 429 (cooldown). */
+export async function startFixPreview(
+	cfg: ApiConfig,
+	tag: string,
+	instruction: string,
+	recordingId?: string
+): Promise<{ workflow_id: string }> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/fix-preview`, {
+		method: 'POST',
+		body: JSON.stringify({ instruction, recording_id: recordingId || undefined })
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `fix-preview ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
+export async function pollFixPreview(cfg: ApiConfig, tag: string, workflowId: string): Promise<FixPreviewPoll> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/fix-preview/${encodeURIComponent(workflowId)}`);
+	if (!resp.ok) throw Object.assign(new Error(`fix-preview poll ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
+export type FixApplyPoll =
+	| { state: 'running' | 'unknown' | 'failed'; detail?: string }
+	| { state: 'ok'; applied: number; edit_ids: number[] }
+	| { state: 'stale'; rejections: { op_index: number; reason: string }[] };
+
+export async function startFixApply(
+	cfg: ApiConfig,
+	tag: string,
+	proposal: FixProposal,
+	feedbackText?: string
+): Promise<{ workflow_id: string }> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/fix-apply`, {
+		method: 'POST',
+		body: JSON.stringify({ proposal, feedback_text: feedbackText || undefined })
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `fix-apply ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
+export async function pollFixApply(cfg: ApiConfig, tag: string, workflowId: string): Promise<FixApplyPoll> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/fix-apply/${encodeURIComponent(workflowId)}`);
+	if (!resp.ok) throw Object.assign(new Error(`fix-apply poll ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
 
 /** Phase A audit: every edit row of the tag, newest first. */
 export async function fetchGraphEdits(cfg: ApiConfig, tag: string): Promise<GraphEditRow[]> {
