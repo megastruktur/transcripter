@@ -202,33 +202,44 @@ echo "$STATES" | tr ',' '\n' | grep -q failed && { echo "PIPELINE FAILED"; auth 
 echo "$STATES" | tr ',' '\n' | grep -qvE 'done|skipped' && { echo "TIMEOUT waiting"; exit 1; }
 
 echo "== 9. artifacts exist"
+# Vault mode: the export moves the meta tree out of /storage into the vault (.transcripter/meta/) — artifact asserts must accept EITHER location (storage meta or the vault mirror). The export runs right after the pipeline,
+# so the storage copy may be gone by the time we check; the vault copy is the durable one. Discover the vault folder FIRST so every
+# artifact assert can fall back to the vault mirror.
+VAULT_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
+FOLDER=$(find "$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null | head -1)
+meta_file() {
+  local f="$1"
+  for p in "$STORAGE_DIR/recordings/$RID/meta/$f" "$FOLDER/.transcripter/meta/$f"; do
+    test -s "$p" && { printf '%s' "$p"; return 0; }
+  done
+  return 1
+}
 if [ "$STT" = "speaches" ]; then
   # Word timestamps are the diarization-merge input; empty words = silent
   # degradation of the whole api-backend path. Prove them non-empty.
-  WORDS=$(jq '.words | length' "$STORAGE_DIR/recordings/$RID/meta/segments.json")
+  WORDS=$(jq '.words | length' "$(meta_file segments.json)") || { echo "  MISSING segments.json (storage + vault)"; exit 1; }
   test "$WORDS" -gt 0 && echo "  ok: segments.json words=$WORDS" || {
     echo "  FAIL: no word timestamps in segments.json (backend=api path)"; exit 1
   }
 fi
 for f in transcript.md segments.json; do
-  test -s "$STORAGE_DIR/recordings/$RID/meta/$f" && echo "  ok: $f" || { echo "  MISSING: $f"; exit 1; }
+  test -s "$(meta_file "$f")" && echo "  ok: $f" || { echo "  MISSING: $f (storage + vault)"; exit 1; }
 done
 # Gate each artifact on the stage that writes it. Capture the response first:
 # under pipefail a transient curl failure inside `if` would silently skip.
 RESP=$(authf "$API/recordings/$RID")
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="diarize").status=="done"' >/dev/null; then
-  test -s "$STORAGE_DIR/recordings/$RID/meta/diarization.json" \
-    && echo "  ok: diarization.json" || { echo "  MISSING: diarization.json"; exit 1; }
+  test -s "$(meta_file diarization.json)"     && echo "  ok: diarization.json" || { echo "  MISSING: diarization.json"; exit 1; }
 fi
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="done"' >/dev/null; then
-  test -s "$STORAGE_DIR/recordings/$RID/meta/diarized-transcript.md" \
-    && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
+  test -s "$(meta_file diarized-transcript.md)"     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
 fi
 
 echo "== 9b. exported vault folder (nested YYYY/MM, audio + manifest)"
-VAULT_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
 # Nested YYYY/MM layout + legacy root-level flat; exactly one folder per recording.
-FOLDERS=$(find "\$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null)
+# (VAULT_DIR_HOST + FOLDER were already discovered in step 9 so the artifact
+# asserts above could fall back to the vault mirror.)
+FOLDERS=$(find "$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null)
 N=$(printf '%s\n' "$FOLDERS" | grep -c . || true)  # grep -c exits 1 on zero matches — without ||true set -e/pipefail kills the script silently
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
 test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$(dirname "$FOLDER")")/$(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
@@ -239,17 +250,16 @@ grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { e
 test -s "$FOLDER/.transcripter/audio.flac" && echo "  ok: .transcripter/audio.flac" || { echo "  MISSING vault audio"; exit 1; }
 grep -q "\"id\": \"$RID\"" "$FOLDER/.transcripter/manifest.json" && echo "  ok: manifest id" || { echo "  BAD manifest"; exit 1; }
 test ! -e "$STORAGE_DIR/recordings/$RID/audio.flac" && echo "  ok: storage audio moved out" || { echo "  storage audio.flac still present"; exit 1; }
-test -s "\$VAULT_DIR_HOST/Dashboard.md" && echo "  ok: Dashboard.md" || { echo "  MISSING Dashboard.md"; exit 1; }
+test -s "$VAULT_DIR_HOST/Dashboard.md" && echo "  ok: Dashboard.md" || { echo "  MISSING Dashboard.md"; exit 1; }
 # Profile-matched summarize names its artifact per profile.output_artifact and
 # carries `profile:` in frontmatter; asserted only when summarize actually ran.
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
-  test -s "$STORAGE_DIR/recordings/$RID/meta/summary.md" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
+  test -s "$(meta_file summary.md)" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
   test -s "$FOLDER/session-log.md" && grep -q "profile: ttrpg-session-log" "$FOLDER/session-log.md" \
     && echo "  ok: session-log.md (profile ttrpg-session-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
 else
   echo "  skip: summarize not done — session-log.md not asserted"
 fi
-
 
 if [ "${GRAPH:-0}" = "1" ]; then
   echo "== 9c. knowledge graph (enrich stage)"
@@ -261,15 +271,15 @@ if [ "${GRAPH:-0}" = "1" ]; then
   # (write -> rewrite -> cleanup through worker.enrich.write_to_graph,
   # run inside the worker container because bolt is NOT published) is
   # what asserts graph correctness.
-  CYPHER() { docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T neo4j \
+  CYPHER() { $DC exec -T neo4j \
     cypher-shell -u neo4j -p "$NEO4J_PASSWORD" --format plain "$1" 2>/dev/null; }
   NODES=$(CYPHER "MATCH (n {origin_recording_id: '$RID'}) RETURN count(n) AS c" | grep -oE '[0-9]+' | head -1)
   echo "  info: $((${NODES:-0} + 0)) LLM-extracted graph nodes for recording"
-  docker compose -f "$(dirname "$0")/../docker-compose.yml" cp "$(dirname "$0")/graph_probe.py" worker:/tmp/graph_probe.py
-  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T -w /app/worker \
+  $DC cp "$(dirname "$0")/graph_probe.py" worker:/tmp/graph_probe.py
+  $DC exec -T -w /app/worker \
     -e PYTHONPATH=/app/worker worker \
     .venv/bin/python /tmp/graph_probe.py || { echo "  graph probe FAILED"; exit 1; }
-  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T worker rm -f /tmp/graph_probe.py
+  $DC exec -T worker rm -f /tmp/graph_probe.py
 
   echo "== 9d. enrich regenerate returns to done"
   HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
@@ -284,6 +294,72 @@ if [ "${GRAPH:-0}" = "1" ]; then
     sleep 10
   done
   test "$ST" = "done" && echo "  ok: enrich re-ran to done" || { echo "  TIMEOUT waiting for enrich regenerate"; exit 1; }
+fi
+
+if [ "${GRAPH:-0}" = "1" ]; then
+  echo "== 9e. Phase A graph edits — PATCH event → events.json (both copies) + digest renewal"
+
+  # The LLM extraction on the speech fixture legitimately returns EMPTY (ttrpg profile), so the smoke recording's
+  # events.json has nothing to edit. Seed the recording's own event/entity graph via the probe (same write path as enrich: write_to_graph + write_events_json) — 9e then runs
+  # the real API → Temporal → worker edit flow on deterministic data, no LLM dependency.
+  $DC cp "$(dirname "$0")/graph_edit_probe.py" worker:/tmp/graph_edit_probe.py
+  $DC exec -T -w /app/worker \
+    -e PYTHONPATH=/app/worker -e PROBE_RID="$RID" \
+    -e PROBE_VAULT_META="/transcripts/${FOLDER#\$VAULT_DIR_HOST/}/.transcripter/meta" \
+    worker .venv/bin/python /tmp/graph_edit_probe.py || { echo "  edit probe FAILED"; exit 1; }
+  $DC exec -T worker rm -f /tmp/graph_edit_probe.py
+
+  TL=$(authf "$API/tags/e2e/timeline")
+  EVKEY=$(echo "$TL" | jq -r --arg rid "$RID" \
+    '[.sessions[] | select(.recording_id == $rid)] | .[0].events[0].event_key // empty' | head -1)
+  test -n "$EVKEY" || { echo "  FAIL: no editable event for $RID (empty extraction?)"; exit 1; }
+  echo "  event_key=$EVKEY"
+
+  MARK="E2E-SMOKE-EDIT-$RANDOM"
+  HTTP=$(curl -s -o "$WORK/patchack" -w '%{http_code}' -X PATCH \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    -d "{\"summary\":\"$MARK patched\"}" "$API/tags/e2e/events/$EVKEY")
+  test "$HTTP" = "202" || { echo "  PATCH rc=$HTTP:"; cat "$WORK/patchack"; exit 1; }
+  echo "  PATCH accepted (202)"
+
+  # Wait for the Temporal ApplyGraphEdit workflow to land (poll the timeline,
+  # which reads events.json — the artifact copy the workflow rewrites).
+  DEADLINE=$((SECONDS + 120))
+  APPLIED=0
+  while [ $SECONDS -lt $DEADLINE ]; do
+    if auth "$API/tags/e2e/timeline" | jq -e --arg rid "$RID" --arg k "$EVKEY" --arg m "$MARK" \
+      '[.sessions[] | select(.recording_id==$rid) | .events[] | select(.summary | contains($m))] | length > 0' >/dev/null; then
+      APPLIED=1; break
+    fi
+    sleep 5
+  done
+  test "$APPLIED" = "1" && echo "  ok: timeline reflects edit" || { echo "  edit not applied in 120s"; exit 1; }
+
+    # The events.json copies (storage meta + vault mirror — vault mode deletes the storage copy after export; the vault mirror is the durable one.
+  MF=$(meta_file events.json) || { echo "  FAIL: no events.json copy at all"; exit 1; }
+  grep -q "$MARK" "$MF" \
+    && echo "  ok: events.json updated ($MF)" || { echo "  events.json lacks edit"; exit 1; }
+
+  # Digest: edit marks it stale (queued) → maintenance workflow renews ONCE
+  # after graph.edit_debounce_sec of silence (20s in the dev-stack smoke config).
+  ST=$(authf "$API/tags/e2e/digest/status" | jq -r .state)
+  echo "  digest/status state=$ST (queued expected)"
+  test "$ST" = "queued" || { echo "  digest/status not queued after edit: $ST"; exit 1; }
+  DIGEST_FILE="$VAULT_DIR_HOST/digests/e2e.md"
+  MTIME_BEFORE=$(stat -c %Y "$DIGEST_FILE" 2>/dev/null || stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
+  echo "  waiting for renewal (debounce + digest LLM call)..."
+  DEADLINE=$((SECONDS + 300))
+  RENEWED=0
+  while [ $SECONDS -lt $DEADLINE ]; do
+    MT=$(stat -c %Y "$DIGEST_FILE" 2>/dev/null || stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
+    if [ "$MT" != "$MTIME_BEFORE" ] && [ "$MT" != "0" ]; then
+      STATE=$(auth "$API/tags/e2e/digest/status" | jq -r .state)
+      test "$STATE" = "fresh" && RENEWED=1 && break
+    fi
+    sleep 10
+  done
+  test "$RENEWED" = "1" && echo "  ok: digest renewed once after debounce" \
+    || { echo "  digest NOT renewed within 300s"; exit 1; }
 fi
 
 echo "== 10. regenerate diarize"
