@@ -10,6 +10,7 @@
 	import SearchRecess from '$lib/SearchRecess.svelte';
 	import ViewTabs from '$lib/ViewTabs.svelte';
 	import Skeleton from '$lib/Skeleton.svelte';
+	import LatticeTab from '$lib/lattice/LatticeTab.svelte';
 	import {
 		fetchTimeline,
 		fetchDigest,
@@ -26,10 +27,11 @@
 
 	const tag = decodeURIComponent(page.params.tag ?? '');
 
-	type TabKey = 'timeline' | 'entities' | 'digest';
+	type TabKey = 'timeline' | 'entities' | 'lattice' | 'digest';
 	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'summary' }[] = [
 		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
 		{ key: 'entities', label: 'Entities', icon: 'speakers' },
+		{ key: 'lattice', label: 'Lattice', icon: 'speakers' },
 		{ key: 'digest', label: 'Digest', icon: 'summary' }
 	];
 	let tab = $state<TabKey>('timeline');
@@ -429,6 +431,12 @@ async function runSearch(): Promise<void> {
 					<EmptyState icon="speakers" title="No entities extracted yet" hint="Run the pipeline on tagged recordings to populate the roster." />
 				{/each}
 			</div>
+		{:else if tab === 'lattice'}
+			<LatticeTab
+				{tag}
+				entitiesSeed={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type, sessions: e.sessions }))}
+				relationsSeed={[]}
+			/>
 		{:else}
 			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} onregen={() => void regenerateDigestNow()} />
 		{/if}

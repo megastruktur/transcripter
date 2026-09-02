@@ -270,6 +270,69 @@ export async function patchEntity(
 	return resp.json();
 }
 
+// ---------------------------------------------------------------------------
+// Phase A/D: knowledge-graph editing + the Lattice tab's read model.
+// ---------------------------------------------------------------------------
+
+export type GraphEntity = {
+	slug: string;
+	label: string;
+	type: string;
+	sessions: number;
+};
+
+export type GraphRelation = {
+	from: string;
+	to: string;
+	type: string;
+	/** How many of the tag's sessions carry the edge. */
+	sessions: number;
+};
+
+export type GraphResponse = {
+	tag: string;
+	entities: GraphEntity[];
+	relations: GraphRelation[];
+};
+
+/** Phase A: nodes + edges for the Lattice tab, aggregated from
+ * events.json (no Neo4j session in the API). Throws with .status 404
+ * (unknown tag) / 409 (graph off). */
+export async function fetchGraph(cfg: ApiConfig, tag: string): Promise<GraphResponse> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/graph`);
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `graph ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
+export type GraphEditRow = {
+	id: number;
+	tag: string;
+	target: 'event' | 'entity' | 'relation';
+	op: 'update' | 'delete' | 'create' | 'merge';
+	obj_key: string;
+	anchor: Record<string, unknown>;
+	before: Record<string, unknown>;
+	after: Record<string, unknown>;
+	feedback_text: string | null;
+	source: 'user' | 'agent';
+	status: 'applied' | 'orphaned' | 'retired';
+	created_at: string;
+};
+
+/** Phase A audit: every edit row of the tag, newest first. */
+export async function fetchGraphEdits(cfg: ApiConfig, tag: string): Promise<GraphEditRow[]> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/edits`);
+	if (!resp.ok) throw new Error(`edits ${resp.status}`);
+	const body = (await resp.json()) as { items: GraphEditRow[] };
+	return body.items;
+}
+
 export type SearchHit = {
 	recording_id: string;
 	session_title: string;
