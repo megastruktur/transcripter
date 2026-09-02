@@ -38,9 +38,6 @@ export const captureDraft = $state({
 
 export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 'json';
 
-/** Active artifact tab on the recording detail page. The rail tab buttons
- * (layout) write this; the detail page reads it and loads the artifact. */
-export const artifactTab = $state<{ active: ArtifactTabKey }>({ active: 'transcript' });
 
 /** Canonical pipeline stage order and display names. Shared by the detail
  * page (stage error lines) and the layout context-bar (status icons, re-run menu). */

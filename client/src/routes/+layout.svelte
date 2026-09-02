@@ -5,7 +5,7 @@
 	import { LogicalSize } from '@tauri-apps/api/dpi';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { artifactTab, checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
+	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 
@@ -31,15 +31,6 @@
 		{ href: '/vault', label: 'Vault', icon: 'vault' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
-
-	const artifactTabs = [
-		{ key: 'transcript', label: 'Transcript', icon: 'transcript' },
-		{ key: 'speakers', label: 'Speakers', icon: 'speakers' },
-		{ key: 'events', label: 'Events', icon: 'events' },
-		{ key: 'summary', label: 'Summary', icon: 'summary' },
-		{ key: 'json', label: 'JSON', icon: 'json' }
-	] as const;
-
 	const onRecordingDetail = $derived(page.url.pathname.startsWith('/recordings/'));
 	// Route changes close the actions menu: the detail page unpublishes its
 	// actions on unmount, and the menu must not linger over another page.
@@ -271,10 +262,8 @@
 	<div class="app-shell" class:shell--android={android}>
 		{#if !android}
 		<header class="titlebar" data-tauri-drag-region>
-			<div class="titlebar-identity">
-				<span class="titlebar-sigil"><Icon name="mark" size={40} /></span>
-				<span class="wordmark">Transcriptor Maximus</span>
-			</div>
+			<span class="titlebar-sigil"><Icon name="mark" size={40} /></span>
+			<span class="wordmark">Transcriptor Maximus</span>
 			<div class="window-actions">
 				<button type="button" onclick={toggleCollapsed} aria-label="Collapse to symbol" title="Collapse to symbol"><Icon name="collapse" size={16} /></button>
 				<button type="button" onclick={minimizeWindow} aria-label="Minimize window" title="Minimize"><Icon name="minimize" size={16} /></button>
@@ -296,25 +285,6 @@
 						<span>{item.label}</span>
 					</a>
 				{/each}
-				{#if onRecordingDetail}
-					<div class="rail-divider" role="separator"></div>
-					<div class="rail-tabs" role="tablist" aria-label="Artifacts">
-						{#each artifactTabs as tab (tab.key)}
-							<button
-								class="rail-tab"
-								type="button"
-								role="tab"
-								aria-selected={artifactTab.active === tab.key}
-								class:active={artifactTab.active === tab.key}
-								title={tab.label}
-								onclick={() => { artifactTab.active = tab.key; navOpen = false; }}
-							>
-								<span class="nav-icon" aria-hidden="true"><Icon name={tab.icon} size={20} /></span>
-								<span>{tab.label}</span>
-							</button>
-						{/each}
-					</div>
-				{/if}
 				<div class="rail-spacer"></div>
 			</nav>
 
@@ -403,6 +373,11 @@
 		--brass: #d7a747;
 		--cyan: #70d7d0;
 		--line: rgba(231, 214, 190, 0.14);
+		/* Structural grid: rail width and horizontal content inset. Both the
+		   titlebar (wordmark) and the workspace content (context-bar title,
+		   .page padding) read these so all left edges line up on one ruler. */
+		--rail-w: 72px;
+		--pad-x: 16px;
 	}
 	:global(html), :global(body) { margin: 0; min-width: 100%; min-height: 100%; background: rgba(0, 0, 0, 0) !important; overflow: hidden; }
 	:global(body) { padding: 0; -webkit-font-smoothing: antialiased; }
@@ -423,38 +398,28 @@
 		overflow: hidden;
 	}
 	.app-shell::after { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.22; background-image: repeating-linear-gradient(0deg, transparent 0 3px, rgba(255, 255, 255, 0.018) 3px 4px); mix-blend-mode: screen; }
-	/* Desktop titlebar is a slim drag strip: identity cluster (sigil +
-	   wordmark) on the left, window buttons on the right; the context bar
-	   below still names the current page. The identity cluster is
-	   pointer-events: none so clicks on it fall through to the header's
-	   data-tauri-drag-region. */
-	.titlebar { display: flex; align-items: center; justify-content: space-between; padding: 3px 6px; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
-	.titlebar-identity { display: flex; align-items: center; gap: 7px; pointer-events: none; }
-	.titlebar-sigil { width: 40px; height: 40px; display: grid; place-items: center; line-height: 0; color: var(--brass); }
-	.wordmark { color: var(--bone); font-size: 16px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+	/* Desktop titlebar is a slim drag strip on the rail's structural grid:
+	   column 1 = rail width (sigil centered over the rail), column 2 = wordmark
+	   starting exactly at the workspace edge + --pad-x (same inset as the
+	   context-bar title), column 3 = window buttons. Text nodes are
+	   pointer-events: none so clicks fall through to the drag region. */
+	.titlebar { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr) auto; align-items: center; padding: 3px 6px 3px 0; background: linear-gradient(90deg, #100d0b 0%, #221714 62%, #2d1311 100%); border-bottom: 1px solid rgba(215, 167, 71, 0.22); user-select: none; position: relative; z-index: 2; }
+	.titlebar-sigil { display: grid; place-items: center; width: 100%; height: 40px; color: var(--brass); line-height: 0; pointer-events: none; }
+	.wordmark { padding-left: var(--pad-x); color: var(--bone); font-size: 16px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 	.mini-cog { width: 29px; height: 29px; display: grid; place-items: center; filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .45)); line-height: 0; }
 	.window-actions { display: flex; gap: 3px; }
 	.window-actions button { width: 27px; height: 27px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: rgba(0, 0, 0, 0.24); color: var(--ash); cursor: pointer; line-height: 0; transition: color 120ms ease, border-color 120ms ease, background 120ms ease; }
 	.window-actions button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.55); background: rgba(215, 167, 71, 0.08); }
 	.window-actions .close:hover { color: white; border-color: var(--red); background: var(--red-dark); }
+	.shell-body { display: grid; grid-template-columns: var(--rail-w) minmax(0, 1fr); min-height: 0; position: relative; z-index: 1; }
 	.hazard-rule { background: repeating-linear-gradient(120deg, var(--brass) 0 8px, #17110b 8px 16px); opacity: 0.72; z-index: 0; }
-	.shell-body { display: grid; grid-template-columns: 72px minmax(0, 1fr); min-height: 0; position: relative; z-index: 1; }
 	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 10px 5px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail a:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.rail-divider { height: 1px; margin: 3px 4px; background: var(--line); }
-	.rail-tabs { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
-	/* Artifact tabs are a compact sub-tier of the detail page, not primary
-	   navigation: icon over label at 40px keeps all five tabs within the
-	   634px rail budget (5×66 + 5×56 overflowed and clipped the last tab). */
-	.rail-tab { display: grid; place-items: center; gap: 2px; width: 100%; min-height: 40px; padding: 3px 2px; border: 1px solid transparent; border-radius: 3px; background: transparent; color: #8e857c; font-size: 10px; font-weight: 650; letter-spacing: normal; cursor: pointer; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
-	.rail-tab .nav-icon { width: 24px; height: 24px; }
-	.rail-tab:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.rail-tab.active { color: var(--brass); background: linear-gradient(90deg, rgba(213, 45, 36, 0.18), rgba(215, 167, 71, 0.04)); box-shadow: inset 2px 0 var(--red); }
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
-	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 0 16px; min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 0 var(--pad-x); min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
 	/* Pipeline status icons ride next to the page title; every cluster in the
 	   bar must stay shrinkable so a 360px phone never clips the right edge. */
 	.context-stages { display: flex; gap: 3px; min-width: 0; }
@@ -523,11 +488,20 @@
 	.shell--android .rail.open { transform: translateX(0); }
 	.shell--android .status-strip { min-height: 28px; padding-bottom: env(safe-area-inset-bottom, 0px); }
 
-	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; transition: transform 180ms ease; touch-action: none; }
+	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; display: grid; place-items: center; transition: transform 180ms ease; touch-action: none; }
+	/* Icon box: fixed 56px square. The button is a centering grid — the old
+	   inline-block flow parked the 56px icon at the left of the 62px content
+	   box, a latent 3px offset that became visible when the waveform (which
+	   centers on the button) was added. grid+place-items on the icon kills the
+	   inline-SVG baseline offset; the transition re-enables hover-rotate /
+	   drag-scale motion. */
+	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }
 	/* Recording indicator inside the red ring: a mini waveform using the same
 	   signal vocabulary as the Record page meter (780ms alternate, red→brass
 	   gradient, staggered delays). The bone cross yields the ring's center
-	   while capture runs. */
+	   while capture runs. Anchored to .collapsed-mark, NOT .collapsed-icon:
+	   hover rotates the cog only — the waveform must stay perfectly upright,
+	   so it centers on the button (same 38,38 center as the icon box). */
 	.collapsed-wave { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 3px; line-height: 0; }
 	.collapsed-mark.recording .collapsed-wave { display: flex; }
 	.collapsed-mark.recording :global(.mark-sigil) { opacity: 0; transition: opacity 120ms ease; }
@@ -537,7 +511,7 @@
 	.collapsed-mark.dragging { cursor: grabbing; }
 	.collapsed-mark.dragging .collapsed-icon { transform: scale(0.96); }
 
-	:global(.page) { padding: 18px 18px 24px; }
+	:global(.page) { padding: 18px var(--pad-x) 24px; }
 	:global(.page-title) { margin: 0; font-size: 30px; font-weight: 760; line-height: 1.05; letter-spacing: -0.035em; color: var(--bone); }
 	:global(.panel) { background: linear-gradient(145deg, rgba(255,255,255,0.026), rgba(0,0,0,0.08)); border: 1px solid var(--line); border-radius: 4px; }
 	:global(.field-label) { display: block; margin-bottom: 8px; font-size: 11px; font-weight: 650; color: #b8ac9d; }

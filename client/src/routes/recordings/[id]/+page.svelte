@@ -2,7 +2,8 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import Icon from '$lib/Icon.svelte';
+	import Icon, { type IconName } from '$lib/Icon.svelte';
+	import ViewTabs from '$lib/ViewTabs.svelte';
 	import Markdown from '$lib/Markdown.svelte';
 	import TagEditor from '$lib/TagEditor.svelte';
 	import BackButton from '$lib/BackButton.svelte';
@@ -26,7 +27,7 @@
 	import { dateLabel, durationLabel } from '$lib/format';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
-	import { artifactTab, recordActions, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
+	import { recordActions, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? '';
 
@@ -81,11 +82,23 @@
 		summary: { label: 'Summary', stage: 'summarize', markdown: true },
 		json: { label: 'JSON', stage: 'transcribe', file: 'segments.json' }
 	};
+	/** Tab strip vocabulary mirrors TAB_SPECS order. Text-only: five tabs
+	 * share one 366px workspace column — labels carry the meaning, the icon
+	 * would only cost width (Vault's 3-tab strips keep their icons). */
+	const ARTIFACT_VIEWS: { key: ArtifactTabKey; label: string }[] = [
+		{ key: 'transcript', label: 'Transcript' },
+		{ key: 'speakers', label: 'Speakers' },
+		{ key: 'events', label: 'Events' },
+		{ key: 'summary', label: 'Summary' },
+		{ key: 'json', label: 'JSON' }
+	];
 	let tabData = $state<Partial<Record<ArtifactTabKey, TabData>>>({});
 	let tabLoading = $state(false);
 	let tabGeneration = 0;
 	const tabInflight = new Set<ArtifactTabKey>();
-	const activeTab = $derived(artifactTab.active);
+	/** Active artifact view. Local state (not a store): the tabs live on
+	 * this page now, so nothing outside needs to write the selection. */
+	let activeTab = $state<ArtifactTabKey>('transcript');
 	const currentTab = $derived(tabData[activeTab]);
 
 	/** Recap marker from the summarize stage details (worker sets
@@ -232,8 +245,8 @@
 		void (async () => {
 			await load();
 			if (!recording) return;
+			activeTab = defaultTab(recording);
 			if (recording.state === 'uploading' || recording.state === 'processing') startPoll();
-			artifactTab.active = defaultTab(recording);
 		})();
 		return () => {
 			stopPoll();
@@ -246,9 +259,8 @@
 	});
 
 	$effect(() => {
-		const tab = artifactTab.active;
 		if (!recording) return;
-		void loadTab(tab);
+		void loadTab(activeTab);
 	});
 
 	$effect(() => {
@@ -671,6 +683,7 @@
 			</p>
 		{/if}
 
+		<ViewTabs tabs={ARTIFACT_VIEWS} active={activeTab} ariaLabel="Artifact views" onchange={(key) => (activeTab = key as ArtifactTabKey)} />
 		<div class="artifact-panel" role="tabpanel" aria-label={TAB_SPECS[activeTab].label}>
 			{#if tabLoading}
 				<p class="tab-placeholder">Retrieving archive…</p>

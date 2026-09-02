@@ -8,6 +8,7 @@
 	import EmptyState from '$lib/EmptyState.svelte';
 	import NoticePanel from '$lib/NoticePanel.svelte';
 	import SearchRecess from '$lib/SearchRecess.svelte';
+	import ViewTabs from '$lib/ViewTabs.svelte';
 	import Skeleton from '$lib/Skeleton.svelte';
 	import {
 		fetchTimeline,
@@ -316,21 +317,7 @@ async function runSearch(): Promise<void> {
 	{:else if notFound}
 		<NoticePanel title="No sessions carry this tag" hint="The tag may have been removed from every recording, or the address is wrong." backHref="/vault" backLabel="Back to vault" />
 	{:else if data}
-		<div class="tag-tabs" role="tablist" aria-label="Tag views">
-			{#each TABS as entry (entry.key)}
-				<button
-					class="tag-tab"
-					type="button"
-					role="tab"
-					aria-selected={tab === entry.key}
-					class:active={tab === entry.key}
-					onclick={() => switchTab(entry.key)}
-				>
-					<Icon name={entry.icon} size={12} />
-					{entry.label}
-				</button>
-			{/each}
-			</div>
+		<ViewTabs tabs={TABS} active={tab} ariaLabel="Tag views" onchange={(key) => switchTab(key as TabKey)} />
 
 		<SearchRecess
 			ariaLabel={`Semantic search · ${tag}`}
@@ -454,12 +441,6 @@ async function runSearch(): Promise<void> {
 	.tag-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.tag-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
 	.tag-error span { color: #c6baaa; }
-	/* Brass underline tabs: the same control idiom as the digest-button
-	   family (brass border/underline for the selected control). */
-	.tag-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
-	.tag-tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8e857b; font-size: 11px; font-weight: 650; cursor: pointer; transition: color 120ms ease, border-color 120ms ease; }
-	.tag-tab:hover { color: var(--bone); }
-	.tag-tab.active { color: var(--brass); border-bottom-color: var(--brass); }
 	.session-list { display: grid; }
 	.session-card { transition: background 120ms ease; }
 	.session-card:not(:last-child) { border-bottom: 1px solid var(--line); }
