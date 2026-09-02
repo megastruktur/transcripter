@@ -382,33 +382,37 @@ def apply_entity_delete(cfg: Any, paths: VaultPaths, tag: str, slug: str) -> dic
             return {"ok": False, "reason": "entity not found in namespace"}
         session.run("MATCH (e) WHERE elementId(e) = $id DETACH DELETE e", id=row["id"])
 
-    # Prune the slug from entities[] AND event mentions across the tag.
-    def _mutate(doc: dict) -> bool:
-        changed = False
-        ents = doc.get("entities", [])
-        after = [e for e in ents if not (isinstance(e, dict) and e.get("slug") == slug)]
-        if len(after) != len(ents):
-            doc["entities"] = after
-            changed = True
-        for ev in doc.get("events", []):
-            if not isinstance(ev, dict):
-                continue
-            mentions = ev.get("mentions")
-            if isinstance(mentions, list) and slug in mentions:
-                ev["mentions"] = [m for m in mentions if m != slug]
-                changed = True
-        rels = doc.get("relations", [])
-        rel_after = [
-            r for r in rels if not (isinstance(r, dict) and slug in (r.get("from"), r.get("to")))
-        ]
-        if len(rel_after) != len(rels):
-            doc["relations"] = rel_after
-            changed = True
-        return changed
-
     for rec_id in tag_recording_ids(cfg, tag):
-        rewrite_events_json(rec_id, paths, _mutate)
+        rewrite_events_json(rec_id, paths, lambda doc: _prune_slug_from_doc(doc, slug))
     return {"ok": True}
+
+
+def _prune_slug_from_doc(doc: dict, slug: str) -> bool:
+    """Drop ``slug`` from entities[], event mentions and relations of
+    one events.json doc. Shared by apply_entity_delete (every doc of
+    the tag) and the overlay's entity-tombstone pass (this recording's
+    doc after a regenerate re-minted the slug)."""
+    changed = False
+    ents = doc.get("entities", [])
+    after = [e for e in ents if not (isinstance(e, dict) and e.get("slug") == slug)]
+    if len(after) != len(ents):
+        doc["entities"] = after
+        changed = True
+    for ev in doc.get("events", []):
+        if not isinstance(ev, dict):
+            continue
+        mentions = ev.get("mentions")
+        if isinstance(mentions, list) and slug in mentions:
+            ev["mentions"] = [m for m in mentions if m != slug]
+            changed = True
+    rels = doc.get("relations", [])
+    rel_after = [
+        r for r in rels if not (isinstance(r, dict) and slug in (r.get("from"), r.get("to")))
+    ]
+    if len(rel_after) != len(rels):
+        doc["relations"] = rel_after
+        changed = True
+    return changed
 
 
 def apply_entity_merge(
@@ -538,14 +542,15 @@ def reapply_overlay(cfg: Any, tag: str, recording_id: str) -> dict[str, int]:
     edit row of the tag that concerns this recording's objects.
 
     Order matters: merges first (they define slug canonicalization),
-    then relation tombstones/creates, then event updates/deletes
-    (fuzzy re-anchored). Idempotent by construction (MERGE / key match /
-    similarity gate). Best-effort: raises propagate to the caller (the
-    enrich hook) which catches and logs — this pass NEVER fails enrich.
+    then entity tombstones, then relation tombstones/creates, then
+    event updates/deletes (fuzzy re-anchored). Idempotent by
+    construction (MERGE / key match / similarity gate). Best-effort:
+    raises propagate to the caller (the enrich hook) which catches and
+    logs — this pass NEVER fails enrich.
     """
     from .db import EditOp, EditStatus, EditTarget, GraphEdit, session
 
-    counts = {"reanchored": 0, "orphaned": 0, "relations": 0, "merges": 0}
+    counts = {"reanchored": 0, "orphaned": 0, "relations": 0, "merges": 0, "entities": 0}
     with session() as s:
         rows = (
             s.query(GraphEdit)
@@ -591,6 +596,28 @@ def reapply_overlay(cfg: Any, tag: str, recording_id: str) -> dict[str, int]:
                         src=src,
                     )
                 counts["merges"] += 1
+    # 1b. Entity tombstones: a regenerate re-mints user-deleted slugs
+    # straight from the transcript (the model never saw the deletion) —
+    # without this pass the deleted entity resurfaces in Neo4j, in
+    # events.json, and then in the {known_entities} prompt block of
+    # every later regenerate. Merges ran first: a deleted+merged slug
+    # is already gone, the DETACH DELETE below is a no-op for it.
+    for ed in edits:
+        if ed["target"] != EditTarget.entity or ed["op"] != EditOp.delete:
+            continue
+        slug = ed["obj_key"]
+        if not slug:
+            continue
+        with _driver(cfg) as dr, dr.session(database=cfg.graph.database) as sess:
+            sess.run(
+                "MATCH (e {tag: $tag, slug: $slug}) DETACH DELETE e",
+                tag=tag,
+                slug=slug,
+            )
+        rewrite_events_json(
+            recording_id, paths, lambda doc, s=slug: _prune_slug_from_doc(doc, s)
+        )
+        counts["entities"] += 1
     # 2. Relations: re-create user edges, re-delete tombstoned ones.
     for ed in edits:
         if ed["target"] != EditTarget.relation:

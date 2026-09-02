@@ -371,6 +371,79 @@ def test_reapply_overlay_reanchors_similar_event(tmp_path: Path, monkeypatch) ->
     assert rekeyed == [(7, "fresh1")]
 
 
+def test_reapply_overlay_redeletes_entity(tmp_path: Path, monkeypatch) -> None:
+    """A regenerate re-mints a user-deleted entity from the transcript
+    (the model never saw the deletion): the overlay MUST re-delete the
+    node and prune the slug from this recording's events.json —
+    otherwise the entity resurfaces in the graph, the Lattice tab, and
+    the {known_entities} prompt block of every later regenerate."""
+    import worker.graph_edit as ge
+    from worker.db import EditOp, EditStatus, EditTarget
+
+    cfg = _Cfg(tmp_path / "recordings", tmp_path / "vault")
+    rid = "rec-7"
+    doc = {
+        "entities": [
+            {"slug": "glennis", "label": "Glennis", "type": "person"},
+            {"slug": "hermes", "label": "Hermes", "type": "org"},
+        ],
+        "events": [
+            {
+                "event_key": "fresh1",
+                "ts": "00:10",
+                "kind": "note",
+                "summary": "Glennis joined the party",
+                "mentions": ["glennis", "hermes"],
+            }
+        ],
+        "relations": [
+            {"from": "glennis", "to": "hermes", "type": "member_of"},
+            {"from": "hermes", "to": "agent-network", "type": "part_of"},
+        ],
+    }
+    _write_doc(tmp_path / "recordings", rid, doc)
+
+    edit = _EditRow(
+        id=11,
+        target=EditTarget.entity,
+        op=EditOp.delete,
+        obj_key="glennis",
+        status=EditStatus.applied,
+    )
+    monkeypatch.setattr("worker.db.session", _FakeSessionFactory([edit]), raising=False)
+    monkeypatch.setattr(ge, "vault_paths_for", lambda c, r: _paths(tmp_path), raising=False)
+
+    runs: list = []
+    driver = MagicMock()
+    session = MagicMock()
+    session.__enter__ = MagicMock(return_value=session)
+    session.__exit__ = MagicMock(return_value=False)
+
+    def run(q=None, *, query=None, **params):
+        runs.append((q if q is not None else query, params))
+        if "origin_recording_id" in (q or ""):
+            return _Iter([])
+        return _Row({"n": 0})
+
+    session.run = run
+    driver.session = MagicMock(return_value=session)
+    driver.__enter__ = MagicMock(return_value=driver)
+    driver.__exit__ = MagicMock(return_value=False)
+
+    with patch("worker.graph_edit.GraphDatabase.driver", return_value=driver):
+        counts = reapply_overlay(cfg, "quest", rid)
+
+    assert counts["entities"] == 1
+    # The tombstone re-delete targeted exactly the deleted slug.
+    deletes = [p for q, p in runs if "DETACH DELETE" in (q or "")]
+    assert deletes == [{"tag": "quest", "slug": "glennis"}]
+    # events.json: slug pruned from entities, mentions and relations.
+    out = _read_doc(tmp_path / "recordings" / rid / "meta" / "events.json")
+    assert [e["slug"] for e in out["entities"]] == ["hermes"]
+    assert out["events"][0]["mentions"] == ["hermes"]
+    assert out["relations"] == [{"from": "hermes", "to": "agent-network", "type": "part_of"}]
+
+
 def test_reapply_overlay_orphans_unmatched_edit(tmp_path: Path, monkeypatch) -> None:
     """No fresh event resembles the anchor → the edit flips orphaned,
     nothing is written."""
