@@ -33,10 +33,10 @@
 	const tag = decodeURIComponent(page.params.tag ?? '');
 
 	type TabKey = 'timeline' | 'entities' | 'lattice' | 'digest' | 'corrections';
-	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'summary' | 'shield' }[] = [
+	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'enrich' | 'summary' | 'shield' }[] = [
 		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
 		{ key: 'entities', label: 'Entities', icon: 'speakers' },
-		{ key: 'lattice', label: 'Lattice', icon: 'speakers' },
+		{ key: 'lattice', label: 'Lattice', icon: 'enrich' },
 		{ key: 'digest', label: 'Digest', icon: 'summary' },
 		{ key: 'corrections', label: 'Corrections', icon: 'shield' }
 	];

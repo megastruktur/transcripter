@@ -25,6 +25,8 @@
 			class="view-tab"
 			type="button"
 			role="tab"
+			aria-label={tab.label}
+			title={tab.label}
 			aria-selected={active === tab.key}
 			class:active={active === tab.key}
 			onclick={() => onchange(tab.key)}
@@ -32,7 +34,7 @@
 			{#if tab.icon}
 				<Icon name={tab.icon} size={12} />
 			{/if}
-			{tab.label}
+			<span class="view-tab-label">{tab.label}</span>
 		</button>
 	{/each}
 </div>
@@ -46,4 +48,11 @@
 	.view-tab { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 8px 7px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #8e857b; font-size: 11px; font-weight: 650; cursor: pointer; transition: color 120ms ease, border-color 120ms ease; }
 	.view-tab:hover { color: var(--bone); }
 	.view-tab.active { color: var(--brass); border-bottom-color: var(--brass); }
+	/* Narrow frames (360px phones, the 440px desktop shell): five tabs with
+	   labels outgrow the viewport — drop to the icon row. The label span
+	   stays in the DOM for aria; only the ink is hidden. */
+	@media (max-width: 480px) {
+		.view-tab { padding: 8px 10px; }
+		.view-tab-label { display: none; }
+	}
 </style>
