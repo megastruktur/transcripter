@@ -24,6 +24,8 @@ from .activities import (
     enrich,
     export_transcript,
     finalize_recording,
+    fix_apply,
+    fix_preview,
     graph_gc,
     merge_speakers,
     preload_local,
@@ -38,6 +40,8 @@ from .db import init_engine
 from .workflows import (
     ApplyGraphEdit,
     ExportRecording,
+    GraphFixApply,
+    GraphFixPreview,
     GraphGc,
     GraphMaintenance,
     ProcessRecording,
@@ -60,6 +64,8 @@ ACTIVITIES = [
     rename_entity,
     apply_graph_edit,
     renew_tag_digest,
+    fix_preview,
+    fix_apply,
 ]
 # (an unregistered activity fails workflows at runtime with NotFoundError
 # while the stage row sits pending — observed 2026-08-27 on enrich).
@@ -152,6 +158,8 @@ async def amain() -> None:
             RenameEntity,
             ApplyGraphEdit,
             GraphMaintenance,
+            GraphFixPreview,
+            GraphFixApply,
         ],
         activities=ACTIVITIES,
     )

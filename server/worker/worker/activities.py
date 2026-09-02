@@ -1476,6 +1476,302 @@ async def apply_graph_edit(args: dict) -> dict:
     return {"edit_id": edit_id, "result": result}
 
 
+@activity.defn
+async def fix_preview(args: dict) -> dict:
+    """Phase C: "Correct the record" — translate ONE natural-language
+    correction into a proposal of graph ops. ONE LLM call, NO apply.
+    Structured busy/unparseable results instead of raising (the UI
+    surfaces them; a retry loop is the user's call)."""
+    c = cfg()
+    if not c.graph.enabled:
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — fix-preview cannot run"
+        )
+    from .graph_fix import run_fix_preview
+
+    return await _heartbeat_while(
+        asyncio.to_thread(
+            run_fix_preview,
+            c,
+            args["tag"],
+            args["instruction"],
+            args.get("recording_id") or None,
+        )
+    )
+
+
+@activity.defn
+async def fix_apply(args: dict) -> dict:
+    """Phase C: apply a proposal ALL-OR-NOTHING through the phase-A
+    updaters. No LLM. Every op re-validates against CURRENT state:
+    the proposal carries the op payloads; a target that moved or
+    vanished → the whole apply aborts BEFORE any mutation (validate
+    all, then apply all) — the diff the user confirmed is exactly what
+    lands.
+
+    Each applied op inserts a graph_edits row (source=agent) so the
+    overlay re-applies it after regenerates and the corrections block
+    can carry its feedback."""
+    c = cfg()
+    if not c.graph.enabled:
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — fix-apply cannot run"
+        )
+    tag: str = args["tag"]
+    proposal: dict = args["proposal"]
+    feedback_text: str | None = args.get("feedback_text") or None
+    ops: list[dict] = proposal.get("ops", [])
+
+    from .db import session
+    from .graph_edit import (
+        apply_entity_delete,
+        apply_entity_merge,
+        apply_event_delete,
+        apply_event_update,
+        apply_relation_create,
+        apply_relation_delete,
+        tag_recording_ids,
+        vault_paths_for,
+    )
+
+    # ---- validate every op against current state (no mutations yet) ----
+    rec_ids = tag_recording_ids(c, tag)
+    current_events: dict[str, list[dict]] = {}
+    current_entities: set[str] = set()
+    current_rels: set[tuple[str, str, str]] = set()
+
+    def _load_state() -> None:
+        from .graph_fix import _read_events_doc
+
+        for rid in rec_ids:
+            doc = _read_events_doc(c, rid)
+            current_events[rid] = [
+                e for e in doc.get("events", []) if isinstance(e, dict)
+            ]
+            for e in doc.get("entities", []):
+                if isinstance(e, dict) and isinstance(e.get("slug"), str):
+                    current_entities.add(e["slug"])
+            for r in doc.get("relations", []):
+                if isinstance(r, dict):
+                    triple = (r.get("from"), r.get("to"), r.get("type"))
+                    if all(isinstance(x, str) for x in triple):
+                        current_rels.add(
+                            (str(triple[0]), str(triple[1]), str(triple[2]))
+                        )
+
+    def _validate(op: dict) -> str | None:
+        """None = ok; str = per-op rejection reason (409 detail)."""
+        kind = op["op"]
+        if kind in ("event_update", "event_delete"):
+            key = op["event_key"]
+            hit = any(
+                e.get("event_key") == key for evs in current_events.values() for e in evs
+            )
+            if not hit:
+                return f"event {key} not found (regenerated?)"
+        elif kind == "relation_create":
+            if op["from"] not in current_entities or op["to"] not in current_entities:
+                return f"relation endpoints {op['from']}/{op['to']} missing"
+        elif kind == "relation_delete":
+            if (op["from"], op["to"], op["type"]) not in current_rels:
+                return f"relation {op['from']}->{op['to']} ({op['type']}) not found"
+        elif kind == "entity_merge":
+            if op["source"] not in current_entities:
+                return f"merge source {op['source']} missing"
+            if op["target"] not in current_entities:
+                return f"merge target {op['target']} missing"
+            if op["source"] == op["target"]:
+                return "merge source equals target"
+        elif kind == "entity_delete":
+            if op["slug"] not in current_entities:
+                return f"entity {op['slug']} not found"
+        return None
+
+    _load_state()
+    rejections = [
+        {"index": i, "op": op, "reason": why}
+        for i, op in enumerate(ops)
+        if (why := _validate(op)) is not None
+    ]
+    if rejections:
+        return {"ok": False, "reason": "stale", "rejections": rejections}
+
+    # ---- apply sequentially, all-or-nothing ----
+    applied: list[dict] = []
+    first_rec = rec_ids[0] if rec_ids else ""
+    try:
+        for op in ops:
+            kind = op["op"]
+            if kind in ("event_update", "event_delete"):
+                rid, key = _locate_event(current_events, op["event_key"])
+                paths = vault_paths_for(c, rid)
+                if kind == "event_delete":
+                    result = apply_event_delete(c, paths, tag, key)
+                else:
+                    anchor = {
+                        "origin_recording_id": rid,
+                        "kind": _event_field(current_events, key, "kind"),
+                        "ts": _event_field(current_events, key, "ts"),
+                        "before_summary": _event_field(
+                            current_events, key, "summary"
+                        ),
+                    }
+                    result = apply_event_update(
+                        c, paths, tag, key, op["after"], anchor
+                    )
+            elif kind == "relation_create":
+                result = apply_relation_create(
+                    c, vault_paths_for(c, first_rec), tag, op["from"], op["to"], op["type"]
+                )
+            elif kind == "relation_delete":
+                result = apply_relation_delete(
+                    c,
+                    vault_paths_for(c, first_rec),
+                    tag,
+                    op["from"],
+                    op["to"],
+                    op["type"],
+                )
+            elif kind == "entity_merge":
+                result = apply_entity_merge(
+                    c, vault_paths_for(c, first_rec), tag, op["source"], op["target"]
+                )
+            else:  # entity_delete
+                result = apply_entity_delete(
+                    c, vault_paths_for(c, first_rec), tag, op["slug"]
+                )
+            if not result.get("ok"):
+                raise ApplicationError(
+                    f"fix-apply op failed mid-batch: {result.get('reason')}",
+                    non_retryable=True,
+                )
+            applied.append(op)
+    except ApplicationError:
+        raise
+    except Exception as exc:
+        log.exception("fix_apply failed mid-batch")
+        raise ApplicationError(f"fix-apply failed: {exc}") from exc
+
+    # ---- record the edits (source=agent) for overlay + corrections ----
+    edit_ids: list[int] = []
+    with session() as s:
+        for op in applied:
+            row = _edit_row_for_op(tag, op, feedback_text)
+            if row is not None:
+                s.add(row)
+                s.flush()
+                edit_ids.append(row.id)
+        s.commit()
+
+    # Signal maintenance once for the whole batch (debounced digest).
+    try:
+        await _signal_graph_maintenance(tag)
+    except Exception:
+        log.exception("fix_apply: maintenance signal failed (batch applied)")
+
+    return {
+        "ok": True,
+        "applied": len(applied),
+        "edit_ids": edit_ids,
+    }
+
+
+def _locate_event(
+    current_events: dict[str, list[dict]], key: str
+) -> tuple[str, str]:
+    """(recording_id, event_key) of the event in the current snapshot."""
+    for rid, evs in current_events.items():
+        for e in evs:
+            if e.get("event_key") == key:
+                return rid, key
+    raise KeyError(key)
+
+
+def _event_field(
+    current_events: dict[str, list[dict]], key: str, field: str
+) -> Any:
+    for evs in current_events.values():
+        for e in evs:
+            if e.get("event_key") == key:
+                return e.get(field)
+    return None
+
+
+def _edit_row_for_op(tag: str, op: dict, feedback_text: str | None):
+    """graph_edits row matching the phase-A manual edit shapes."""
+    from .db import EditOp, EditStatus, EditTarget, GraphEdit
+
+    kind = op["op"]
+    if kind == "event_update":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.event,
+            op=EditOp.update,
+            obj_key=op["event_key"],
+            anchor=op.get("_anchor", {}),
+            before={},
+            after=op["after"],
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "event_delete":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.event,
+            op=EditOp.delete,
+            obj_key=op["event_key"],
+            anchor=op.get("_anchor", {}),
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "relation_create":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.relation,
+            op=EditOp.create,
+            obj_key=f"{op['from']}|{op['to']}|{op['type']}",
+            after={"from": op["from"], "to": op["to"], "type": op["type"]},
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "relation_delete":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.relation,
+            op=EditOp.delete,
+            obj_key=f"{op['from']}|{op['to']}|{op['type']}",
+            before={"from": op["from"], "to": op["to"], "type": op["type"]},
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "entity_merge":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.entity,
+            op=EditOp.merge,
+            obj_key=op["source"],
+            before={"source": op["source"], "target": op["target"]},
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "entity_delete":
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.entity,
+            op=EditOp.delete,
+            obj_key=op["slug"],
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    return None
+
+
 def _first_tag_recording(c: WorkerConfig, tag: str) -> str:
     """A recording id to scope vault paths from (relation/entity ops
     rewrite across ALL tag recordings; the VaultPaths only seeds the

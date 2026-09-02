@@ -390,3 +390,40 @@ class ApplyGraphEdit:
             retry_policy=RetryPolicy(maximum_attempts=2),
             heartbeat_timeout=timedelta(seconds=60),
         )
+
+
+@workflow.defn
+class GraphFixPreview:
+    """Phase C: "Correct the record" — ONE LLM call translating a
+    natural-language correction into a proposal of graph ops. No
+    mutation here (apply is a separate manual step the user confirms).
+    Short-ish budget: the httpx call inside times out at 120 s; the
+    retry covers transient proxy hiccups only — parse/validation
+    failures return structured results, not raises."""
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "fix_preview",
+            args,
+            start_to_close_timeout=timedelta(seconds=180),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+
+
+@workflow.defn
+class GraphFixApply:
+    """Phase C: apply a confirmed proposal all-or-nothing through the
+    phase-A updaters. No LLM. Stale targets (regenerate raced in)
+    return a structured rejection list, not an error — the UI shows
+    which ops went stale."""
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "fix_apply",
+            args,
+            start_to_close_timeout=timedelta(seconds=300),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_timeout=timedelta(seconds=60),
+        )

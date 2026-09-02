@@ -123,3 +123,37 @@ async def start_apply_graph_edit(edit_id: int) -> str:
         task_queue=TASK_QUEUE,
     )
     return handle.id
+
+GRAPH_FIX_PREVIEW_WORKFLOW_NAME = "GraphFixPreview"
+GRAPH_FIX_APPLY_WORKFLOW_NAME = "GraphFixApply"
+GRAPH_FIX_ID_PREFIX = "graph-fix-"
+
+
+async def start_fix_preview(
+    tag: str, instruction: str, recording_id: str | None
+) -> str:
+    """Phase C: ONE LLM call → proposal (no apply). Unique id per
+    request; the API's rate limiter (not the workflow id) guards
+    against parallel preview fan-out."""
+    client = await get_client()
+    handle = await client.start_workflow(
+        GRAPH_FIX_PREVIEW_WORKFLOW_NAME,
+        {"tag": tag, "instruction": instruction, "recording_id": recording_id},
+        id=f"{GRAPH_FIX_ID_PREFIX}preview-{tag}-{uuid.uuid4().hex[:8]}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id
+
+
+async def start_fix_apply(
+    tag: str, proposal: dict, feedback_text: str | None
+) -> str:
+    """Phase C: apply a confirmed proposal all-or-nothing (no LLM)."""
+    client = await get_client()
+    handle = await client.start_workflow(
+        GRAPH_FIX_APPLY_WORKFLOW_NAME,
+        {"tag": tag, "proposal": proposal, "feedback_text": feedback_text},
+        id=f"{GRAPH_FIX_ID_PREFIX}apply-{tag}-{uuid.uuid4().hex[:8]}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id

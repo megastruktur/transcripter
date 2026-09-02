@@ -26,13 +26,14 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from temporalio.service import RPCError
 
 from app import temporal_client
 from app.config import ServerConfig
@@ -798,6 +799,202 @@ def get_digest_status(
         "state": state,
         "last_edit_at": last_edit.isoformat(),
         "debounce_sec": cfg.graph.edit_debounce_sec,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Phase C: "Correct the record" — AI-translated fixes (preview → confirm →
+# apply). The LLM PROPOSES; the user confirms; fix_apply mutates through
+# the phase-A updaters. Rate limiting is per-process in-memory state on
+# app.state: 1 in-flight preview per tag + a cooldown so a stuck client
+# cannot stack LLM calls (self-hosted model, parallel=1).
+# ---------------------------------------------------------------------------
+
+_FIX_PREVIEW_COOLDOWN_SEC = 30.0
+
+
+class FixPreviewRequest(BaseModel):
+    instruction: str = Field(min_length=3, max_length=500)
+    recording_id: str | None = None
+
+
+class FixApplyRequest(BaseModel):
+    proposal: dict
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+def _preview_gate(app_state: Any, tag: str) -> None:
+    """409 while a preview for this tag is in flight or inside the
+    cooldown window. State: {tag: (workflow_id | None, until_ts)}."""
+    import time
+
+    gate = getattr(app_state, "_fix_preview_gate", None)
+    if gate is None:
+        gate = {}
+        app_state._fix_preview_gate = gate
+    now = time.monotonic()
+    wf_id, until = gate.get(tag, (None, 0.0))
+    if wf_id is not None:
+        raise HTTPException(
+            status_code=409, detail="a preview for this tag is already running"
+        )
+    if now < until:
+        raise HTTPException(
+            status_code=429,
+            detail=f"preview cooldown; retry in {int(until - now) + 1}s",
+        )
+    gate[tag] = (f"pending-{now}", now + _FIX_PREVIEW_COOLDOWN_SEC)
+
+
+def _preview_release(app_state: Any, tag: str, workflow_id: str | None) -> None:
+    """Move the gate from pending to done: cooldown from NOW (the LLM
+    call just finished), no in-flight slot held."""
+    import time
+
+    gate = getattr(app_state, "_fix_preview_gate", {})
+    gate[tag] = (None, time.monotonic() + _FIX_PREVIEW_COOLDOWN_SEC)
+
+
+@router.post("/{tag}/fix-preview", status_code=202)
+async def post_fix_preview(
+    body: FixPreviewRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase C: translate ONE natural-language correction into a
+    proposal of graph ops (ONE LLM call, no mutation). Result is polled
+    from GET /{tag}/fix-preview/{workflow_id}."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    _timeline_or_404(cfg, session, norm)
+    _preview_gate(request.app.state, norm)
+    try:
+        workflow_id = await temporal_client.start_fix_preview(
+            norm, body.instruction.strip(), body.recording_id
+        )
+    except Exception:  # noqa: BLE001 — same blind-catch shape as post_digest
+        _LOG.exception("fix-preview start failed for tag=%s", norm)
+        _preview_release(request.app.state, norm, None)
+        raise HTTPException(status_code=503, detail="temporal unavailable")
+    return {"workflow_id": workflow_id, "tag": norm}
+
+
+@router.get("/{tag}/fix-preview/{workflow_id}")
+async def get_fix_preview(
+    request: Request,
+    tag: Annotated[str, Path()],
+    workflow_id: Annotated[str, Path()],
+) -> dict:
+    """Poll the preview result. 200 {state, proposal?, reason?} —
+    ``running`` until the workflow finishes, then the activity's
+    structured result (ok/busy/unparseable/invalid). Releases the
+    per-tag gate when the run settles."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    if not workflow_id.startswith("graph-fix-preview-"):
+        raise HTTPException(status_code=400, detail="not a fix-preview workflow id")
+    from temporalio.client import WorkflowExecutionStatus, WorkflowFailureError
+
+    client = await temporal_client.get_client()
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        desc = await handle.describe()
+    except RPCError:  # unknown workflow id (already-evicted or typo)
+        _preview_release(request.app.state, norm, workflow_id)
+        return {"state": "unknown"}
+    if desc.status == WorkflowExecutionStatus.RUNNING:
+        return {"state": "running"}
+    try:
+        result = await handle.result()
+    except WorkflowFailureError as e:
+        _preview_release(request.app.state, norm, workflow_id)
+        return {"state": "failed", "detail": str(e)[:300]}
+    except RPCError:  # completed but evicted (retention) — nothing to fetch
+        _preview_release(request.app.state, norm, workflow_id)
+        return {"state": "unknown"}
+    _preview_release(request.app.state, norm, workflow_id)
+    if not result.get("ok"):
+        return {"state": result.get("reason", "failed"), "detail": result.get("detail")}
+    return {
+        "state": "ready",
+        "proposal": result["proposal"],
+        "context": result.get("context", {}),
+    }
+
+
+@router.post("/{tag}/fix-apply", status_code=202)
+async def post_fix_apply(
+    body: FixApplyRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase C: apply the confirmed proposal all-or-nothing. The
+    activity re-validates every op against CURRENT state; stale ops
+    surface through the poll endpoint as a rejection list (the diff the
+    user saw is exactly what lands)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    _timeline_or_404(cfg, session, norm)
+    ops = body.proposal.get("ops")
+    if not isinstance(ops, list) or not ops:
+        raise HTTPException(status_code=400, detail="proposal.ops must be a non-empty list")
+    try:
+        workflow_id = await temporal_client.start_fix_apply(
+            norm, body.proposal, body.feedback_text
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.exception("fix-apply start failed for tag=%s", norm)
+        raise HTTPException(status_code=503, detail="temporal unavailable")
+    return {"workflow_id": workflow_id, "tag": norm}
+
+
+@router.get("/{tag}/fix-apply/{workflow_id}")
+async def get_fix_apply(
+    request: Request,
+    tag: Annotated[str, Path()],
+    workflow_id: Annotated[str, Path()],
+) -> dict:
+    """Poll the apply result: running | ok | stale (with per-op
+    rejections)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    if not workflow_id.startswith("graph-fix-apply-"):
+        raise HTTPException(status_code=400, detail="not a fix-apply workflow id")
+    from temporalio.client import WorkflowExecutionStatus, WorkflowFailureError
+
+    client = await temporal_client.get_client()
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        desc = await handle.describe()
+    except RPCError:  # unknown workflow id (already-evicted or typo)
+        return {"state": "unknown"}
+    if desc.status == WorkflowExecutionStatus.RUNNING:
+        return {"state": "running"}
+    try:
+        result = await handle.result()
+    except WorkflowFailureError as e:
+        return {"state": "failed", "detail": str(e)[:300]}
+    except RPCError:  # completed but evicted — nothing to fetch
+        return {"state": "unknown"}
+    if result.get("ok"):
+        return {
+            "state": "ok",
+            "applied": result.get("applied", 0),
+            "edit_ids": result.get("edit_ids", []),
+        }
+    return {
+        "state": result.get("reason", "failed"),
+        "rejections": result.get("rejections", []),
     }
 
 
