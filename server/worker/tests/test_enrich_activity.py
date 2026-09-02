@@ -404,7 +404,7 @@ def test_known_entities_lookup_runs_for_first_namespace(
 
     sent: dict[str, Any] = {}
 
-    def fake_extract(path, title, prompt_template, c, known_entities=""):
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections=""):
         sent["block"] = known_entities
         return extracted_graph
 

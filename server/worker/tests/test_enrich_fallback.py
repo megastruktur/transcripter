@@ -107,7 +107,7 @@ def test_fallback_used_when_no_profile_and_enrich_all(
     graph.entities = []
     graph.relations = []
 
-    def fake_extract(path, title, prompt_template, c, known_entities=""):
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections=""):
         captured["prompt"] = prompt_template
         captured["known_entities"] = known_entities
         return graph
@@ -156,7 +156,7 @@ def test_fallback_renders_known_entities_block(
     graph.entities = []
     graph.relations = []
 
-    def fake_extract(path, title, prompt_template, c, known_entities=""):
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections=""):
         captured["known_entities"] = known_entities
         return graph
 

@@ -802,6 +802,19 @@ async def enrich(rec_id: str) -> dict:
                 rows = []
             known_entities_block = render_known_entities(rows)
 
+        # Phase B corrections: feedback_text of active edits for the
+        # recording's namespaces, rendered into {corrections}. Unlike
+        # known_entities there is no profile knob — the placeholder
+        # itself is the opt-in (a prompt without {corrections} renders
+        # nothing extra; the lookup is Postgres-cheap and always runs).
+        from .enrich import active_corrections_for_tags, render_corrections
+
+        corrections_block = render_corrections(
+            await _heartbeat_while(
+                asyncio.to_thread(active_corrections_for_tags, graph_tags)
+            )
+        )
+
         # Extract (json_object + ×3 attempts) — synchronous LLM call.
         extracted = await _heartbeat_while(
             asyncio.to_thread(
@@ -811,6 +824,7 @@ async def enrich(rec_id: str) -> dict:
                 enrich_spec.prompt,
                 c,
                 known_entities_block,
+                corrections_block,
             )
         )
 

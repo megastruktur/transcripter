@@ -88,9 +88,9 @@ _DEDUP_NEGATIVE = {"n", "no", "false", "different", "нет", "不"}
 # section still means the author opted out. Russian like the shipped
 # profiles; deliberately minimal ontology because a domain profile
 # always beats it. MUST keep all three placeholders ({title},
-# {transcript}, {known_entities}): the activity always renders the
-# known-entities block for it, and the same literal-.replace() rules
-# apply (JSON braces below are safe).
+# {transcript}, {known_entities}, {corrections}): the activity always
+# renders the known-entities and corrections blocks for it, and the
+# same literal-.replace() rules apply (JSON braces below are safe).
 _FALLBACK_ENRICH_PROMPT = """\
 Ты извлекаешь структурированные данные из транскрипта записи «{title}».
 Верни JSON-объект:
@@ -107,9 +107,11 @@ relations — связи между сущностями (например: work
 Пустые разделы — пустые списки.
 Известные сущности этого пространства (переиспользуй их slug, если упоминаешь):
 {known_entities}
+Устойчивые правки оператора к прошлым ошибкам извлечения (это не факты
+транскрипта — это указания; применяй их, если предмет правки возникает):
+{corrections}
 ТРАНСКРИПТ:
 {transcript}"""
-
 
 @dataclass(frozen=True)
 class ExtractedEvent:
@@ -267,16 +269,21 @@ def _parse_extraction(payload: Any) -> ExtractedGraph:
         entities=entities,
         relations=[r for r in (_coerce_relation(x) for x in raw_relations) if r is not None],
     )
-
-
 def _render_prompt(
-    template: str, title: str, transcript: str, known_entities: str = ""
+    template: str,
+    title: str,
+    transcript: str,
+    known_entities: str = "",
+    corrections: str = "",
 ) -> str:
-    """Substitute {title} / {transcript} / {known_entities}. The contract
-    requires ``{transcript}``; profiles.py already enforces that on load —
-    and also enforces ``{known_entities}`` whenever a profile enables the
-    known-entities lookup. ``{title}`` is optional."""
-    # Literal replacement of exactly three placeholders — NOT str.format:
+    """Substitute {title} / {transcript} / {known_entities} /
+    {corrections}. The contract requires ``{transcript}``; profiles.py
+    already enforces that on load — and also enforces
+    ``{known_entities}`` whenever a profile enables the known-entities
+    lookup. ``{title}`` is optional; ``{corrections}`` renders only
+    when the profile opts in by using the placeholder (no config
+    knob — an unused placeholder renders empty)."""
+    # Literal replacement of exactly four placeholders — NOT str.format:
     # profile prompts legitimately embed JSON schema examples with braces
     # ({"events": [...]}) which format() would read as replacement fields
     # and die with KeyError (observed live 2026-08-27 on a profile's
@@ -285,6 +292,7 @@ def _render_prompt(
         template.replace("{title}", title or "")
         .replace("{transcript}", transcript)
         .replace("{known_entities}", known_entities)
+        .replace("{corrections}", corrections)
     )
 
 
@@ -294,6 +302,7 @@ def extract_from_transcript(
     prompt_template: str,
     cfg: Any,
     known_entities: str = "",
+    corrections: str = "",
 ) -> ExtractedGraph:
     """One HTTP call to the chat endpoint; retry the same call twice if the
     model returns non-JSON or HTTP 5xx. Raises after the third failure —
@@ -303,12 +312,17 @@ def extract_from_transcript(
     same local llama-server (or LiteLLM proxy) backs both summarize
     and enrich — adding a second LLM config would just fork the
     deployment for no semantic gain.
+
+    ``corrections`` is the pre-rendered ``{corrections}`` block
+    (feedback_text of active graph edits for the tag); ``known_entities``
+    is the pre-rendered block for the optional ``{known_entities}``
+    placeholder (empty when the prompt doesn't use it — the activity
+    skips the graph lookup entirely in that case).
     """
     transcript = transcript_path.read_text(encoding="utf-8")
-    # ``known_entities`` is the PRE-RENDERED block for the optional
-    # {known_entities} placeholder (empty when the prompt doesn't use it
-    # — the activity skips the graph lookup entirely in that case).
-    user_content = _render_prompt(prompt_template, title, transcript, known_entities)
+    user_content = _render_prompt(
+        prompt_template, title, transcript, known_entities, corrections
+    )
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
 
@@ -1270,6 +1284,69 @@ def render_known_entities(rows: list[dict[str, str]]) -> str:
     return "\n".join(
         f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows
     )
+
+
+def render_corrections(items: list[str]) -> str:
+    """Render the ``{corrections}`` prompt block (phase B).
+
+    One ``- text`` line per active feedback_text. Same empty-input
+    rule as ``render_known_entities``: no corrections → EMPTY string
+    (a literal ``(none)`` block historically breaks qwen3.6 JSON
+    output — see the note there). Caps live in the caller
+    (``_CORRECTIONS_MAX_ITEMS`` / ``_CORRECTIONS_MAX_CHARS``): the
+    rendered block must stay bounded no matter how many edits
+    accumulate.
+    """
+    return "\n".join(f"- {text}" for text in items)
+
+
+# Phase B caps (critic finding #7): top-20 most-recent feedback items,
+# whole block ~2000 chars — the prompt stays bounded as edits
+# accumulate; older items silently age out of the block (the audit UI
+# can retire them entirely).
+_CORRECTIONS_MAX_ITEMS = 20
+_CORRECTIONS_MAX_CHARS = 2000
+
+
+def active_corrections_for_tags(tags: list[str]) -> list[str]:
+    """feedback_text of ACTIVE edits (status=applied, feedback present)
+    for ``tags``, most recent first, capped by the phase-B constants.
+
+    Postgres lookup (graph_edits), not Neo4j: corrections are user
+    decisions, not extracted facts. Lazy ``worker.db`` import — the
+    same pattern ``graph_edit.reapply_overlay`` uses (import at module
+    top would tie the enrich module to the DB engine lifecycle).
+    Called from the enrich activity in a worker thread; any failure
+    returns [] — corrections are best-effort prompt enhancement and
+    must NEVER fail the stage.
+    """
+    from .db import EditStatus, GraphEdit, session
+
+    try:
+        with session() as db:
+            rows = (
+                db.query(GraphEdit)
+                .filter(
+                    GraphEdit.tag.in_(tags),
+                    GraphEdit.status == EditStatus.applied,
+                    GraphEdit.feedback_text.isnot(None),
+                )
+                .order_by(GraphEdit.created_at.desc())
+                .limit(_CORRECTIONS_MAX_ITEMS)
+                .all()
+            )
+    except Exception:
+        log.exception("enrich: corrections lookup failed; continuing without")
+        return []
+    items = [r.feedback_text for r in rows if r.feedback_text]
+    block: list[str] = []
+    total = 0
+    for text in items:
+        if total + len(text) > _CORRECTIONS_MAX_CHARS and block:
+            break
+        block.append(text)
+        total += len(text)
+    return block
 
 
 
