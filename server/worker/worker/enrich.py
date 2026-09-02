@@ -31,6 +31,7 @@ Design notes (locked by the wave-B plan):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -155,6 +156,35 @@ def slugify(label: str) -> str:
     s = _NON_ALNUM.sub("-", label.casefold()).strip("-")
     s = _MULTI_DASH.sub("-", s)
     return s or "unknown"
+
+
+def compute_event_key(rec_id: str, ts: str, kind: str, summary: str, occurrence: int = 0) -> str:
+    """Phase A: deterministic event identity WITHIN ONE generation.
+
+    hash(origin_recording_id, ts, kind, summary) + an occurrence suffix
+    when the SAME (ts, kind, summary) triple appears twice in one
+    extraction (the LLM sometimes emits near-identical events). The key
+    is NOT stable across regenerate — re-extraction rewords summaries —
+    which is exactly why the edit-store keeps the fuzzy re-anchor
+    context (``anchor``) and re-keys edits on every overlay pass; the
+    key only has to address an event between regenerates.
+    """
+    raw = f"{rec_id}\x1f{ts}\x1f{kind}\x1f{summary}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return digest if occurrence == 0 else f"{digest}-{occurrence}"
+
+
+def compute_event_keys(rec_id: str, events: list[ExtractedEvent]) -> list[str]:
+    """Keys for a whole extraction, occurrence-suffixed on collision
+    (list order keeps them deterministic for the same extraction)."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for ev in events:
+        base = compute_event_key(rec_id, ev.ts, ev.kind, ev.summary)
+        n = seen.get(base, 0)
+        seen[base] = n + 1
+        out.append(base if n == 0 else f"{base}-{n}")
+    return out
 
 
 def _coerce_mentions(raw: Any, known_slugs: set[str] | None) -> list[str]:
@@ -649,6 +679,7 @@ def write_to_graph(
                 (
                     f"CREATE (e:`{safe_event_label}` {{"
                     "ts: $ts, kind: $kind, summary: $summary, "
+                    "event_key: $event_key, "
                     "recording_date: $recording_date, recording_title: $recording_title, "
                     # Not an f-string: a single closing brace is literal here
                     # ("}}" would survive verbatim and break Cypher — caught
@@ -679,6 +710,12 @@ def write_to_graph(
             )
             if purge_origin:
                 tx.run(delete_query, rec=rec_id)
+            # Phase A event keys: deterministic identity within ONE
+            # generation (see ``compute_event_keys``). Computed once for
+            # the whole recording so the artifact and every namespace
+            # copy share identical keys (occurrence suffixes stable by
+            # list order).
+            event_keys = compute_event_keys(rec_id, graph.events)
 
             # First pass: entities. Build a slug → id map via MERGE so
             # the second pass (relations) can refer to them by key.
@@ -700,12 +737,13 @@ def write_to_graph(
                     slug_to_node[ent.slug] = node[0]
             # Second pass: events.
             event_ids: list[str] = []
-            for ev in graph.events:
+            for ev, ev_key in zip(graph.events, event_keys, strict=False):
                 node = tx.run(
                     event_query,
                     ts=ev.ts,
                     kind=ev.kind,
                     summary=ev.summary,
+                    event_key=ev_key,
                     tag=tag,
                     rec=rec_id,
                     recording_date=recording_date,
@@ -878,7 +916,7 @@ def write_events_json(
 
     ``{recording_id, recording_date (ISO-8601 UTC),
     recording_title, profile_id, namespaces,
-    events: [{ts, kind, summary, mentions}],
+    events: [{event_key, ts, kind, summary, mentions}],
     entities: [{slug, label, type}],
     relations: [{from, to, type}]}``
 
@@ -892,6 +930,7 @@ def write_events_json(
     timeline stays in sync with the graph after a rename.
     """
     corrected = corrected_labels or {}
+    event_keys = compute_event_keys(recording_id, resolved.events)
     payload = {
         "recording_id": recording_id,
         "recording_date": recording_date,
@@ -900,12 +939,13 @@ def write_events_json(
         "namespaces": list(namespaces),
         "events": [
             {
+                "event_key": ev_key,
                 "ts": ev.ts,
                 "kind": ev.kind,
                 "summary": ev.summary,
                 "mentions": _event_mentions(ev, resolved.entities),
             }
-            for ev in resolved.events
+            for ev, ev_key in zip(resolved.events, event_keys, strict=False)
         ],
         "entities": [
             {

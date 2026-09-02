@@ -93,6 +93,11 @@ graph:
   # trigger a refresh.
   auto_digest: true
   auto_digest_window_sec: 3600
+  # Phase A graph editing: digest renewal debounce (seconds). Edits to a
+  # tag's events/entities/relations signal a per-tag maintenance
+  # workflow; after this much silence ONE digest regen runs (a burst of
+  # edits = one LLM call, not one per edit). 0 = renew immediately.
+  edit_debounce_sec: 180
   # Phase 2.5 embedding prefilter for entity dedup (see graph.embed below
   # for the backend): when vectors are available, slug collisions with
   # cosine >= embed_tau_high are merged WITHOUT the LLM, cosine <=

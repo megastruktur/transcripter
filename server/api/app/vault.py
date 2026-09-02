@@ -16,6 +16,7 @@ uploading capture is real user intent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -193,7 +194,10 @@ def _read_events_json(cfg: ServerConfig, recording_id: str) -> dict | None:
 
 def _clean_events(recording_id: str, doc: dict | None) -> list[dict]:
     """The per-session events list in the client contract shape
-    (``{ts, kind, summary, mentions}``); non-dict entries are dropped."""
+    (``{event_key, ts, kind, summary, mentions}``); non-dict entries
+    are dropped. ``event_key`` comes from the file (Phase A+ worker)
+    or is computed for legacy files — every served event is
+    addressable by key."""
     if doc is None:
         return []
     events = doc.get("events")
@@ -213,6 +217,36 @@ def _clean_events(recording_id: str, doc: dict | None) -> list[dict]:
                 "mentions": mentions if isinstance(mentions, list) else [],
             }
         )
+    return _events_with_keys(recording_id, out)
+
+
+def compute_event_key(rec_id: str, ts: str, kind: str, summary: str, occurrence: int = 0) -> str:
+    """Phase A: deterministic event identity (hash of origin/ts/kind/
+    summary + occurrence suffix on duplicates). EXACT TWIN of the
+    worker's ``enrich.compute_event_key`` — the API needs it to serve
+    computed keys for legacy events.json files written before event_key
+    existed; change the two IN SYNC."""
+    raw = f"{rec_id}\x1f{ts}\x1f{kind}\x1f{summary}"
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return digest if occurrence == 0 else f"{digest}-{occurrence}"
+
+
+def _events_with_keys(recording_id: str, events: list[dict]) -> list[dict]:
+    """Events with ``event_key`` filled in: files written by a Phase A+
+    worker carry the key; legacy files get it computed on read
+    (occurrence-suffixed on collision, same rule as the writer)."""
+    seen: dict[str, int] = {}
+    out: list[dict] = []
+    for ev in events:
+        key = ev.get("event_key")
+        if not isinstance(key, str) or not key:
+            base = compute_event_key(
+                recording_id, ev.get("ts", ""), ev.get("kind", ""), ev.get("summary", "")
+            )
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            key = base if n == 0 else f"{base}-{n}"
+        out.append({**ev, "event_key": key})
     return out
 
 

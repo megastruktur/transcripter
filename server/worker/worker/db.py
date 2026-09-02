@@ -18,6 +18,8 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+from .graph_edit_model import EditOp, EditStatus, EditTarget
+
 
 class Base(DeclarativeBase):
     pass
@@ -98,6 +100,41 @@ class Stage(Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
     recording: Mapped[Recording] = relationship(back_populates="stages")
+
+class GraphEdit(Base):
+    """Edit-store row (Phase A graph editing). Created via the API's
+    ``create_all``; the worker only reads/writes rows. ``before``/``after``
+    carry the op payload (event patch, relation triple, merge pair);
+    ``anchor`` carries the fuzzy re-anchor context for event edits
+    (origin_recording_id, kind, ts, before-summary). ``feedback_text``
+    is the NL instruction injected into enrich prompts (Phase B)."""
+
+    __tablename__ = "graph_edits"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tag: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    target: Mapped[EditTarget] = mapped_column(
+        Enum(EditTarget, name="edit_target"), nullable=False
+    )
+    op: Mapped[EditOp] = mapped_column(Enum(EditOp, name="edit_op"), nullable=False)
+    # Which object: event_key / slug / "from|to|type" for relations.
+    obj_key: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    anchor: Mapped[dict] = mapped_column(JSON, default=dict)
+    before: Mapped[dict] = mapped_column(JSON, default=dict)
+    after: Mapped[dict] = mapped_column(JSON, default=dict)
+    feedback_text: Mapped[str | None] = mapped_column(Text, default=None)
+    source: Mapped[str] = mapped_column(String(16), default="user")
+    status: Mapped[EditStatus] = mapped_column(
+        Enum(EditStatus, name="edit_status"), default=EditStatus.applied
+    )
+    applied_namespaces: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
 
 
 _engine = None

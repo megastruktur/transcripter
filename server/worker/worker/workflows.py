@@ -37,6 +37,7 @@ def _no_retry() -> RetryPolicy:
     the user re-runs regeneration deliberately from the UI."""
     return RetryPolicy(maximum_attempts=1)
 
+
 def _enrich_retry() -> RetryPolicy:
     """Phase 3-F F2: enrich gets 3 attempts with a 5-min backoff.
 
@@ -55,6 +56,7 @@ def _enrich_retry() -> RetryPolicy:
         maximum_interval=timedelta(seconds=300),
     )
 
+
 def _diarize_retry() -> RetryPolicy:
     # No compose depends_on anymore (profile-gated service): the first
     # recording after `--profile diarization up` may hit LinTO still loading
@@ -64,6 +66,7 @@ def _diarize_retry() -> RetryPolicy:
         initial_interval=timedelta(seconds=30),
         maximum_interval=timedelta(seconds=60),
     )
+
 
 def _ml_budget(duration: float | None, chunk_result: dict | None) -> int:
     """StartToClose for transcribe/diarize under chunking: N × the per-chunk
@@ -169,7 +172,9 @@ class ProcessRecording:
                 result["diarize"] = await workflow.execute_activity(
                     "diarize",
                     rec_id,
-                    start_to_close_timeout=timedelta(seconds=_ml_budget(duration, result.get("chunk"))),
+                    start_to_close_timeout=timedelta(
+                        seconds=_ml_budget(duration, result.get("chunk"))
+                    ),
                     retry_policy=_diarize_retry(),
                     heartbeat_timeout=timedelta(seconds=120),
                 )
@@ -210,6 +215,7 @@ class ProcessRecording:
                 )
             except ActivityError:
                 workflow.logger.warning("enrich failed for %s; recording still done", rec_id)
+
 
 @workflow.defn
 class ExportRecording:
@@ -310,4 +316,77 @@ class RenameEntity:
             args,
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+
+
+@workflow.defn
+class GraphMaintenance:
+    """Phase A: debounced digest renewal for ONE tag after graph edits.
+
+    Every applied edit signals ``edit_applied``; the workflow waits
+    ``graph.edit_debounce_sec`` of silence (timer reset per signal — a
+    burst of edits renews the digest ONCE), then runs the tag_digest
+    activity only when the digest file is older than the newest edit
+    row (the mtime skip: an enrich auto-digest that already rewrote the
+    note suppresses a redundant LLM call).
+
+    Runs forever (one workflow per tag, workflow id
+    ``graph-maintenance-<tag>``); the activity carries the same 2400 s
+    LLM budget envelope as TagDigest. Timer value is passed in args
+    (read from config by the starter) so the workflow itself stays
+    deterministic.
+    """
+
+    @workflow.signal
+    async def edit_applied(self) -> None:
+        self._signalled = True
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        tag: str = args["tag"]
+        debounce_s: float = float(args.get("edit_debounce_sec", 180))
+        self._signalled = True  # first start counts as one pending renewal
+        while True:
+            # Drain-then-wait: debounce — any signal during the window
+            # restarts it. ``wait_condition`` with a timeout returns on
+            # EITHER the condition flipping (signal → restart the
+            # window) or the timeout elapsing (silence → renew). The
+            # pending-signal flag is cleared BEFORE waiting so a signal
+            # that lands during the wait is seen, not swallowed.
+            if not self._signalled:
+                await workflow.wait_condition(lambda: self._signalled, timeout=None)
+            while self._signalled:
+                self._signalled = False
+                try:
+                    await workflow.wait_condition(lambda: self._signalled, timeout=debounce_s)
+                except TimeoutError:
+                    pass  # silence reached — fall through to renewal
+            # Renewal; the mtime skip inside the activity decides
+            # whether an LLM call is actually needed.
+            await workflow.execute_activity(
+                "renew_tag_digest",
+                {"tag": tag},
+                start_to_close_timeout=timedelta(seconds=2400),
+                retry_policy=_no_retry(),
+                heartbeat_timeout=timedelta(seconds=120),
+            )
+
+
+@workflow.defn
+class ApplyGraphEdit:
+    """Phase A: apply ONE stored graph edit. Thin single-activity
+    wrapper — same shape as RenameEntity: the API starts it after its
+    own validation; the workflow makes the write visible/cancellable in
+    the Temporal UI and carries a short retry for transient
+    Neo4j/Postgres hiccups (target-missing raises non-retryable inside
+    the activity)."""
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "apply_graph_edit",
+            args,
+            start_to_close_timeout=timedelta(seconds=300),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_timeout=timedelta(seconds=60),
         )

@@ -81,6 +81,11 @@ class GraphConfig(BaseModel):
     # worker reads; the api only consumes backend/model_path/base_url/
     # model/api_key_env/dimensions).
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    # Phase A graph editing: digest renewal debounce (seconds) after a
+    # burst of edits — one regen per tag once the burst settles. The API
+    # does not run the regen itself (worker workflow), but serves the
+    # value through /tags/{tag}/digest/status so clients can predict it.
+    edit_debounce_sec: int = 180
 
     @property
     def enabled(self) -> bool:

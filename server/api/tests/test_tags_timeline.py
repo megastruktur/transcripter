@@ -133,8 +133,14 @@ def test_timeline_session_shape_and_events(client: TestClient) -> None:
     assert session["type"] is None
     assert session["duration_sec"] is None
     assert session["entity_count"] == 1
+    from app.vault import compute_event_key
+
+    expected_key = compute_event_key(
+        rid, "2026-08-01T10:05:00", "state_change", "Strahd retreats"
+    )
     assert session["events"] == [
         {
+            "event_key": expected_key,
             "ts": "2026-08-01T10:05:00",
             "kind": "state_change",
             "summary": "Strahd retreats",

@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app import temporal_client
 from app.config import ServerConfig
-from app.db import get_session
+from app.db import EditOp, EditStatus, EditTarget, GraphEdit, get_session
 from app.embeddings import embed_query, expected_index_meta
 from app.semantic_index import index_status, knn_search
 from app.vault import _tag_recordings, find_digest, scan_timeline
@@ -318,6 +318,497 @@ async def patch_entity(
             status_code=503, detail="temporal unavailable; try again later"
         )
     return {"workflow_id": workflow_id, "tag": norm, "slug": slug, "label": label}
+
+
+# ------------------------- Phase A: graph editing -------------------------
+
+
+class EventPatchRequest(BaseModel):
+    """PATCH one event: any of ts/kind/summary/mentions; absent fields
+    are left as-is. ``feedback_text`` (optional, ≤500 chars) is the NL
+    rule stored for the enrich prompt block (Phase B)."""
+
+    ts: str | None = Field(default=None, max_length=32)
+    kind: str | None = Field(default=None, max_length=100)
+    summary: str | None = Field(default=None, max_length=2000)
+    mentions: list[str] | None = None
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+class RelationCreateRequest(BaseModel):
+    from_slug: str = Field(min_length=1, max_length=200)
+    to_slug: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+class RelationDeleteRequest(BaseModel):
+    from_slug: str = Field(min_length=1, max_length=200)
+    to_slug: str = Field(min_length=1, max_length=200)
+    type: str = Field(min_length=1, max_length=100)
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+class EntityDeleteRequest(BaseModel):
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+class EntityMergeRequest(BaseModel):
+    source_slug: str = Field(min_length=1, max_length=200)
+    target_slug: str = Field(min_length=1, max_length=200)
+    feedback_text: str | None = Field(default=None, max_length=500)
+
+
+def _require_graph(cfg: ServerConfig, tag: str) -> None:
+    """409 with the operator-facing detail when the graph backend is
+    off — same UX shape as POST /digest and PATCH entities."""
+    if not cfg.graph.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "graph backend not configured (graph.uri empty) — start the "
+                "compose graph profile or set graph.uri in config.yaml"
+            ),
+        )
+
+
+def _timeline_or_404(cfg: ServerConfig, session: Session, tag: str) -> dict:
+    payload = scan_timeline(cfg, session, tag)
+    if not payload["sessions"]:
+        raise HTTPException(status_code=404, detail=f"no recordings for tag {tag}")
+    return payload
+
+
+def _start_edit_workflow(
+    session: Session,
+    *,
+    tag: str,
+    target: EditTarget,
+    op: EditOp,
+    obj_key: str,
+    before: dict,
+    after: dict,
+    anchor: dict,
+    feedback_text: str | None,
+    source: str = "user",
+) -> int:
+    """Insert the graph_edits row (applied-pending) and start the
+    ApplyGraphEdit workflow. Returns the edit id. Raises 503 on Temporal
+    failure AFTER the row insert — the row stays and the audit UI shows
+    it as not-yet-applied (re-triggerable later)."""
+    row = GraphEdit(
+        tag=tag,
+        target=target,
+        op=op,
+        obj_key=obj_key,
+        before=before,
+        after=after,
+        anchor=anchor,
+        feedback_text=(feedback_text or None),
+        source=source,
+        status=EditStatus.applied,
+        applied_namespaces=[tag],
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row.id
+
+
+@router.patch("/{tag}/events/{event_key}", status_code=202)
+async def patch_event(
+    body: EventPatchRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    event_key: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: edit ONE event (summary/kind/ts/mentions) of the tag's
+    timeline. Existence check = the SAME timeline payload the UI serves
+    (events.json across the tag's DONE recordings); the workflow
+    applies to the graph + artifact copies of the origin recording."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    payload = _timeline_or_404(cfg, session, norm)
+    found = None
+    for sess_ in payload["sessions"]:
+        for ev in sess_["events"]:
+            if ev.get("event_key") == event_key:
+                found = (sess_, ev)
+                break
+        if found:
+            break
+    if found is None:
+        raise HTTPException(
+            status_code=404, detail=f"event {event_key} not found in tag {norm}"
+        )
+    sess_, ev = found
+    after: dict = {}
+    for field in ("ts", "kind", "summary", "mentions"):
+        val = getattr(body, field)
+        if val is not None:
+            after[field] = val
+    if not after:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.event,
+        op=EditOp.update,
+        obj_key=event_key,
+        before={"ts": ev["ts"], "kind": ev["kind"], "summary": ev["summary"]},
+        after=after,
+        anchor={
+            "origin_recording_id": sess_["recording_id"],
+            "ts": ev["ts"],
+            "kind": ev["kind"],
+            "before_summary": ev["summary"],
+        },
+        feedback_text=body.feedback_text,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.delete("/{tag}/events/{event_key}", status_code=202)
+async def delete_event(
+    request: Request,
+    tag: Annotated[str, Path()],
+    event_key: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    payload = _timeline_or_404(cfg, session, norm)
+    found = None
+    for sess_ in payload["sessions"]:
+        for ev in sess_["events"]:
+            if ev.get("event_key") == event_key:
+                found = (sess_, ev)
+                break
+        if found:
+            break
+    if found is None:
+        raise HTTPException(
+            status_code=404, detail=f"event {event_key} not found in tag {norm}"
+        )
+    sess_, ev = found
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.event,
+        op=EditOp.delete,
+        obj_key=event_key,
+        before={"ts": ev["ts"], "kind": ev["kind"], "summary": ev["summary"]},
+        after={},
+        anchor={
+            "origin_recording_id": sess_["recording_id"],
+            "ts": ev["ts"],
+            "kind": ev["kind"],
+            "before_summary": ev["summary"],
+        },
+        feedback_text=None,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.post("/{tag}/relations", status_code=202)
+async def create_relation(
+    body: RelationCreateRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: create a REL edge between two of the tag's entities
+    (user-authored — the overlay pass re-creates it after every
+    regenerate)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    payload = _timeline_or_404(cfg, session, norm)
+    slugs = {row["slug"] for row in payload["entities"]}
+    for s in (body.from_slug, body.to_slug):
+        if s not in slugs:
+            raise HTTPException(status_code=404, detail=f"entity {s} not found in tag {norm}")
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.relation,
+        op=EditOp.create,
+        obj_key=f"{body.from_slug}|{body.to_slug}|{body.type}",
+        before={},
+        after={"from": body.from_slug, "to": body.to_slug, "type": body.type},
+        anchor={},
+        feedback_text=body.feedback_text,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.delete("/{tag}/relations", status_code=202)
+async def delete_relation(
+    body: RelationDeleteRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: delete a REL edge (tombstone — the overlay re-deletes
+    it after every regenerate; user decisions outrank the model)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    _timeline_or_404(cfg, session, norm)
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.relation,
+        op=EditOp.delete,
+        obj_key=f"{body.from_slug}|{body.to_slug}|{body.type}",
+        before={"from": body.from_slug, "to": body.to_slug, "type": body.type},
+        after={},
+        anchor={},
+        feedback_text=body.feedback_text,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.delete("/{tag}/entities/{slug}", status_code=202)
+async def delete_entity(
+    request: Request,
+    tag: Annotated[str, Path()],
+    slug: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: delete ONE entity (node + REL/MENTIONS edges) and prune
+    its slug from every events.json of the tag."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    payload = _timeline_or_404(cfg, session, norm)
+    slugs = {row["slug"] for row in payload["entities"]}
+    if slug not in slugs:
+        raise HTTPException(
+            status_code=404, detail=f"entity {slug} not found in tag {norm}"
+        )
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.entity,
+        op=EditOp.delete,
+        obj_key=slug,
+        before={},
+        after={},
+        anchor={},
+        feedback_text=None,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.post("/{tag}/entities/merge", status_code=202)
+async def merge_entities(
+    body: EntityMergeRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: fold source_slug into target_slug (redirect edges,
+    union recording_ids, tombstone the source — dedup can never re-mint
+    it; the overlay re-applies the mapping after every regenerate)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    payload = _timeline_or_404(cfg, session, norm)
+    slugs = {row["slug"] for row in payload["entities"]}
+    for s in (body.source_slug, body.target_slug):
+        if s not in slugs:
+            raise HTTPException(status_code=404, detail=f"entity {s} not found in tag {norm}")
+    if body.source_slug == body.target_slug:
+        raise HTTPException(status_code=400, detail="cannot merge entity into itself")
+    edit_id = _start_edit_workflow(
+        session,
+        tag=norm,
+        target=EditTarget.entity,
+        op=EditOp.merge,
+        obj_key=body.source_slug,
+        before={"source": body.source_slug, "target": body.target_slug},
+        after={},
+        anchor={},
+        feedback_text=body.feedback_text,
+    )
+    workflow_id = await _start_or_503(edit_id)
+    return {"workflow_id": workflow_id, "edit_id": edit_id, "tag": norm}
+
+
+@router.get("/{tag}/edits")
+def list_edits(
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A audit log: every edit row of the tag (applied, orphaned,
+    retired) newest first — the Corrections tab source."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    rows = (
+        session.query(GraphEdit)
+        .filter(GraphEdit.tag == norm)
+        .order_by(GraphEdit.created_at.desc(), GraphEdit.id.desc())
+        .limit(200)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "tag": r.tag,
+                "target": r.target.value,
+                "op": r.op.value,
+                "obj_key": r.obj_key,
+                "anchor": r.anchor,
+                "before": r.before,
+                "after": r.after,
+                "feedback_text": r.feedback_text,
+                "source": r.source,
+                "status": r.status.value,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post("/{tag}/edits/{edit_id}/retire", status_code=202)
+def retire_edit(
+    request: Request,
+    tag: Annotated[str, Path()],
+    edit_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: retire a feedback rule (orphaned edit) — the row stops
+    being rendered into the {corrections} prompt block and the overlay
+    stops re-applying it. Deterministic state move, no workflow."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    row = session.get(GraphEdit, edit_id)
+    if row is None or row.tag != norm:
+        raise HTTPException(status_code=404, detail=f"edit {edit_id} not found for tag {norm}")
+    row.status = EditStatus.retired
+    session.commit()
+    return {"edit_id": edit_id, "status": "retired"}
+
+
+@router.get("/{tag}/graph")
+def get_graph(
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: the tag's nodes + edges for the Lattice tab —
+    aggregated from events.json (the SAME read-model the timeline and
+    vault serve; no Neo4j session in the API). Entities dedupe by slug
+    with the freshest label; relations dedupe by (from, to, type)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    payload = _timeline_or_404(cfg, session, norm)
+    entities: dict[str, dict] = {}
+    rels: dict[tuple[str, str, str], dict] = {}
+    for sess_ in payload["sessions"]:
+        rid = sess_["recording_id"]
+        doc = None  # re-read raw doc for entities/relations arrays
+        from app.vault import _read_events_json
+
+        doc = _read_events_json(cfg, rid)
+        if not isinstance(doc, dict):
+            continue
+        for ent in doc.get("entities", []) or []:
+            if isinstance(ent, dict) and ent.get("slug"):
+                slug = ent["slug"]
+                if slug not in entities:
+                    entities[slug] = {
+                        "slug": slug,
+                        "label": ent.get("label") or slug,
+                        "type": ent.get("type") or "",
+                    }
+        for rel in doc.get("relations", []) or []:
+            if isinstance(rel, dict):
+                key = (rel.get("from", ""), rel.get("to", ""), rel.get("type", ""))
+                if all(key):
+                    rels.setdefault(
+                        key,
+                        {"from": key[0], "to": key[1], "type": key[2], "sessions": 0},
+                    )
+                    rels[key]["sessions"] += 1
+    # Aggregated entities carry session counts from the timeline payload.
+    counts = {row["slug"]: row["sessions"] for row in payload["entities"]}
+    for slug, ent in entities.items():
+        ent["sessions"] = counts.get(slug, 0)
+    return {
+        "tag": norm,
+        "entities": sorted(entities.values(), key=lambda e: (-e["sessions"], e["slug"])),
+        "relations": sorted(rels.values(), key=lambda r: (r["from"], r["to"], r["type"])),
+    }
+
+
+@router.get("/{tag}/digest/status")
+def get_digest_status(
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A: digest renewal state — ``queued`` when the newest edit
+    row is younger than the digest note's mtime (renewal pending, the
+    Digest tab shows the brass lamp), ``fresh`` otherwise. Single
+    source of truth: the SAME comparison the GraphMaintenance activity
+    uses for its skip-check."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    from datetime import UTC, datetime
+
+    row = (
+        session.query(GraphEdit)
+        .filter(GraphEdit.tag == norm, GraphEdit.status != EditStatus.retired)
+        .order_by(GraphEdit.created_at.desc())
+        .first()
+    )
+    if row is None:
+        return {"state": "fresh", "last_edit_at": None, "debounce_sec": cfg.graph.edit_debounce_sec}
+    note = find_digest(cfg, norm)
+    mtime = None
+    if note is not None:
+        try:
+            mtime = datetime.fromtimestamp(note.stat().st_mtime, tz=UTC)
+        except OSError:
+            mtime = None
+    last_edit = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=UTC)
+    state = "queued" if (mtime is None or mtime < last_edit) else "fresh"
+    return {
+        "state": state,
+        "last_edit_at": last_edit.isoformat(),
+        "debounce_sec": cfg.graph.edit_debounce_sec,
+    }
+
+
+async def _start_or_503(edit_id: int) -> str:
+    try:
+        return await temporal_client.start_apply_graph_edit(edit_id)
+    except Exception:  # noqa: BLE001 — same blind-catch shape as post_digest
+        _LOG.exception("start_apply_graph_edit failed for edit=%s", edit_id)
+        raise HTTPException(
+            status_code=503, detail="temporal unavailable; try again later"
+        )
 
 
 class TagCount(BaseModel):

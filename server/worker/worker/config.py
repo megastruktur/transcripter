@@ -172,6 +172,11 @@ class GraphConfig(BaseModel):
     # Phase 3.5: backend selection + model coordinates live here; the
     # flat embed_model_path migrated into embed.model_path.
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    # Phase A graph editing: digest renewal debounce (seconds). Edit
+    # activities signal the GraphMaintenance workflow per tag; after
+    # this much silence ONE digest regen runs (burst = one LLM call).
+    # 0 means "renew immediately after every edit".
+    edit_debounce_sec: int = 180
 
     @property
     def enabled(self) -> bool:

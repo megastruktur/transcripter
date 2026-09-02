@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from collections.abc import Awaitable
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -959,6 +960,31 @@ async def enrich(rec_id: str) -> dict:
             "indexed_segments": indexed,
         }
         set_stage(rec_id, "enrich", StageStatus.done, details=details)
+        # Phase A overlay: re-apply user edits the purge just wiped.
+        # After the per-namespace writes + events.json rewrite, stored
+        # edits (merges, relation tombstones, event corrections) are
+        # re-applied on the fresh generation. BEST-EFFORT — never fails
+        # enrich (same contract as semantic indexing below).
+        from .graph_edit import reapply_overlay
+
+        for graph_tag in graph_tags:
+            try:
+                counts = await _heartbeat_while(
+                    asyncio.to_thread(reapply_overlay, c, graph_tag, rec_id)
+                )
+                if any(counts.values()):
+                    log.info(
+                        "enrich: overlay re-applied for %s (tag %r): %s",
+                        rec_id,
+                        graph_tag,
+                        counts,
+                    )
+            except Exception:
+                log.exception(
+                    "enrich: overlay re-apply failed for %s (tag %r)",
+                    rec_id,
+                    graph_tag,
+                )
         # Phase 2 auto-digest — ONLY on success (never after a skip or
         # failure). Best-effort per tag; see _auto_digest_tags.
         if c.graph.auto_digest:
@@ -1170,6 +1196,52 @@ async def tag_digest(args: dict) -> dict:
         raise
 
 @activity.defn
+async def renew_tag_digest(args: dict) -> dict:
+    """Phase A GraphMaintenance tail: renew the tag's digest UNLESS the
+    note is already newer than the newest graph_edits row (the mtime
+    skip — an enrich auto-digest that rewrote the file after the last
+    edit makes the renewal a no-op, saving the LLM call).
+
+    Reuses ``digest.run_digest`` (last_n=5, same as auto-digest). No
+    stage row: digest notes are not pipeline stages.
+    """
+    tag = args["tag"]
+    c = cfg()
+    if not c.graph.enabled:
+        return {"skipped": "graph disabled"}
+    from datetime import datetime
+
+    from .db import EditStatus, GraphEdit, session
+    from .digest import _existing_digest_for_tag, run_digest
+
+    with session() as s:
+        last_edit = (
+            s.query(GraphEdit)
+            .filter(
+                GraphEdit.tag == tag,
+                GraphEdit.status != EditStatus.retired,
+            )
+            .order_by(GraphEdit.created_at.desc())
+            .first()
+        )
+    if last_edit is not None:
+        note = _existing_digest_for_tag(c.vault.path / "digests", tag)
+        if note is not None:
+            try:
+                mtime = datetime.fromtimestamp(note.stat().st_mtime, tz=UTC)
+            except OSError:
+                mtime = None
+            if mtime is not None and mtime >= last_edit.created_at.replace(
+                tzinfo=UTC
+            ):
+                return {"skipped": "digest newer than last edit"}
+    result = await _heartbeat_while(
+        asyncio.to_thread(run_digest, tag, 5, c, c.vault.path)
+    )
+    return result
+
+
+@activity.defn
 async def rename_entity(args: dict) -> dict:
     """Phase 4: rename ONE entity node — label (+ optional type) and
     ``user_corrected: true`` — inside the tag's namespace.
@@ -1220,6 +1292,38 @@ async def rename_entity(args: dict) -> dict:
         raise ApplicationError(
             f"entity {tag}/{slug} not found in graph", non_retryable=True
         )
+    # Phase A fix of the Phase 4 hole: a rename must ALSO move the
+    # label in every events.json copy of the tag's recordings — until
+    # now the timeline kept serving the pre-rename ASR label until the
+    # next enrich regenerate. Best-effort: a rewrite failure logs and
+    # does not fail the rename (the graph node is already corrected).
+    try:
+        from .graph_edit import rewrite_events_json, tag_recording_ids, vault_paths_for
+
+        def _relabel(doc: dict) -> bool:
+            changed = False
+            for ent in doc.get("entities", []):
+                if isinstance(ent, dict) and ent.get("slug") == slug:
+                    if ent.get("label") != label:
+                        ent["label"] = label
+                        changed = True
+                    if type_ is not None and ent.get("type") != type_:
+                        ent["type"] = type_
+                        changed = True
+            return changed
+
+        touched = 0
+        for rec_id in tag_recording_ids(c, tag):
+            if rewrite_events_json(rec_id, vault_paths_for(c, rec_id), _relabel):
+                touched += 1
+        result["events_files_relabelled"] = touched
+    except Exception:
+        log.exception(
+            "rename_entity: events.json relabel failed for %s/%s "
+            "(graph node is corrected; timeline label lags until next enrich)",
+            tag,
+            slug,
+        )
     log.info(
         "rename_entity: %s/%s → %r (re_embedded=%s)",
         tag,
@@ -1228,6 +1332,180 @@ async def rename_entity(args: dict) -> dict:
         result.get("re_embedded"),
     )
     return result
+
+
+@activity.defn
+async def apply_graph_edit(args: dict) -> dict:
+    """Phase A: apply ONE stored graph edit (the async half of the
+    202-returning edit endpoints).
+
+    The API has already validated the target and inserted the
+    ``graph_edits`` row (id in ``args["edit_id"]``); this activity
+    reads the row, dispatches to the ``graph_edit`` updaters, and
+    signals the per-tag GraphMaintenance workflow so the debounced
+    digest renewal hears about it.
+
+    Not a pipeline stage (no stage row) — same shape as rename_entity.
+    Graph disabled → RuntimeError (the API 409'd already).
+    """
+    c = cfg()
+    if not c.graph.enabled:
+        raise RuntimeError(
+            "graph backend not configured (graph.uri empty) — edit cannot run"
+        )
+    edit_id = args["edit_id"]
+    from .db import EditOp, EditTarget, GraphEdit, session
+    from .graph_edit import (
+        apply_entity_delete,
+        apply_entity_merge,
+        apply_event_delete,
+        apply_event_update,
+        apply_relation_create,
+        apply_relation_delete,
+        vault_paths_for,
+    )
+
+    with session() as s:
+        row = s.get(GraphEdit, edit_id)
+        if row is None:
+            raise ApplicationError(
+                f"graph edit {edit_id} not found", non_retryable=True
+            )
+        edit = {
+            "tag": row.tag,
+            "target": row.target,
+            "op": row.op,
+            "obj_key": row.obj_key,
+            "before": row.before or {},
+            "after": row.after or {},
+            "anchor": row.anchor or {},
+        }
+    tag = edit["tag"]
+    paths = None
+    try:
+        if edit["target"] == EditTarget.event:
+            # paths are recording-scoped; resolve lazily per op below
+            origin = edit["anchor"].get("origin_recording_id") or ""
+            if not origin:
+                raise ApplicationError(
+                    f"edit {edit_id}: event edit without origin anchor",
+                    non_retryable=True,
+                )
+            paths = vault_paths_for(c, origin)
+            if edit["op"] == EditOp.delete:
+                result = apply_event_delete(c, paths, tag, edit["obj_key"])
+            else:
+                result = apply_event_update(
+                    c, paths, tag, edit["obj_key"], edit["after"], edit["anchor"]
+                )
+        elif edit["target"] == EditTarget.relation:
+            paths = vault_paths_for(c, _first_tag_recording(c, tag))
+            if edit["op"] == EditOp.create:
+                result = apply_relation_create(
+                    c,
+                    paths,
+                    tag,
+                    edit["after"]["from"],
+                    edit["after"]["to"],
+                    edit["after"]["type"],
+                )
+            else:
+                result = apply_relation_delete(
+                    c,
+                    paths,
+                    tag,
+                    edit["before"]["from"],
+                    edit["before"]["to"],
+                    edit["before"]["type"],
+                )
+        elif edit["target"] == EditTarget.entity:
+            if edit["op"] == EditOp.merge:
+                paths = vault_paths_for(c, _first_tag_recording(c, tag))
+                result = apply_entity_merge(
+                    c, paths, tag, edit["before"]["source"], edit["before"]["target"]
+                )
+            else:
+                paths = vault_paths_for(c, _first_tag_recording(c, tag))
+                result = apply_entity_delete(c, paths, tag, edit["obj_key"])
+        else:
+            raise ApplicationError(
+                f"edit {edit_id}: unknown target {edit['target']!r}",
+                non_retryable=True,
+            )
+    except ApplicationError:
+        raise
+    except Exception as exc:
+        log.exception("apply_graph_edit failed for edit %s", edit_id)
+        raise ApplicationError(f"graph edit {edit_id} failed: {exc}") from exc
+    if not result.get("ok"):
+        # The target moved between the API check and the apply (regenerate
+        # raced in, GC swept, another edit landed first). Non-retryable:
+        # a retry re-runs the same missing MATCH.
+        with session() as s:
+            row = s.get(GraphEdit, edit_id)
+            if row is not None:
+                from .db import EditStatus
+
+                row.status = EditStatus.orphaned
+                s.commit()
+        raise ApplicationError(
+            f"graph edit {edit_id} target missing: {result.get('reason', '?')}",
+            non_retryable=True,
+        )
+    log.info("apply_graph_edit %s: applied (%s)", edit_id, result)
+    # Signal the debounced digest renewal (best-effort: a Temporal blip
+    # here must not fail an applied edit).
+    try:
+        await _signal_graph_maintenance(tag)
+    except Exception:
+        log.exception("apply_graph_edit %s: maintenance signal failed", edit_id)
+    return {"edit_id": edit_id, "result": result}
+
+
+def _first_tag_recording(c: WorkerConfig, tag: str) -> str:
+    """A recording id to scope vault paths from (relation/entity ops
+    rewrite across ALL tag recordings; the VaultPaths only seeds the
+    scan). Empty string → storage-only paths (degenerate but safe)."""
+    from .graph_edit import tag_recording_ids
+
+    ids = tag_recording_ids(c, tag)
+    return ids[0] if ids else ""
+
+
+async def _signal_graph_maintenance(tag: str) -> None:
+    """Fire the per-tag maintenance signal through Temporal. Signal the
+    running ``graph-maintenance-<tag>`` workflow; when none is running
+    (first edit for this tag, or the previous one was evicted), start
+    it — Temporal buffers signals that arrive before the run reaches
+    wait_condition, so the start+signal race is absorbed."""
+    from temporalio.client import Client
+    from temporalio.service import RPCError
+
+    c = cfg()
+    client = await Client.connect(os.environ.get("TEMPORAL_ADDRESS", "temporal:7233"))
+    wf_id = f"graph-maintenance-{tag}"
+    try:
+        handle = client.get_workflow_handle(wf_id)
+        await handle.signal("edit_applied")
+        return
+    except RPCError:
+        pass  # not running — start below
+    from .workflows import GraphMaintenance
+
+    try:
+        await client.start_workflow(
+            GraphMaintenance.run,
+            {"tag": tag, "edit_debounce_sec": c.graph.edit_debounce_sec},
+            id=wf_id,
+            task_queue="transcripter-pipeline",
+        )
+    except Exception as exc:
+        # A concurrent starter won the race (WorkflowAlreadyStarted) —
+        # signal the winner instead of failing the applied edit.
+        if "already started" not in str(exc).lower():
+            raise
+        handle = client.get_workflow_handle(wf_id)
+        await handle.signal("edit_applied")
 
 
 @activity.defn

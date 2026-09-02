@@ -104,3 +104,22 @@ async def start_rename_entity(tag: str, slug: str, label: str, type_: str | None
         task_queue=TASK_QUEUE,
     )
     return handle.id
+
+
+APPLY_GRAPH_EDIT_WORKFLOW_NAME = "ApplyGraphEdit"
+APPLY_GRAPH_EDIT_ID_PREFIX = "apply-graph-edit-"
+
+
+async def start_apply_graph_edit(edit_id: int) -> str:
+    """Phase A: apply ONE stored graph edit (async half of the 202
+    endpoints). Unique id per edit row — a retry of the same HTTP
+    request re-signals the same workflow id and Temporal rejects the
+    duplicate start, keeping edits idempotent."""
+    client = await get_client()
+    handle = await client.start_workflow(
+        APPLY_GRAPH_EDIT_WORKFLOW_NAME,
+        {"edit_id": edit_id},
+        id=f"{APPLY_GRAPH_EDIT_ID_PREFIX}{edit_id}-{uuid.uuid4().hex[:8]}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id

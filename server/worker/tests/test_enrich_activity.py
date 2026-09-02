@@ -318,14 +318,25 @@ def test_done_writes_events_json(recording_id: str, tmp_path: Path) -> None:
     assert data["recording_date"]  # ISO string from recorded_at/created_at
     assert data["profile_id"] == "pathfinder"
     assert data["namespaces"] == ["pathfinder"]
+    from worker.enrich import compute_event_keys
+
+    keys = compute_event_keys(
+        recording_id,
+        [
+            ExtractedEvent(ts="00:42:13", kind="decision", summary="Release Q3 postponed"),
+            ExtractedEvent(ts="00:50:00", kind="note", summary="nothing referenced"),
+        ],
+    )
     assert data["events"] == [
         {
+            "event_key": keys[0],
             "ts": "00:42:13",
             "kind": "decision",
             "summary": "Release Q3 postponed",
             "mentions": ["release-q3"],  # label "Release Q3" occurs in summary
         },
         {
+            "event_key": keys[1],
             "ts": "00:50:00",
             "kind": "note",
             "summary": "nothing referenced",
