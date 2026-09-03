@@ -17,6 +17,9 @@ class Word:
     start: float
     end: float
     text: str
+    # Stereo recordings: source channel of this word ("mic" | "system").
+    # None on mono (single-file) results and legacy artifacts.
+    channel: str | None = None
 
 
 @dataclass
@@ -24,6 +27,7 @@ class Segment:
     start: float
     end: float
     text: str
+    channel: str | None = None
 
 
 @dataclass
@@ -39,11 +43,12 @@ class TranscriptionResult:
                 {
                     "language": self.language,
                     "segments": [
-                        {"start": s.start, "end": s.end, "text": s.text}
+                        {"start": s.start, "end": s.end, "text": s.text, "channel": s.channel}
                         for s in self.segments
                     ],
                     "words": [
-                        {"start": w.start, "end": w.end, "text": w.text} for w in self.words
+                        {"start": w.start, "end": w.end, "text": w.text, "channel": w.channel}
+                        for w in self.words
                     ],
                 },
                 ensure_ascii=False,
@@ -57,8 +62,14 @@ class TranscriptionResult:
         data = json.loads(path.read_text(encoding="utf-8"))
         return TranscriptionResult(
             data.get("language", "unknown"),
-            [Segment(s["start"], s["end"], s["text"]) for s in data.get("segments", [])],
-            [Word(w["start"], w["end"], w["text"]) for w in data.get("words", [])],
+            [
+                Segment(s["start"], s["end"], s["text"], s.get("channel"))
+                for s in data.get("segments", [])
+            ],
+            [
+                Word(w["start"], w["end"], w["text"], w.get("channel"))
+                for w in data.get("words", [])
+            ],
         )
 
 

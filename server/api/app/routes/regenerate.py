@@ -15,7 +15,12 @@ from app.routes.recordings import _get
 router = APIRouter(prefix="/recordings")
 
 ARTIFACTS: dict[str, list[str]] = {
-    "chunk": ["meta/chunks/chunks.json"],
+    "chunk": [
+        "meta/chunks/chunks.json",
+        # Stereo (dual-tap): per-channel manifests replace the flat one.
+        "meta/chunks/mic/chunks.json",
+        "meta/chunks/system/chunks.json",
+    ],
     "transcribe": ["meta/transcript.md", "meta/segments.json"],
     "diarize": ["meta/diarization.json"],
     "merge_speakers": ["meta/diarized-transcript.md"],

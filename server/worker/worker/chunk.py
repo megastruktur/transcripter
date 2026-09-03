@@ -75,25 +75,42 @@ def chunks_dir(meta: Path) -> Path:
     return meta / CHUNKS_DIRNAME
 
 
-def manifest_path(meta: Path) -> Path:
-    return chunks_dir(meta) / MANIFEST_NAME
+def channel_dir(meta: Path, channel: str) -> Path:
+    """Per-channel chunk subdir (stereo): chunks/mic, chunks/system."""
+    return chunks_dir(meta) / channel
 
 
-def load_manifest(meta: Path) -> Manifest | None:
-    p = manifest_path(meta)
+def channel_names(meta: Path) -> list[str]:
+    """Stereo channel layout of a recording: ["mic", "system"] when the
+    per-channel manifests exist, [] for mono — the whole pipeline branches
+    on this (mono keeps its single-file layout).
+
+    Keyed on chunks/<ch>/chunks.json (retained forever), NOT on
+    meta/channels/*.flac (deleted by cleanup_chunks after merge): a
+    transcribe/diarize regenerate on a merged recording must still see the
+    stereo layout even though the full-length channel FLACs are gone —
+    chunk FLACs regenerate from stage 'chunk' anyway."""
+    return [c for c in ("mic", "system") if manifest_path(meta, c).is_file()]
+
+
+def manifest_path(meta: Path, channel: str | None = None) -> Path:
+    return (channel_dir(meta, channel) if channel else chunks_dir(meta)) / MANIFEST_NAME
+
+
+def load_manifest(meta: Path, channel: str | None = None) -> Manifest | None:
+    p = manifest_path(meta, channel)
     if not p.exists():
         return None
     return Manifest.from_json(p.read_text(encoding="utf-8"))
 
 
-def save_manifest(manifest: Manifest, meta: Path) -> None:
+def save_manifest(manifest: Manifest, meta: Path, channel: str | None = None) -> None:
     """Atomic write: the manifest is the crash/resume boundary."""
-    d = chunks_dir(meta)
+    d = channel_dir(meta, channel) if channel else chunks_dir(meta)
     d.mkdir(parents=True, exist_ok=True)
     tmp = d / (MANIFEST_NAME + ".tmp")
     tmp.write_text(manifest.to_json(), encoding="utf-8")
     os.replace(tmp, d / MANIFEST_NAME)
-
 
 def plan_chunks(duration_sec: float, target_min: float, overlap_sec: float) -> list[tuple[float, float]]:
     """(start, end) pairs covering [0, duration): even target-length chunks,
@@ -143,17 +160,72 @@ def probe_duration(audio: Path) -> float:
         raise ChunkError(f"ffprobe returned no duration for {audio}: {out!r}") from e
 
 
+CHANNELS_DIRNAME = "channels"
+_CHANNEL_SPLIT_TIMEOUT_SEC = 600
+
+
+def probe_channels(audio: Path) -> int:
+    """Audio channel count via ffprobe (1 = mono, 2 = stereo)."""
+    out = _run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=channels",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio),
+        ],
+        timeout=30,
+    )
+    try:
+        return int(out.strip())
+    except ValueError as e:
+        raise ChunkError(f"ffprobe returned no channel count for {audio}: {out!r}") from e
+
+
+def split_channels(audio: Path, meta: Path) -> list[tuple[str, Path]]:
+    """Stereo → per-source mono FLACs: mic → L, system → R (client mix_samples
+    interleaves exactly this way; see client recording.rs).
+
+    Idempotent: an existing split is reused. Returns [] for mono (the whole
+    pipeline keeps its single-file path). Output: meta/channels/mic.flac and
+    meta/channels/system.flac.
+    """
+    if probe_channels(audio) < 2:
+        return []
+    d = meta / CHANNELS_DIRNAME
+    mic, system = d / "mic.flac", d / "system.flac"
+    if mic.is_file() and system.is_file():
+        return [("mic", mic), ("system", system)]
+    d.mkdir(parents=True, exist_ok=True)
+    # Single pass, two outputs: channelsplit exposes both mono pads and each
+    # is mapped to its own FLAC (two runs would decode the file twice).
+    _run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error", "-y",
+            "-i", str(audio),
+            "-filter_complex", "[0:a]channelsplit=channel_layout=stereo[l][r]",
+            "-map", "[l]", "-c:a", "flac", str(mic),
+            "-map", "[r]", "-c:a", "flac", str(system),
+        ],
+        timeout=_CHANNEL_SPLIT_TIMEOUT_SEC,
+    )
+    return [("mic", mic), ("system", system)]
+
+
 def cut_chunks(
     audio: Path,
     meta: Path,
     duration_sec: float,
     target_min: float,
     overlap_sec: float,
+    channel: str | None = None,
 ) -> Manifest:
     """Re-slice from scratch (idempotent regenerate): old chunk files and
     per-chunk results are wiped, the manifest is rewritten with all
-    statuses pending."""
-    d = chunks_dir(meta)
+    statuses pending. `channel` routes the manifest + chunk files into the
+    per-channel subdir (stereo path); the timelines of the two channels are
+    identical by construction (same cut plan over the same duration)."""
+    d = channel_dir(meta, channel) if channel else chunks_dir(meta)
     if d.exists():
         shutil.rmtree(d)
     d.mkdir(parents=True)
@@ -174,20 +246,25 @@ def cut_chunks(
             timeout=FFMPEG_TIMEOUT_SEC,
         )
         manifest.chunks.append(ChunkEntry(index=i, file=name, start=start, end=end))
-    save_manifest(manifest, meta)
+    save_manifest(manifest, meta, channel)
     return manifest
 
 
 def cleanup_chunks(meta: Path) -> None:
     """Retention `until_merged`: drop the chunk FLACs once merge_speakers has
-    consumed everything downstream needs. The manifest and per-chunk results
-    stay (small; useful for diagnostics and for re-concatenating without
-    re-running the STT)."""
+    consumed everything downstream needs — in BOTH layouts (mono flat
+    chunks/, stereo per-channel chunks/{mic,system}/) — plus the full-length
+    meta/channels/*.flac (re-derivable from audio.flac via split_channels).
+    Manifests and per-chunk result JSONs stay (small; diagnostics + resume
+    of later stages without re-running the STT)."""
     d = chunks_dir(meta)
-    if not d.exists():
-        return
-    for p in d.glob("chunk_*.flac"):
-        p.unlink()
+    if d.exists():
+        for p in d.rglob("chunk_*.flac"):
+            p.unlink()
+    chan = meta / CHANNELS_DIRNAME
+    if chan.exists():
+        for p in chan.glob("*.flac"):
+            p.unlink()
 
 
 def keep_window(index: int, total: int, chunk_len: float, overlap_sec: float) -> tuple[float, float]:

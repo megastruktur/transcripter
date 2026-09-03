@@ -280,11 +280,12 @@ async def test_chunk_activity_enabled_cuts(rec, monkeypatch):
     cfg.chunk.enabled = True
     seen = {}
 
-    def fake_cut(audio, meta, duration, target_min, overlap_sec):
+    def fake_cut(audio, meta, duration, target_min, overlap_sec, channel=None):
         seen.update(duration=duration, target_min=target_min, overlap=overlap_sec)
         return _manifest(meta)
 
     monkeypatch.setattr(activities, "cut_chunks", fake_cut)
+    monkeypatch.setattr(activities, "split_channels", lambda audio, meta: [])
 
     result = await activities.chunk("rec1")
 

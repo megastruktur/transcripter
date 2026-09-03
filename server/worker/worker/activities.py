@@ -20,6 +20,8 @@ from temporalio.exceptions import ApplicationError
 
 from .chunk import (
     Manifest,
+    channel_dir,
+    channel_names,
     chunks_dir,
     cleanup_chunks,
     cut_chunks,
@@ -29,6 +31,7 @@ from .chunk import (
     probe_duration,
     save_manifest,
     shift_into,
+    split_channels,
 )
 from .config import WorkerConfig, load_config
 from .db import (
@@ -42,7 +45,9 @@ from .graph_gc import run_graph_gc as run_graph_gc_impl
 from .transcribe import (
     ApiTranscriber,
     LocalTranscriber,
+    Segment,
     TranscriptionResult,
+    Word,
     segments_to_markdown,
 )
 
@@ -235,11 +240,31 @@ async def chunk(rec_id: str) -> dict:
         audio = audio_file(rec_id)
         if not duration:
             duration = await asyncio.to_thread(probe_duration, audio)
-        manifest = await asyncio.to_thread(
-            cut_chunks, audio, meta_dir(rec_id), duration,
-            c.chunk.target_min, c.chunk.overlap_sec,
-        )
-        details = {"chunks": len(manifest.chunks), "target_min": c.chunk.target_min}
+        # Stereo (client dual-tap: mic → L, system → R) splits into
+        # per-source FLACs first; each source gets the SAME cut plan, so
+        # chunk N of mic and system cover identical wall-clock spans. Mono
+        # (sources == []) keeps the flat single-file layout untouched.
+        sources = await asyncio.to_thread(split_channels, audio, meta_dir(rec_id))
+        if sources:
+            for name, path in sources:
+                await asyncio.to_thread(
+                    cut_chunks, path, meta_dir(rec_id), duration,
+                    c.chunk.target_min, c.chunk.overlap_sec, name,
+                )
+            # Manifests share one cut plan; mic's count stands for both.
+            m = load_manifest(meta_dir(rec_id), "mic")
+            assert m is not None
+            details = {
+                "chunks": len(m.chunks),
+                "target_min": c.chunk.target_min,
+                "channels": 2,
+            }
+        else:
+            manifest = await asyncio.to_thread(
+                cut_chunks, audio, meta_dir(rec_id), duration,
+                c.chunk.target_min, c.chunk.overlap_sec,
+            )
+            details = {"chunks": len(manifest.chunks), "target_min": c.chunk.target_min}
         set_stage(rec_id, "chunk", StageStatus.done, details=details)
         return details
     except asyncio.CancelledError:
@@ -336,6 +361,10 @@ async def transcribe(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_transcribe(rec)
     try:
+        channels = channel_names(meta_dir(rec_id))
+        if channels:
+            return await _transcribe_stereo(rec_id, channels, c)
+
         manifest = load_manifest(meta_dir(rec_id))
         if manifest is not None:
             result = await _transcribe_chunked(rec_id, manifest, c)
@@ -361,15 +390,63 @@ async def transcribe(rec_id: str) -> dict:
         raise
 
 
+async def _transcribe_stereo(rec_id: str, channels: list[str], c: WorkerConfig) -> dict:
+    """Stereo transcribe: run the chunked pipeline per channel (mic then
+    system — sequential, same CPU voice stack), then merge the two tagged
+    word streams into ONE chronological segments.json on the shared
+    timeline. merge_speakers attributes channel-first downstream."""
+    meta = meta_dir(rec_id)
+    segments: list[Segment] = []
+    words: list[Word] = []
+    language = "unknown"
+    chunk_count = 0
+    suspect = 0
+    for name in channels:
+        manifest = load_manifest(meta, name)
+        if manifest is None:
+            raise RuntimeError(
+                f"stereo recording has no '{name}' chunk manifest; "
+                "regenerate from stage 'chunk'"
+            )
+        result = await _transcribe_chunked(rec_id, manifest, c, name)
+        segments.extend(result.segments)
+        words.extend(result.words)
+        if language == "unknown" and result.language != "unknown":
+            language = result.language
+        chunk_count = max(chunk_count, len(manifest.chunks))
+        suspect += sum(1 for ch in manifest.chunks if ch.transcribe_suspect)
+    # One chronological stream regardless of source; channel stays on each
+    # item for downstream attribution.
+    segments.sort(key=lambda s: s.start)
+    words.sort(key=lambda w: w.start)
+    merged = TranscriptionResult(language, segments, words)
+    merged.to_json(meta / "segments.json")
+    segments_to_markdown(merged, meta / "transcript.md")
+    details: dict = {
+        "language": language,
+        "segments": len(segments),
+        "channels": 2,
+    }
+    if chunk_count:
+        details["chunks"] = chunk_count
+    if suspect:
+        details["suspect_chunks"] = suspect
+    set_stage(rec_id, "transcribe", StageStatus.done, details=details)
+    return details
+
+
 async def _transcribe_chunked(
-    rec_id: str, manifest: Manifest, c: WorkerConfig
+    rec_id: str, manifest: Manifest, c: WorkerConfig, channel: str | None = None
 ) -> TranscriptionResult:
     """Sequential per-chunk transcription — NEVER parallel: the voice stack
     is one CPU box and concurrent large-v3 jobs run at ~half speed each
     (contention incident 2026-08-25). Progress persists per chunk, so a
-    regenerate re-POSTs only non-done (or suspect) chunks."""
+    regenerate re-POSTs only non-done (or suspect) chunks.
+
+    `channel` (stereo): chunk dir + result tag; words/segments carry it so
+    merge can attribute channel-first."""
     meta = meta_dir(rec_id)
-    d = chunks_dir(meta)
+    d = channel_dir(meta, channel) if channel else chunks_dir(meta)
     total = len(manifest.chunks)
     segments = []
     words = []
@@ -408,7 +485,7 @@ async def _transcribe_chunked(
             res.to_json(result_path)
             ch.transcribe = "done"
             ch.transcribe_suspect = is_suspect([s.text for s in res.segments])
-            save_manifest(manifest, meta)  # resume boundary after every chunk
+            save_manifest(manifest, meta, channel)  # resume boundary after every chunk
         else:
             res = TranscriptionResult.from_json(result_path)
 
@@ -417,25 +494,36 @@ async def _transcribe_chunked(
         lo, hi = keep_window(ch.index, total, ch.end - ch.start, manifest.overlap_sec)
         segments.extend(shift_into(res.segments, ch.start, lo, hi))
         words.extend(shift_into(res.words, ch.start, lo, hi))
+    if channel:
+        # Tag every item with its source channel on the shared timeline.
+        for s in segments:
+            s.channel = channel
+        for w in words:
+            w.channel = channel
     return TranscriptionResult(language, segments, words)
 
 
 
-async def _diarize_chunked(rec_id: str, manifest: Manifest, c: WorkerConfig):
+async def _diarize_chunked(
+    rec_id: str, manifest: Manifest, c: WorkerConfig, channel: str | None = None
+):
     """Sequential per-chunk diarization (never parallel — same CPU voice
     stack). Per-chunk progress persists, so the Temporal diarize retry
     resumes at the failed chunk instead of re-running them all.
 
     Speaker labels stay PER-CHUNK (spk_0 in chunk 1 is not spk_0 in chunk
     2) — accepted: merge_speakers attributes words by time overlap, which
-    per-chunk labels satisfy."""
+    per-chunk labels satisfy. In stereo mode `channel` namespaces them
+    globally (mic:spk_0 vs system:spk_0) so the two sources' speakers can
+    never collide in the merged diarization.json."""
     from .diarize import DiarizationResult, diarize_audio
 
     meta = meta_dir(rec_id)
-    d = chunks_dir(meta)
+    d = channel_dir(meta, channel) if channel else chunks_dir(meta)
     total = len(manifest.chunks)
     segments = []
     speakers: set[str] = set()
+    prefix = f"{channel}:" if channel else ""
     for ch in manifest.chunks:
         result_path = d / f"chunk_{ch.index:03d}.diarization.json"
         if ch.diarize != "done":
@@ -447,9 +535,15 @@ async def _diarize_chunked(rec_id: str, manifest: Manifest, c: WorkerConfig):
                 )
             timeout_sec = _chunk_budget(ch.end - ch.start, DIARIZE_BASE, DIARIZE_PER_MIN)
             res = await _heartbeat_while(diarize_audio(chunk_path, c, timeout_sec))
+            # Namespace speakers before persisting: the per-chunk cache must
+            # carry the final labels so a resume never re-clashes them.
+            if channel:
+                for seg in res.segments:
+                    seg.speaker = f"{prefix}{seg.speaker}"
+                res.speakers = sorted({seg.speaker for seg in res.segments})
             result_path.write_text(res.model_dump_json())
             ch.diarize = "done"
-            save_manifest(manifest, meta)  # resume boundary after every chunk
+            save_manifest(manifest, meta, channel)  # resume boundary
         else:
             res = DiarizationResult.model_validate_json(
                 result_path.read_text(encoding="utf-8")
@@ -483,6 +577,40 @@ async def diarize(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_diarize(rec)
     try:
+        channels = channel_names(meta_dir(rec_id))
+        if channels:
+            # Stereo: diarize each source separately; _diarize_chunked
+            # namespaces speakers (mic:spk_0, system:spk_0) so the two
+            # sources never collide. One shared-timeline diarization.json.
+            segments = []
+            speakers: set[str] = set()
+            chunk_count = 0
+            for name in channels:
+                ch_manifest = load_manifest(meta_dir(rec_id), name)
+                if ch_manifest is None:
+                    raise RuntimeError(
+                        f"stereo recording has no '{name}' chunk manifest; "
+                        "regenerate from stage 'chunk'"
+                    )
+                res = await _diarize_chunked(rec_id, ch_manifest, c, name)
+                segments.extend(res.segments)
+                speakers.update(res.speakers)
+                chunk_count = max(chunk_count, len(ch_manifest.chunks))
+            from .diarize import DiarizationResult
+
+            out.write_text(
+                DiarizationResult(
+                    speakers=sorted(speakers), segments=segments
+                ).model_dump_json()
+            )
+            details = {
+                "speakers": sorted(speakers),
+                "channels": 2,
+                "chunks": chunk_count,
+            }
+            set_stage(rec_id, "diarize", StageStatus.done, details=details)
+            return details
+
         manifest = load_manifest(meta_dir(rec_id))
         if manifest is not None:
             result = await _diarize_chunked(rec_id, manifest, c)
@@ -514,10 +642,6 @@ async def merge_speakers(rec_id: str) -> dict:
     try:
         from .merge import write_diarized_transcript
 
-        # No diarization (stage failed, or it found no speakers) means there
-        # is nothing to attribute: skip rather than emit a transcript whose
-        # every turn is labelled `None`. Drop a previous run's artifact too,
-        # so the UI cannot keep serving stale speaker attribution.
         diar = meta_dir(rec_id) / "diarization.json"
         if not diar.exists() or not json.loads(diar.read_text()).get("segments"):
             (meta_dir(rec_id) / "diarized-transcript.md").unlink(missing_ok=True)

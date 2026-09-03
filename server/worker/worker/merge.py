@@ -1,11 +1,31 @@
-"""Merge word timestamps with diarization segments (max overlap attribution)."""
+"""Merge word timestamps with diarization segments (max overlap attribution).
+
+Stereo recordings: words carry `channel` ("mic"/"system") and diarization
+speakers are namespaced by channel ("mic:spk_0"). Attribution is
+channel-first — a mic word can never land on a system speaker, so the two
+sources' timelines stay disjoint even where they overlap in time.
+"""
 
 import json
 from pathlib import Path
 
 
+def _candidates(segments: list[dict], channel: str | None) -> list[dict]:
+    """Segments a word of `channel` may be attributed to.
+
+    Channel namespacing is by speaker prefix (see _diarize_chunked). When
+    no segment carries the prefix (mono diarization, or a stereo recording
+    regenerated with diarization from a different path) fall back to ALL
+    segments — channel info must never orphan a word."""
+    if channel is None:
+        return segments
+    prefixed = [s for s in segments if str(s["speaker"]).startswith(f"{channel}:")]
+    return prefixed or segments
+
+
 def merge(words: list[dict], segments: list[dict]) -> list[dict]:
-    """Assign each word the speaker of the diarization segment with max overlap."""
+    """Assign each word the speaker of the diarization segment with max
+    overlap (within the word's channel when the data carries channels)."""
     turns: list[dict] = []
     current_speaker = None
     current_words: list[dict] = []
@@ -24,17 +44,18 @@ def merge(words: list[dict], segments: list[dict]) -> list[dict]:
             current_words = []
 
     for w in words:
+        candidates = _candidates(segments, w.get("channel"))
         best_speaker, best_overlap = None, 0.0
-        for seg in segments:
+        for seg in candidates:
             overlap = min(w["end"], seg["end"]) - max(w["start"], seg["start"])
             if overlap > best_overlap:
                 best_overlap = overlap
                 best_speaker = seg["speaker"]
-        if best_speaker is None and segments:
+        if best_speaker is None and candidates:
             # No overlap: nearest segment by center distance.
             center = (w["start"] + w["end"]) / 2
             best_speaker = min(
-                segments,
+                candidates,
                 key=lambda s: abs(center - (s["start"] + s["end"]) / 2),
             )["speaker"]
         if best_speaker != current_speaker:

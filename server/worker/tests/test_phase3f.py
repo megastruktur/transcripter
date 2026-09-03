@@ -145,6 +145,7 @@ def test_chunk_cancelled_marks_stage_failed(recording_id: str, tmp_path: Path) -
     (cfg.recordings_root / recording_id / "meta").mkdir(parents=True, exist_ok=True)
     with (
         patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.activities.split_channels", return_value=[]),
         patch("worker.activities.cut_chunks", new=_cancel_sync),
         pytest.raises(asyncio.CancelledError),
     ):

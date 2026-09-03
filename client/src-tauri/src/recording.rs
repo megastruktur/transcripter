@@ -62,8 +62,12 @@ pub fn start(
     };
 
     let id = uuid::Uuid::new_v4().to_string();
+    // Dual-source recordings are stored as stereo: mic → L, system → R.
+    // The server splits the channels before transcription so the two
+    // sources never contaminate each other's transcript.
+    let channels: u16 = if system.is_some() { 2 } else { 1 };
     let writer = Arc::new(Mutex::new(Some(
-        FlacWriter::create(&spool.audio_path(&id), CAPTURE_RATE, 1).map_err(|e| e.to_string())?,
+        FlacWriter::create(&spool.audio_path(&id), CAPTURE_RATE, channels).map_err(|e| e.to_string())?,
     )));
     let session = SpoolSession {
         id: id.clone(),
@@ -72,7 +76,7 @@ pub fn start(
         started_at: unix_now_iso(),
         duration_sec: 0.0,
         sample_rate: CAPTURE_RATE,
-        channels: 1,
+        channels,
         mic_active: true,
         system_active: system.is_some(),
         mic_dropped_frames: 0,
@@ -116,7 +120,6 @@ pub fn start(
     });
     Ok(id)
 }
-
 fn spawn_mixer(
     mic: Arc<CapturedStream>,
     system: Option<Arc<CapturedStream>>,
@@ -126,6 +129,9 @@ fn spawn_mixer(
     capture_error: Arc<Mutex<Option<String>>>,
     degraded_slot: Arc<Mutex<Option<String>>>,
 ) -> JoinHandle<Result<(), String>> {
+    // Layout follows the sources: a system tap means stereo (mic → L,
+    // system → R) for the whole file, matching FlacWriter::create above.
+    let channels: u16 = if system.is_some() { 2 } else { 1 };
     std::thread::spawn(move || {
         let started = Instant::now();
         let mut written = 0u64;
@@ -196,12 +202,20 @@ fn spawn_mixer(
                     }
                 }
 
+                // Stereo layout is fixed at start: once the FLAC header
+                // says 2 channels, every write MUST carry both — a layout
+                // switch mid-file would halve the frame count. The layout
+                // (channels) and the source (system samples) are separate
+                // concerns: a degraded tap keeps the R channel at digital
+                // silence for the rest of the file (sticky, matching the
+                // "system audio dropped" warning), never un-degrades.
                 mix_samples(
                     &mic_samples,
                     match (&system, &degraded) {
-                        (Some(_), None) => Some(&system_samples),
+                        (Some(_), None) => Some(system_samples.as_slice()),
                         _ => None,
                     },
+                    channels,
                     needed,
                     &mut mixed,
                 );
@@ -265,20 +279,35 @@ fn source_stall_reason(
     }
 }
 
-fn mix_samples(mic: &[f32], system: Option<&[f32]>, frames: usize, output: &mut Vec<f32>) {
+fn mix_samples(
+    mic: &[f32],
+    system: Option<&[f32]>,
+    channels: u16,
+    frames: usize,
+    output: &mut Vec<f32>,
+) {
+    // Interleaved output for the FLAC writer. Mono (mic-only): one sample
+    // per frame, gain untouched. Stereo (mic + system taps): the sources
+    // stay SEPARATE — mic → left, system → right — so the server can split
+    // the channels back into per-source tracks and transcribe/diarize them
+    // independently (summing them here would destroy speaker attribution
+    // for every overlapping moment). A `channels: 2` call with `None`
+    // (degraded tap) emits digital silence on the right: the layout is
+    // fixed at start and never switches mid-file.
     output.clear();
-    let gain = if system.is_some() {
-        std::f32::consts::FRAC_1_SQRT_2
-    } else {
-        1.0
-    };
+    if channels <= 1 {
+        output.extend_from_slice(&mic[..frames.min(mic.len())]);
+        output.resize(frames, 0.0);
+        return;
+    }
     for index in 0..frames {
-        let mic_sample = mic.get(index).copied().unwrap_or(0.0);
-        let system_sample = system
+        let left = mic.get(index).copied().unwrap_or(0.0);
+        let right = system
             .and_then(|samples| samples.get(index))
             .copied()
             .unwrap_or(0.0);
-        output.push(((mic_sample + system_sample) * gain).clamp(-1.0, 1.0));
+        output.push(left);
+        output.push(right);
     }
 }
 
@@ -407,25 +436,35 @@ mod tests {
     #[test]
     fn mic_only_preserves_level_and_fills_gaps() {
         let mut output = Vec::new();
-        mix_samples(&[0.25, -0.5], None, 3, &mut output);
+        mix_samples(&[0.25, -0.5], None, 1, 3, &mut output);
         assert_eq!(output, vec![0.25, -0.5, 0.0]);
     }
 
     #[test]
-    fn dual_source_mixes_with_headroom_and_clamps() {
+    fn dual_source_keeps_channels_separate() {
+        // mic → L, system → R, interleaved; no summing, no gain, no clamp
+        // interaction between the two independent sources.
         let mut output = Vec::new();
-        mix_samples(&[0.5, 1.0], Some(&[0.5, 1.0]), 2, &mut output);
-        assert!((output[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-        assert_eq!(output[1], 1.0);
+        mix_samples(&[0.5, -1.0], Some(&[0.25, 0.75]), 2, 2, &mut output);
+        assert_eq!(output, vec![0.5, 0.25, -1.0, 0.75]);
+    }
+
+    #[test]
+    fn degraded_tap_writes_digital_silence_on_right() {
+        // Layout is fixed at start: stereo recording with a dead system
+        // tap keeps writing 2 samples per frame (R = silence).
+        let mut output = Vec::new();
+        mix_samples(&[0.2, 0.2], None, 2, 2, &mut output);
+        assert_eq!(output, vec![0.2, 0.0, 0.2, 0.0]);
     }
 
     #[test]
     fn missing_system_frames_become_silence_without_shortening_output() {
         let mut output = Vec::new();
-        mix_samples(&[0.2, 0.2], Some(&[]), 2, &mut output);
-        assert_eq!(output.len(), 2);
-        assert!(output.iter().all(|sample| *sample > 0.0));
+        mix_samples(&[0.2, 0.2], Some(&[]), 2, 2, &mut output);
+        assert_eq!(output, vec![0.2, 0.0, 0.2, 0.0]);
     }
+
 
     #[test]
     fn mic_stall_guard_distinguishes_startup_from_midstream_failure() {

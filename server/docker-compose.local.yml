@@ -1,9 +1,5 @@
-name: transcripter-dev
-
-# GRAPH=1 e2e smoke: run the Phase A/B/C code under test. The pinned ghcr images are v0.18.0
-# (pre-Phase A); local images are built from this checkout (includes Phase A/B/C).
 services:
   api:
-    image: transcripter:local-graph-api
+    image: transcripter:local-stereo-api
   worker:
-    image: transcripter:local-graph-worker
+    image: transcripter:local-stereo-worker
