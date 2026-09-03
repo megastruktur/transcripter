@@ -20,7 +20,22 @@ DC="${TRANSCRIPTER_DC:-docker compose -f $(cd "$(dirname "$0")/.." && pwd)/docke
 FIXTURES_DIR="$(cd "$(dirname "$0")" && pwd)/fixtures"
 WORK="$(cd "$(dirname "$0")/.." && pwd)/.e2e-work"
 mkdir -p "$WORK"
-trap 'rm -rf "$WORK"' EXIT  # keep under project path: containers can't see host /tmp
+RID=""        # set at step 3; the failure hint below stays silent until then
+SMOKE_DONE=0  # flipped right before the final PASS line
+cleanup() {
+  rm -rf "$WORK"  # keep under project path: containers can't see host /tmp
+  # A smoke that dies mid-run leaves the recording wedged server-side
+  # (state=uploading, or mid-pipeline) — say so, with the way out.
+  if [ "$SMOKE_DONE" != "1" ] && [ -n "$RID" ]; then
+    cat >&2 <<EOF
+
+SMOKE INCOMPLETE — recording $RID may be wedged on the server.
+Inspect: curl -H "authorization: Bearer $TOKEN" "$API/recordings/$RID"
+Delete:  curl -X DELETE -H "authorization: Bearer $TOKEN" "$API/recordings/$RID"
+EOF
+  fi
+}
+trap cleanup EXIT
 
 auth() { curl -s -H "authorization: Bearer $TOKEN" "$@"; }
 # Like auth, but hard-fail on HTTP >= 400 with the body shown — for
@@ -49,6 +64,47 @@ fsize() { wc -c < "$1" | tr -d ' '; }
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# --- storage access -------------------------------------------------------
+# The stack's storage/vault are not always host-visible (Komodo staging
+# keeps storage in a docker volume; the vault mount lives in dockerd's
+# mount namespace): hashing a MISSING host path used to kill this script
+# via `set -e` with zero context, wedging the recording in `uploading`.
+# Steps 6/9 go through `sx`, which runs the command on the host or inside
+# the stack's api container (fixed mounts there: /storage, /transcripts).
+STOR_MODE=host
+STOR_CID=""
+SROOT="$STORAGE_DIR"
+VROOT="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
+sx() {
+  if [ "$STOR_MODE" = host ]; then "$@"; else docker exec "$STOR_CID" "$@"; fi
+}
+sx_sha256() {  # portable on the host, coreutils guaranteed in the container
+  if [ "$STOR_MODE" = host ]; then sha256 "$1"; else sx sha256sum "$1" | cut -d' ' -f1; fi
+}
+detect_storage_access() {
+  [ -d "$STORAGE_DIR/recordings/$RID" ] && return 0
+  # Host can't see the storage — find the api container serving $API by
+  # its published port and read through it.
+  local port="${API##*:}"; port="${port%%/*}"
+  STOR_CID=$(docker ps --format '{{.Names}}'$'\t''{{.Ports}}'$'\t''{{.Label "com.docker.compose.service"}}' \
+    | awk -F'\t' -v needle=":$port->" '$3=="api" && index($2, needle) {print $1; exit}')
+  [ -z "$STOR_CID" ] && STOR_CID=$(docker ps --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.service"}}' \
+    | awk -F'\t' '$2=="api" && $1 ~ /^transcripter(-dev)?-api-/ {print $1; exit}')
+  if [ -z "$STOR_CID" ] || ! docker exec "$STOR_CID" test -d "/storage/recordings/$RID" 2>/dev/null; then
+    cat >&2 <<EOF
+step 6 ABORT: the stack's storage is visible neither on this host nor in an api container.
+  host path checked: $STORAGE_DIR/recordings/$RID
+  Set TRANSCRIPTER_STORAGE (+ TRANSCRIPTER_TRANSCRIPTS) to the stack's
+  host-visible storage, or run against the dev stack.
+EOF
+    exit 1
+  fi
+  STOR_MODE=docker
+  SROOT=/storage
+  VROOT=/transcripts
+  echo "  storage not host-visible — reading through container $STOR_CID"
 }
 
 echo "== 1. health"
@@ -141,7 +197,7 @@ echo "$UPD" | jq -e '.type == "ttrpg"' >/dev/null \
 echo "== 4. upload first half, simulate connection drop"
 HALF=$((SIZE / 2))
 head -c "$HALF" "$WORK/test.flac" > "$WORK/part1"
-HTTP=$(curl -s -o "$WORK/ack1" -w '%{http_code}' -X PUT \
+HTTP=$(curl -s --max-time 120 -o "$WORK/ack1" -w '%{http_code}' -X PUT \
   -H "authorization: Bearer $TOKEN" -H "content-length: $HALF" \
   --data-binary "@$WORK/part1" "$API/recordings/$RID/audio?offset=0")
 test "$HTTP" = "200" && echo "first half committed: $(jq -r .committed "$WORK/ack1")"
@@ -150,7 +206,7 @@ echo "== 5. resume from overlap (offset earlier than committed)"
 OVERLAP=$((HALF - 1024))
 tail -c +"$((OVERLAP + 1))" "$WORK/test.flac" > "$WORK/part2"
 P2SIZE=$(fsize "$WORK/part2")
-HTTP=$(curl -s -o "$WORK/ack2" -w '%{http_code}' -X PUT \
+HTTP=$(curl -s --max-time 120 -o "$WORK/ack2" -w '%{http_code}' -X PUT \
   -H "authorization: Bearer $TOKEN" -H "content-length: $P2SIZE" \
   --data-binary "@$WORK/part2" "$API/recordings/$RID/audio?offset=$OVERLAP")
 test "$HTTP" = "200" || { cat "$WORK/ack2"; exit 1; }
@@ -159,8 +215,9 @@ echo "resumed to $COMMITTED (expect $SIZE)"
 test "$COMMITTED" = "$SIZE"
 
 echo "== 6. verify server-side bytes are bit-identical"
-SERVER_SHA=$(sha256 "$STORAGE_DIR/recordings/$RID/audio.flac")
-test "$SERVER_SHA" = "$SHA" && echo "sha256 match"
+detect_storage_access
+SERVER_SHA=$(sx_sha256 "$SROOT/recordings/$RID/audio.flac")
+test "$SERVER_SHA" = "$SHA" && echo "sha256 match ($STOR_MODE)" || { echo "  FAIL: server sha256='$SERVER_SHA' != client '$SHA'"; exit 1; }
 
 echo "== 7. finalize"
 DURATION=30
@@ -180,7 +237,7 @@ if [ "$STT" = "speaches" ]; then
     || { echo "unparseable fixture duration: '$DURATION'"; exit 1; }
   DURATION=$D
 fi
-HTTP=$(curl -s -o "$WORK/fin" -w '%{http_code}' -X POST \
+HTTP=$(curl -s --max-time 120 -o "$WORK/fin" -w '%{http_code}' -X POST \
   -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d "{\"sha256\":\"$SHA\",\"duration_sec\":$DURATION}" "$API/recordings/$RID/finalize")
 test "$HTTP" = "200" && jq -r .state "$WORK/fin" | grep -q processing && echo finalized
@@ -204,58 +261,59 @@ echo "$STATES" | tr ',' '\n' | grep -qvE 'done|skipped' && { echo "TIMEOUT waiti
 echo "== 9. artifacts exist"
 # Vault mode: the export moves the meta tree out of /storage into the vault (.transcripter/meta/) — artifact asserts must accept EITHER location (storage meta or the vault mirror). The export runs right after the pipeline,
 # so the storage copy may be gone by the time we check; the vault copy is the durable one. Discover the vault folder FIRST so every
-# artifact assert can fall back to the vault mirror.
-VAULT_DIR_HOST="${TRANSCRIPTER_TRANSCRIPTS:-$STORAGE_DIR/transcripts}"
-FOLDER=$(find "$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null | head -1)
+# artifact assert can fall back to the vault mirror. All file access goes
+# through `sx` + $SROOT/$VROOT (host paths, or the api container's
+# /storage + /transcripts when the stack's storage isn't host-visible).
+FOLDER=$(sx find "$VROOT" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null | head -1)
 meta_file() {
   local f="$1"
-  for p in "$STORAGE_DIR/recordings/$RID/meta/$f" "$FOLDER/.transcripter/meta/$f"; do
-    test -s "$p" && { printf '%s' "$p"; return 0; }
+  for p in "$SROOT/recordings/$RID/meta/$f" "$FOLDER/.transcripter/meta/$f"; do
+    sx test -s "$p" && { printf '%s' "$p"; return 0; }
   done
   return 1
 }
 if [ "$STT" = "speaches" ]; then
   # Word timestamps are the diarization-merge input; empty words = silent
   # degradation of the whole api-backend path. Prove them non-empty.
-  WORDS=$(jq '.words | length' "$(meta_file segments.json)") || { echo "  MISSING segments.json (storage + vault)"; exit 1; }
+  WORDS=$(sx cat "$(meta_file segments.json)" | jq '.words | length') || { echo "  MISSING segments.json (storage + vault)"; exit 1; }
   test "$WORDS" -gt 0 && echo "  ok: segments.json words=$WORDS" || {
     echo "  FAIL: no word timestamps in segments.json (backend=api path)"; exit 1
   }
 fi
 for f in transcript.md segments.json; do
-  test -s "$(meta_file "$f")" && echo "  ok: $f" || { echo "  MISSING: $f (storage + vault)"; exit 1; }
+  sx test -s "$(meta_file "$f")" && echo "  ok: $f" || { echo "  MISSING: $f (storage + vault)"; exit 1; }
 done
 # Gate each artifact on the stage that writes it. Capture the response first:
 # under pipefail a transient curl failure inside `if` would silently skip.
 RESP=$(authf "$API/recordings/$RID")
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="diarize").status=="done"' >/dev/null; then
-  test -s "$(meta_file diarization.json)"     && echo "  ok: diarization.json" || { echo "  MISSING: diarization.json"; exit 1; }
+  sx test -s "$(meta_file diarization.json)"     && echo "  ok: diarization.json" || { echo "  MISSING: diarization.json"; exit 1; }
 fi
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="merge_speakers").status=="done"' >/dev/null; then
-  test -s "$(meta_file diarized-transcript.md)"     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
+  sx test -s "$(meta_file diarized-transcript.md)"     && echo "  ok: diarized-transcript.md" || { echo "  MISSING: diarized-transcript.md"; exit 1; }
 fi
 
 echo "== 9b. exported vault folder (nested YYYY/MM, audio + manifest)"
 # Nested YYYY/MM layout + legacy root-level flat; exactly one folder per recording.
-# (VAULT_DIR_HOST + FOLDER were already discovered in step 9 so the artifact
+# (VROOT + FOLDER were already discovered in step 9 so the artifact
 # asserts above could fall back to the vault mirror.)
-FOLDERS=$(find "$VAULT_DIR_HOST" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null)
+FOLDERS=$(sx find "$VROOT" -maxdepth 3 -type d -name "* ${RID:0:8}" 2>/dev/null)
 N=$(printf '%s\n' "$FOLDERS" | grep -c . || true)  # grep -c exits 1 on zero matches — without ||true set -e/pipefail kills the script silently
 FOLDER=$(printf '%s\n' "$FOLDERS" | head -1)
-test "$N" -eq 1 && test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$(dirname "$FOLDER")")/$(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
-grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
-grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { echo "  BAD frontmatter: no tags"; exit 1; }
+test "$N" -eq 1 && sx test -s "$FOLDER/transcript.md" && echo "  ok: $(basename "$(dirname "$FOLDER")")/$(basename "$FOLDER")/transcript.md" || { echo "  MISSING/dup exported note folder (N=$N)"; exit 1; }
+sx grep -q "recording_id: $RID" "$FOLDER/transcript.md" && echo "  ok: frontmatter recording_id" || { echo "  BAD frontmatter"; exit 1; }
+sx grep -q '^tags:' "$FOLDER/transcript.md" && echo "  ok: frontmatter tags" || { echo "  BAD frontmatter: no tags"; exit 1; }
 # The vault feature: the audio FLAC moved into .transcripter/ and a manifest
 # landed beside it; storage's audio.flac is GONE (the move, not a copy).
-test -s "$FOLDER/.transcripter/audio.flac" && echo "  ok: .transcripter/audio.flac" || { echo "  MISSING vault audio"; exit 1; }
-grep -q "\"id\": \"$RID\"" "$FOLDER/.transcripter/manifest.json" && echo "  ok: manifest id" || { echo "  BAD manifest"; exit 1; }
-test ! -e "$STORAGE_DIR/recordings/$RID/audio.flac" && echo "  ok: storage audio moved out" || { echo "  storage audio.flac still present"; exit 1; }
-test -s "$VAULT_DIR_HOST/Dashboard.md" && echo "  ok: Dashboard.md" || { echo "  MISSING Dashboard.md"; exit 1; }
+sx test -s "$FOLDER/.transcripter/audio.flac" && echo "  ok: .transcripter/audio.flac" || { echo "  MISSING vault audio"; exit 1; }
+sx grep -q "\"id\": \"$RID\"" "$FOLDER/.transcripter/manifest.json" && echo "  ok: manifest id" || { echo "  BAD manifest"; exit 1; }
+sx test ! -e "$SROOT/recordings/$RID/audio.flac" && echo "  ok: storage audio moved out" || { echo "  storage audio.flac still present"; exit 1; }
+sx test -s "$VROOT/Dashboard.md" && echo "  ok: Dashboard.md" || { echo "  MISSING Dashboard.md"; exit 1; }
 # Profile-matched summarize names its artifact per profile.output_artifact and
 # carries `profile:` in frontmatter; asserted only when summarize actually ran.
 if echo "$RESP" | jq -e '.stages[] | select(.kind=="summarize").status=="done"' >/dev/null; then
-  test -s "$(meta_file summary.md)" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
-  test -s "$FOLDER/session-log.md" && grep -q "profile: ttrpg-session-log" "$FOLDER/session-log.md" \
+  sx test -s "$(meta_file summary.md)" && echo "  ok: meta/summary.md (canonical)" || { echo "  MISSING meta/summary.md"; exit 1; }
+  sx test -s "$FOLDER/session-log.md" && sx grep -q "profile: ttrpg-session-log" "$FOLDER/session-log.md" \
     && echo "  ok: session-log.md (profile ttrpg-session-log)" || { echo "  MISSING/BAD session-log.md"; exit 1; }
 else
   echo "  skip: summarize not done — session-log.md not asserted"
@@ -305,7 +363,7 @@ if [ "${GRAPH:-0}" = "1" ]; then
   $DC cp "$(dirname "$0")/graph_edit_probe.py" worker:/tmp/graph_edit_probe.py
   $DC exec -T -w /app/worker \
     -e PYTHONPATH=/app/worker -e PROBE_RID="$RID" \
-    -e PROBE_VAULT_META="/transcripts/${FOLDER#\$VAULT_DIR_HOST/}/.transcripter/meta" \
+    -e PROBE_VAULT_META="/transcripts/${FOLDER#\$VROOT/}/.transcripter/meta" \
     worker .venv/bin/python /tmp/graph_edit_probe.py || { echo "  edit probe FAILED"; exit 1; }
   $DC exec -T worker rm -f /tmp/graph_edit_probe.py
 
@@ -345,13 +403,13 @@ if [ "${GRAPH:-0}" = "1" ]; then
   ST=$(authf "$API/tags/e2e/digest/status" | jq -r .state)
   echo "  digest/status state=$ST (queued expected)"
   test "$ST" = "queued" || { echo "  digest/status not queued after edit: $ST"; exit 1; }
-  DIGEST_FILE="$VAULT_DIR_HOST/digests/e2e.md"
-  MTIME_BEFORE=$(stat -c %Y "$DIGEST_FILE" 2>/dev/null || stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
+  DIGEST_FILE="$VROOT/digests/e2e.md"
+  MTIME_BEFORE=$(sx stat -c %Y "$DIGEST_FILE" 2>/dev/null || sx stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
   echo "  waiting for renewal (debounce + digest LLM call)..."
   DEADLINE=$((SECONDS + 300))
   RENEWED=0
   while [ $SECONDS -lt $DEADLINE ]; do
-    MT=$(stat -c %Y "$DIGEST_FILE" 2>/dev/null || stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
+    MT=$(sx stat -c %Y "$DIGEST_FILE" 2>/dev/null || sx stat -f %m "$DIGEST_FILE" 2>/dev/null || echo 0)
     if [ "$MT" != "$MTIME_BEFORE" ] && [ "$MT" != "0" ]; then
       STATE=$(auth "$API/tags/e2e/digest/status" | jq -r .state)
       test "$STATE" = "fresh" && RENEWED=1 && break
@@ -369,5 +427,6 @@ HTTP=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
 # 409 while processing is acceptable; 200 when idle
 test "$HTTP" = "200" || test "$HTTP" = "409" && echo "regenerate rc=$HTTP (processing-guard ok)"
 
+SMOKE_DONE=1
 echo
 echo "E2E SMOKE PASSED (recording $RID)"

@@ -8,6 +8,12 @@ storage:
   # point the compose bind-mount at your NAS path on the host.
   path: /storage
 
+# Abandoned-upload reaper (api): a recording still in state `uploading`
+# this many hours after its last chunk commit is marked `failed` — the
+# pipeline only starts at finalize, so an upload whose client never came
+# back would otherwise sit in `uploading` forever. Default 24.
+# upload_ttl_hours: 24
+
 vault:
   # Obsidian vault dir (note folders nested YYYY/MM, per-recording audio in
   # .transcripter/, digests/ + indexes/ + Dashboard.md at the root). The

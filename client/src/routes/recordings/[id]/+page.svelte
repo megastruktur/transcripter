@@ -207,7 +207,10 @@
 		stageRetry.enabled = next.state === 'done' || next.state === 'failed';
 		publishRecordActions();
 		recordActions.loaded = true;
-		recordActions.deletable = next.state === 'done' || next.state === 'failed';
+		// uploading is deletable too: the server DELETE has no state guard, and
+		// an abandoned upload (client gone before finalize) otherwise wedges in
+		// the list forever. processing stays gated — a live workflow writes it.
+		recordActions.deletable = next.state !== 'processing';
 		if (previous?.state === 'processing' && next.state !== 'processing') {
 			invalidateArtifacts();
 			void loadTab(activeTab, true);

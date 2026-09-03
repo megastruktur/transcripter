@@ -19,7 +19,10 @@
   output. macOS 14.2+ uses a Core Audio process tap; Windows 10 1703+/11 uses
   WASAPI shared-mode loopback. Client encoder is flacenc (pure Rust).
 - Delivery: client-side spool → resumable offset-PUT upload → SHA-256
-  finalize → spool cleaned after ack.
+  finalize → spool cleaned after ack. An upload abandoned before finalize
+  (client crash/kill) is marked `failed` by the api reaper after
+  `upload_ttl_hours` (default 24) without row activity — `uploading` never
+  wedges forever; `failed` rows are deletable from the client.
 - Regenerate: `POST /recordings/{id}/regenerate {stage}` — downstream stages
   always re-run.
 - Archive list: `GET /recordings` is paginated and filtered server-side —

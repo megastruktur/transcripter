@@ -1,14 +1,17 @@
 """Transcriptor API entrypoint."""
 
+import asyncio
 import hmac
 import os
 import re
 import sys
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app import reaper
 from app.config import ServerConfig, load_config
 from app.db import STAGE_KINDS, Base, engine, init_engine
 from app.routes import profiles as profiles_route
@@ -39,7 +42,20 @@ _check_startup()
 
 cfg: ServerConfig = load_config()
 
-app = FastAPI(title="Transcriptor API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Abandoned-upload reaper: fails `uploading` rows idle past
+    # cfg.upload_ttl_hours (sweeps once at startup, then periodically).
+    task = asyncio.create_task(reaper.reaper_loop(cfg.upload_ttl_hours))
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="Transcriptor API", lifespan=_lifespan)
 # LAN clients: Tauri webview (tauri://localhost, http://localhost:5173 dev)
 app.add_middleware(
     CORSMiddleware,

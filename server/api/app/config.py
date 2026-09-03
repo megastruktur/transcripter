@@ -118,6 +118,10 @@ class ServerConfig(BaseModel):
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     graph: GraphConfig = Field(default_factory=GraphConfig)
     vault: VaultConfig = Field(default_factory=VaultConfig)
+    # Abandoned-upload reaper: a recording still in state `uploading` this
+    # many hours after its last chunk commit is marked `failed` (the
+    # pipeline only starts at finalize, so nothing else ever moves it).
+    upload_ttl_hours: float = 24.0
 
     @property
     def recordings_root(self) -> Path:

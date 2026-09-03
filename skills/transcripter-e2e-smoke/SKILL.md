@@ -2,7 +2,7 @@
 name: transcripter-e2e-smoke
 description: Run and interpret the transcripter end-to-end smoke test (server/scripts/e2e_smoke.sh) — synthetic audio upload with simulated drop and overlapping resume, server-side SHA-256 byte-identity, finalize, pipeline stage polling, and artifact assertions. Supports the STT=speaches mode that proves the api-backend/word-timestamps path against the bundled Speaches profile. Use when asked to run the e2e smoke, smoke test the full upload→pipeline→artifacts path, verify a recording-pipeline change end to end, or interpret the smoke script's stage output (done,done,done,skipped).
 metadata:
-  version: "1.1"
+  version: "1.2"
 ---
 
 # transcripter-e2e-smoke
@@ -34,7 +34,22 @@ STT=speaches SPEACHES_PROBE_URL=http://192.168.3.23:8010/v1/models \
 Env overrides (defaults preserve staging behavior): `TRANSCRIPTER_API` (api
 base URL), `TRANSCRIPTER_STORAGE` (server storage dir for artifact asserts),
 `TRANSCRIPTER_TRANSCRIPTS` (default `$TRANSCRIPTER_STORAGE/transcripts`),
-`TRANSCRIPTER_DC` (compose command for the speaches docker-exec probe).
+`TRANSCRIPTER_DC` (compose command for the speaches docker-exec probe),
+`SPEACHES_API_KEY` (the external voice stack's Speaches at
+`192.168.3.23:8010` requires auth — without it the step-2b probe loops
+forever; pull it from `docker exec transcripter-worker-1 printenv
+SPEACHES_API_KEY`).
+
+**Storage access is stack-agnostic.** Steps 6/9/9b read storage + vault
+through an `sx` wrapper: host paths when `$TRANSCRIPTER_STORAGE` is
+host-visible (dev stack), otherwise via `docker exec` into the api
+container serving `$TRANSCRIPTER_API` (fixed mounts `/storage` +
+`/transcripts`; step 6 prints `sha256 match (docker)` in that mode). This
+is what makes the smoke pass against Komodo staging — before 2026-09-03
+the host-only read died silently on the missing path and wedged the
+recording in `uploading`. If neither host nor container can see the
+storage, step 6 aborts loudly with setup guidance. A failed run also
+prints the wedged recording's id and a ready `curl -X DELETE` (EXIT trap).
 Step 3c PATCHes the recording `type: ttrpg` (POST /recordings accepts no
 type) so the ttrpg-session-log profile matches — without it the
 `session-log.md` assert cannot pass. Fresh transcripts dirs need the
