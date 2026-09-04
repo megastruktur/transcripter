@@ -23,6 +23,51 @@ def _make(client: TestClient, title: str) -> str:
     return r.json()["id"]
 
 
+def test_new_recording_stages_pipeline_order_no_separate(client: TestClient) -> None:
+    """Two contracts of the 2026-09-04 fix:
+    1. stages serialize in PIPELINE order (chunk → … → enrich), not the
+       alphabetical Stage.kind DB order — the client renders the list
+       verbatim (status icons, re-run menu).
+    2. new recordings carry NO `separate` row: the stage is retired and
+       nothing ever writes it, so a row would sit pending forever and
+       render as a dead icon / 'Re-run undefined' menu entry."""
+    rid = _make(client, "order probe")
+    body = client.get(f"/recordings/{rid}").json()
+    kinds = [s["kind"] for s in body["stages"]]
+    assert kinds == ["chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"]
+    assert "separate" not in kinds
+
+
+def test_serialize_legacy_separate_row_keeps_historical_slot(client: TestClient) -> None:
+    """Old rows keep their separate Stage row (tombstone enum): it must
+    serialize in its historical position — between chunk and transcribe
+    — instead of vanishing or jumping to the end."""
+    rid = _make(client, "legacy probe")
+    from app.db import Stage, get_session
+
+    session = next(get_session())
+    try:
+        session.add(Stage(recording_id=rid, kind="separate"))
+        session.commit()
+    finally:
+        session.close()
+    body = client.get(f"/recordings/{rid}").json()
+    kinds = [s["kind"] for s in body["stages"]]
+    assert kinds == [
+        "chunk", "separate", "transcribe", "diarize",
+        "merge_speakers", "summarize", "enrich",
+    ]
+
+
+def test_regenerate_rejects_retired_separate(client: TestClient) -> None:
+    """`separate` is not a valid regenerate target anymore: the workflow
+    would assert-fail on the unknown stage. 400, not a Temporal 500."""
+    rid = _make(client, "reject probe")
+    r = client.post(f"/recordings/{rid}/regenerate", json={"stage": "separate"})
+    assert r.status_code == 400
+    assert "unknown stage" in r.json()["detail"]
+
+
 def test_list_returns_envelope(client: TestClient) -> None:
     ids = {_make(client, f"rec-{n}") for n in range(3)}
     r = client.get("/recordings")

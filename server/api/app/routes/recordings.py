@@ -44,7 +44,8 @@ from sqlalchemy.types import Text
 from app import temporal_client
 from app.config import ServerConfig
 from app.db import (
-    STAGE_KINDS,
+    PIPELINE_STAGE_KINDS,
+    STAGE_ORDER,
     Recording,
     RecordingState,
     Stage,
@@ -333,7 +334,7 @@ async def create_recording_direct(
         recorded_at=rec_recorded_at,
     )
     session.add(rec)
-    for kind in STAGE_KINDS:
+    for kind in PIPELINE_STAGE_KINDS:
         session.add(Stage(recording_id=rec.id, kind=kind))
 
     def _cleanup_on_failure() -> None:
@@ -428,7 +429,7 @@ def create_recording(
         tags=_normalize_tags(body.tags),
     )
     session.add(rec)
-    for kind in STAGE_KINDS:
+    for kind in PIPELINE_STAGE_KINDS:
         session.add(Stage(recording_id=rec.id, kind=kind))
     session.commit()
 
@@ -676,7 +677,13 @@ def serialize_recording(rec: Recording) -> dict:
                 "updated_at": s.updated_at.isoformat(),
                 "details": s.details or {},
             }
-            for s in rec.stages
+            # Pipeline order (chunk → … → enrich), NOT the alphabetical
+            # Stage-kind DB order: the client renders this list verbatim
+            # (status icons, re-run menu). Legacy/unknown kinds sort
+            # last, ties by row id.
+            for s in sorted(
+                rec.stages, key=lambda st: (STAGE_ORDER.get(st.kind, 99), st.id)
+            )
         ],
     }
 

@@ -52,7 +52,7 @@ def test_create_returns_uuid_and_stages(client: TestClient) -> None:
     assert len(rid) == 36
     detail = client.get(f"/recordings/{rid}").json()
     kinds = {s["kind"] for s in detail["stages"]}
-    assert kinds == {"chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
+    assert kinds == {"chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
 
 
 def test_invalid_uuid_rejected(client: TestClient) -> None:

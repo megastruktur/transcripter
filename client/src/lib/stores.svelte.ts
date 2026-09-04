@@ -63,9 +63,14 @@ export const stageIcons: Record<StageKind, IconName> = {
 
 /** Re-run context published by the recording detail page. The layout
  * context-bar reads it to render the pipeline status icons next to the
- * title and the re-run entries inside the ellipsis actions menu. */
+ * title and the re-run entries inside the ellipsis actions menu.
+ * `stages` is narrowed to KNOWN pipeline kinds (StageKind): the detail
+ * page filters+sorts the API list on publish (a legacy `separate` row —
+ * retired stage, tombstone enum on old recordings — must never reach
+ * the icon/name maps). */
+export type RetryStage = Stage & { kind: StageKind };
 export const stageRetry = $state<{
-	stages: Stage[];
+	stages: RetryStage[];
 	enabled: boolean;
 	rerun: ((kind: StageKind) => void) | null;
 }>({ stages: [], enabled: false, rerun: null });

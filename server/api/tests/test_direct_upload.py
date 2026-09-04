@@ -83,7 +83,7 @@ def test_direct_flac_passthrough_no_transcode(client: TestClient) -> None:
     assert detail["committed_bytes"] > 0
     assert detail["duration_sec"] is None
     kinds = {s["kind"] for s in detail["stages"]}
-    assert kinds == {"chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
+    assert kinds == {"chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
     for stage in detail["stages"]:
         assert stage["status"] == "pending"
 

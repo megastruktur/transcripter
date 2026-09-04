@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import ServerConfig
-from app.db import STAGE_KINDS, Stage, get_session
+from app.db import PIPELINE_STAGE_KINDS, Stage, get_session
 from app.routes.recordings import _get
 
 router = APIRouter(prefix="/recordings")
@@ -46,8 +46,11 @@ async def regenerate(
 ) -> dict:
     from app.db import RecordingState
 
-    if body.stage not in STAGE_KINDS:
-        raise HTTPException(status_code=400, detail=f"unknown stage {body.stage}")
+    if body.stage not in PIPELINE_STAGE_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown stage {body.stage}",
+        )
 
     rec = _get(recording_id, session)
     if rec.state == RecordingState.uploading:
@@ -58,7 +61,7 @@ async def regenerate(
     # stage row for it; the worker's set_stage() does .one() and would fail.
     # Backfill missing rows so any stage stays a valid regenerate target.
     existing = {st.kind for st in rec.stages}
-    for kind in STAGE_KINDS:
+    for kind in PIPELINE_STAGE_KINDS:
         if kind not in existing:
             session.add(Stage(recording_id=rec.id, kind=kind))
     session.commit()

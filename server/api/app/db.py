@@ -46,6 +46,22 @@ class StageStatus(enum.Enum):
 
 STAGE_KINDS = ("chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich")
 
+# Stage kinds the CURRENT pipeline runs and pre-creates rows for.
+# ``separate`` is a retired tombstone (removed 2026-09 with the
+# separation stage; kept in STAGE_KINDS so historical rows keep parsing
+# and the PG enum stays intact) — new recordings must NOT get a
+# separate row: nothing ever writes it, so it would sit pending forever
+# and render as a dead icon/entry in the client.
+PIPELINE_STAGE_KINDS = tuple(k for k in STAGE_KINDS if k != "separate")
+
+# Canonical execution order (chunk → transcribe → diarize →
+# merge_speakers → summarize → enrich); ``separate`` keeps its historical
+# slot for legacy rows. serialize_recording sorts by this map; unknown
+# kinds sort last (stable).
+STAGE_ORDER = {k: i for i, k in enumerate(
+    ("chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich")
+)}
+
 
 class Recording(Base):
     __tablename__ = "recordings"
@@ -80,20 +96,20 @@ class Recording(Base):
     recorded_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
-
     stages: Mapped[list["Stage"]] = relationship(
         back_populates="recording",
         cascade="all, delete-orphan",
-        order_by="Stage.kind",
     )
+
+
 
 
 class Stage(Base):
     __tablename__ = "stages"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    recording_id: Mapped[str] = mapped_column(ForeignKey("recordings.id", ondelete="CASCADE"))
     kind: Mapped[str] = mapped_column(Enum(*STAGE_KINDS, name="stage_kind"))
+    recording_id: Mapped[str] = mapped_column(ForeignKey("recordings.id", ondelete="CASCADE"))
     status: Mapped[StageStatus] = mapped_column(
         Enum(StageStatus, name="stage_status"), default=StageStatus.pending
     )

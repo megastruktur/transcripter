@@ -27,7 +27,7 @@
 	import { dateLabel, durationLabel } from '$lib/format';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
 	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
-	import { recordActions, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
+	import { STAGES, recordActions, stageNames, stageRetry, type ArtifactTabKey, type StageKind } from '$lib/stores.svelte';
 
 	const id = page.params.id ?? '';
 
@@ -203,7 +203,14 @@
 	function applyRecording(next: Recording): void {
 		const previous = recording;
 		recording = pendingTitle !== null ? { ...next, title: pendingTitle } : next;
-		stageRetry.stages = next.stages;
+	// Canonical pipeline order + unknown-kind filter: the API list is
+	// the render source (context-bar icons, re-run menu) — a legacy
+	// `separate` row (retired stage, tombstone enum on old recordings)
+	// must not surface as an iconless entry / 'Re-run undefined'.
+	stageRetry.stages = next.stages
+		.filter((stage): stage is Stage & { kind: StageKind } => (STAGES as readonly string[]).includes(stage.kind))
+		.slice()
+		.sort((a, b) => STAGES.indexOf(a.kind) - STAGES.indexOf(b.kind));
 		stageRetry.enabled = next.state === 'done' || next.state === 'failed';
 		publishRecordActions();
 		recordActions.loaded = true;
@@ -667,7 +674,7 @@
 		{/if}
 	{/if}
 	{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}
-		<p class="stage-error" role="alert">{stageNames[stage.kind]} failed: {stage.last_error}</p>
+		<p class="stage-error" role="alert">{stageNames[stage.kind as StageKind] ?? stage.kind} failed: {stage.last_error}</p>
 	{/each}
 	{#if rerunError}
 		<p class="inline-error" role="alert">{rerunError}</p>

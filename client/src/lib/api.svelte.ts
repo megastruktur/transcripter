@@ -59,7 +59,7 @@ export type UpdateRecordingPatch = {
 };
 
 export type Stage = {
-	kind: 'chunk' | 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize';
+	kind: 'chunk' | 'transcribe' | 'diarize' | 'merge_speakers' | 'summarize' | 'enrich' | 'separate';
 	status: StageStatus;
 	attempts: number;
 	last_error: string | null;
@@ -245,6 +245,32 @@ export async function regenerateDigest(cfg: ApiConfig, tag: string): Promise<voi
 		const detail = await resp.json().catch(() => ({ detail: resp.status }));
 		throw new Error(detail.detail ?? `digest ${resp.status}`);
 	}
+}
+
+export type MemoryWorkflowStatus = {
+	state: 'running' | 'done' | 'failed' | 'unknown';
+	progress?: { total: number; done: number; current: string | null };
+	result?: { purged?: Record<string, number>; rebuilt?: number; failed?: string[] };
+	detail?: string;
+};
+
+/** Admin: wipe the tag's memory (graph namespace, edits, digest,
+ * semantic index) — recordings stay. 202 + workflow; poll with
+ * fetchMemoryStatus. Throws with .status 404 (no done recordings),
+ * 409 (graph off | recording processing | already running), 503. */
+export async function purgeTagMemory(cfg: ApiConfig, tag: string, rebuild: boolean): Promise<{ workflow_id: string }> {
+	const resp = await req(cfg, rebuild ? `/tags/${encodeURIComponent(tag)}/rebuild` : `/tags/${encodeURIComponent(tag)}/memory`, { method: rebuild ? 'POST' : 'DELETE' });
+	if (!resp.ok) {
+		const detail = await resp.json().catch(() => ({ detail: resp.status }));
+		throw Object.assign(new Error(detail.detail ?? `memory ${resp.status}`), { status: resp.status });
+	}
+	return resp.json();
+}
+
+export async function fetchMemoryStatus(cfg: ApiConfig, tag: string, workflowId: string): Promise<MemoryWorkflowStatus> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/memory/${encodeURIComponent(workflowId)}`);
+	if (!resp.ok) throw new Error(`memory status ${resp.status}`);
+	return resp.json();
 }
 
 /** Phase 4: rename one entity (label ± type) in the tag's namespace.
