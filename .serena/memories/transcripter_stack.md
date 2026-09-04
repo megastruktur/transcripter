@@ -1,5 +1,12 @@
 # transcripter_stack
 
+> **STATUS 2026-09-04:** api/worker deployed as v0.23.1 images =
+> **Python 3.14.7** (first 3.14 release; prior v0.23.0/v0.22.0 were 3.12).
+> Deployed via Komodo DeployStack after the v0.23.1 release; pre-deploy gate
+> (no Running ProcessRecording) respected. Auto-deploy route
+> `github-release-transcripter` (devops gateway) was DOWN at deploy time —
+> pin commit `0fdd388` + DeployStack done manually.
+
 Docker dev stack for the transcripter project (repo `server/` dir). Compose project name: `transcripter`.
 
 ## Core services (always on)
