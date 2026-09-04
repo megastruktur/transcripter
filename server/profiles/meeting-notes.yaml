@@ -25,6 +25,7 @@ summarize:
     Topics left unresolved.
 
     Stick to the transcript; do not invent facts.
+    Do not use timestamps or timecodes — no [hh:mm:ss] markers in the notes.
 
     TRANSCRIPT:
     {transcript}
