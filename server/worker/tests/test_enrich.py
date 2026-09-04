@@ -33,9 +33,12 @@ from worker.enrich import (
     ExtractedRelation,
     _coerce_event,
     _event_mentions,
+    _json_payload,
+    _loads_lenient,
     _parse_extraction,
     _parse_yes_no,
     _render_prompt,
+    _repair_json,
     ask_same_entity,
     extract_from_transcript,
     pre_existing_lookup,
@@ -182,6 +185,59 @@ def _mock_post_text(text: str, status_code: int = 200) -> Any:
     m.raise_for_status = MagicMock()
     m.json = MagicMock(return_value={"choices": [{"message": {"content": text}}]})
     return m
+
+
+class TestJsonRepair:
+    """Sanitizer for near-valid model JSON (2026-09-04 pf1 incident:
+    ``Expecting property name enclosed in double quotes`` from a trailing
+    comma — retried to exhaustion because the defect is deterministic)."""
+
+    def test_trailing_comma_top_level(self):
+        assert _loads_lenient('{"events": [], "entities": [],}') == {
+            "events": [],
+            "entities": [],
+        }
+
+    def test_trailing_comma_nested(self):
+        assert _loads_lenient('{"events": [{"ts": "1",}, ],}') == {
+            "events": [{"ts": "1"}]
+        }
+
+    def test_trailing_comma_with_newlines(self):
+        # The exact live shape: a comma, newline(s), then the closing brace.
+        raw = '{\n  "events": [],\n  "entities": [],\n}\n'
+        assert _loads_lenient(raw) == {"events": [], "entities": []}
+
+    def test_unquoted_keys(self):
+        assert _loads_lenient('{events: [], entities: [{slug: "a"}]}') == {
+            "events": [],
+            "entities": [{"slug": "a"}],
+        }
+
+    def test_unquoted_key_with_whitespace(self):
+        assert _loads_lenient("{ events : [], }") == {"events": []}
+
+    def test_valid_json_untouched(self):
+        valid = '{"events": [{"ts": "00:01", "summary": "a, b}"}], "entities": []}'
+        assert _repair_json(valid) == valid
+        assert _loads_lenient(valid) == {
+            "events": [{"ts": "00:01", "summary": "a, b}"}],
+            "entities": [],
+        }
+
+    def test_comma_lookalike_inside_string_survives(self):
+        # `,}` inside a STRING literal must never be treated as trailing.
+        assert _loads_lenient('{"a": "x,}y"}') == {"a": "x,}y"}
+
+    def test_unrepairable_reraises_original_error(self):
+        with pytest.raises(json.JSONDecodeError, match="Expecting value"):
+            _loads_lenient('{"a": "b", "c": }')
+
+    def test_live_regression_fence_think_comma(self):
+        # Full pipeline shape: </think> leak + ```json fence + trailing
+        # comma in one payload.
+        raw = "</think>\n```json\n" + '{"events": [],}\n' + "```"
+        assert _loads_lenient(_json_payload(raw)) == {"events": []}
 
 
 class TestExtractFromTranscript:

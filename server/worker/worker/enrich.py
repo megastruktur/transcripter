@@ -348,7 +348,7 @@ def extract_from_transcript(
             )
             r.raise_for_status()
             content = r.json()["choices"][0]["message"]["content"]
-            payload = json.loads(_json_payload(content))
+            payload = _loads_lenient(_json_payload(content))
             return _parse_extraction(payload)
         except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError) as exc:
             last_err = exc
@@ -363,6 +363,24 @@ def extract_from_transcript(
     raise last_err
 
 
+def _loads_lenient(raw: str) -> Any:
+    """json.loads with one repair pass: on JSONDecodeError, retry once on
+    ``_repair_json(raw)``; if that still fails, re-raise the ORIGINAL
+    error (it points at the text the model actually produced). A valid
+    payload never passes through the repairer — zero mutation risk for
+    the happy path."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as first_err:
+        repaired = _repair_json(raw)
+        if repaired != raw:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+        raise first_err from None
+
+
 def _json_payload(content: str) -> str:
     """Model output → raw JSON text. qwen3.6 via llama.cpp with server-side
     reasoning budget 0 leaks a bare `</think>` and wraps the JSON in ```json
@@ -374,6 +392,79 @@ def _json_payload(content: str) -> str:
         if s.rstrip().endswith("```"):
             s = s.rstrip()[:-3]
     return s.strip()
+
+def _repair_json(s: str) -> str:
+    """Best-effort repair of near-valid JSON the model emits despite
+    response_format=json_object: trailing commas before ``}``/``]`` and
+    unquoted object keys. The live failure mode (2026-09-04, pf1):
+    ``Expecting property name enclosed in double quotes: line 93 column 1``
+    — a dangling comma before the closing brace. Token-character walk
+    with in-string tracking: repairs fire ONLY outside string literals,
+    so a value like ``"text,\\n}"`` is never touched. A comma emits (or
+    drops) only AFTER looking past the following whitespace: a ``}``/
+    ``]`` there makes it trailing (dropped), an identifier followed by
+    ``:`` makes it a key separator (emitted, key quoted). Returns the
+    input unchanged when nothing repairable is found — the caller
+    re-raises the ORIGINAL json.loads error in that case."""
+    out: list[str] = []
+    in_str = False
+    esc = False
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch in "{,":
+            # Look past whitespace after `{`/`,`: `}`/`]` → a trailing
+            # comma (drop it); an identifier + `:` → an unquoted key
+            # (emit separator + quote the identifier). Both computed
+            # BEFORE deciding, so the two repairs compose: keys after a
+            # dropped comma still get quoted on the NEXT iteration.
+            j = i + 1
+            while j < n and s[j] in " \t\r\n":
+                j += 1
+            if ch == "," and j < n and s[j] in "}]":
+                i += 1  # trailing comma: drop, keep whitespace
+                continue
+            m = _IDENT_RE.match(s, j)
+            if m is not None:
+                k = m.end()
+                k2 = k
+                while k2 < n and s[k2] in " \t\r\n":
+                    k2 += 1
+                if k2 < n and s[k2] == ":":
+                    out.append(ch)  # the `{`/`,` separator, exactly once
+                    out.append(s[i + 1 : j])  # whitespace kept verbatim
+                    out.append('"')
+                    out.append(m.group(0))
+                    out.append('"')
+                    out.append(s[k:k2])
+                    out.append(":")
+                    i = k2 + 1
+                    continue
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _dedup_prompt(
