@@ -28,10 +28,10 @@ import logging
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from neo4j import GraphDatabase
-from sqlalchemy import text
+from sqlalchemy import CursorResult, text
 
 from .db import Recording, RecordingState, session
 
@@ -80,7 +80,7 @@ def purge_tag_memory(cfg: Any, tag: str) -> dict:
     # corrections on the rebuilt graph otherwise).
     with session() as s:
         res = s.execute(text("DELETE FROM graph_edits WHERE tag = :tag"), {"tag": tag})
-        counts["graph_edits"] = res.rowcount or 0
+        counts["graph_edits"] = cast(CursorResult, res).rowcount or 0
         s.commit()
 
     # 3+4. Digest note + semantic index files.

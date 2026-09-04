@@ -2,7 +2,7 @@
 name = "transcripter-api"
 version = "0.1.0"
 description = "Transcripter server API"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.32",
@@ -36,7 +36,7 @@ dev = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.ruff.lint]
 ignore = [
@@ -50,4 +50,4 @@ testpaths = ["tests"]
 
 [tool.pyright]
 include = ["app"]
-pythonVersion = "3.12"
+pythonVersion = "3.14"

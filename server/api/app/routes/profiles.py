@@ -131,7 +131,7 @@ class _ProfileSpec(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _host_version_ok(self) -> "_ProfileSpec":
+    def _host_version_ok(self) -> _ProfileSpec:
         if not _version_at_least(_HOST_VERSION, self.min_host_version):
             raise ValueError(
                 f"profile requires host >= {self.min_host_version}, host is {_HOST_VERSION}"

@@ -56,7 +56,7 @@ class TranscriptionResult:
             )
         )
     @staticmethod
-    def from_json(path: Path) -> "TranscriptionResult":
+    def from_json(path: Path) -> TranscriptionResult:
         """Inverse of to_json — used to resume a chunked transcription from
         persisted per-chunk results without re-POSTing done chunks."""
         data = json.loads(path.read_text(encoding="utf-8"))

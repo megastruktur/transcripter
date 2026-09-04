@@ -2,7 +2,7 @@
 name = "transcripter-worker"
 version = "0.1.0"
 description = "Transcripter Temporal worker"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "temporalio>=1.7",
     "faster-whisper>=1.0",
@@ -36,8 +36,8 @@ ignore = ["ASYNC230"] # local file IO, small files
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py314"
 
 [tool.pyright]
 include = ["worker"]
-pythonVersion = "3.12"
+pythonVersion = "3.14"

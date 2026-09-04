@@ -60,7 +60,7 @@ class Manifest:
         return json.dumps(asdict(self), indent=1)
 
     @staticmethod
-    def from_json(text: str) -> "Manifest":
+    def from_json(text: str) -> Manifest:
         data = json.loads(text)
         return Manifest(
             duration_sec=data["duration_sec"],
