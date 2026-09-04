@@ -80,7 +80,7 @@ class Recording(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
-    stages: Mapped[list["Stage"]] = relationship(
+    stages: Mapped[list[Stage]] = relationship(
         back_populates="recording",
         cascade="all, delete-orphan",
         order_by="Stage.kind",
@@ -133,6 +133,25 @@ class GraphEdit(Base):
         default=list,
     )
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class TagDef(Base):
+    """Tag registry row — mirrors app.db.TagDef exactly (the API owns
+    the table via create_all; the worker only READS it: transcribe picks
+    the vocabulary up as the ASR initial_prompt, summarize as a
+    glossary block). ``name`` is the already-normalized tag string; the
+    vocabulary is trim/dedupe'd at the API route layer."""
+
+    __tablename__ = "tag_defs"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    vocabulary: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
 

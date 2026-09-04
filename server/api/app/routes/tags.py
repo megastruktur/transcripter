@@ -31,13 +31,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from temporalio.service import RPCError
 
 from app import temporal_client
 from app.config import ServerConfig
-from app.db import EditOp, EditStatus, EditTarget, GraphEdit, get_session
+from app.db import EditOp, EditStatus, EditTarget, GraphEdit, Recording, TagDef, get_session
 from app.embeddings import embed_query, expected_index_meta
 from app.semantic_index import index_status, knn_search
 from app.vault import _tag_recordings, find_digest, scan_timeline
@@ -1154,10 +1154,150 @@ async def _start_or_503(edit_id: int) -> str:
 class TagCount(BaseModel):
     tag: str
     count: int
-
+    # Registry presence: 0 recordings but a tag_defs row (created from the
+    # Tags page before any capture) still lists the tag.
+    registered: bool = False
+    vocabulary_count: int = 0
 
 class TagListResponse(BaseModel):
     items: list[TagCount]
+
+
+class TagCreateRequest(BaseModel):
+    name: str
+    vocabulary: list[str] = Field(default_factory=list)
+
+
+class TagUpdateRequest(BaseModel):
+    vocabulary: list[str]
+
+def _normalize_vocabulary(raw: list[str]) -> list[str]:
+    """Trim, drop blanks, dedupe CASE-INSENSITIVELY (first spelling wins —
+    ``Foo``/``foo`` are the same hot word, and both in a prompt is noise),
+    preserve the original casing (hot words are proper nouns/terms whose
+    casing is the hint: Мендель, Bytchez). Cap at 200 entries / 64 chars
+    each so a runaway paste cannot bloat the ASR prompt budget (the
+    worker truncates further)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        w = item.strip()
+        if not w or len(w) > 64 or len(out) >= 200:
+            if len(out) >= 200:
+                break
+            continue
+        key = w.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(w)
+    return out
+
+
+def _recording_count(session: Session, tag: str) -> int:
+    """Recordings in ANY state carrying the tag (list_tags semantics —
+    a tag on an uploading capture is real user intent)."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "postgresql":
+        from sqlalchemy import func
+        from sqlalchemy import select as sa_select
+
+        n = session.execute(
+            sa_select(func.count())
+            .select_from(Recording)
+            .where(Recording.tags.contains([tag]))
+        ).scalar_one()
+    else:
+        rows = session.execute(
+            text(
+                "SELECT count(*) FROM recordings WHERE EXISTS "
+                "(SELECT 1 FROM json_each(recordings.tags) "
+                "WHERE json_each.value = :tag)"
+            ),
+            {"tag": tag},
+        ).scalar_one()
+        n = rows
+    return int(n or 0)
+
+
+def _tagdef_or_404(session: Session, tag: str) -> TagDef:
+    row = session.get(TagDef, tag)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"tag {tag} not registered")
+    return row
+
+
+@router.post("", status_code=201)
+def create_tag(body: TagCreateRequest, session: Session = Depends(get_session)) -> dict:
+    """Register a tag before any recording carries it (Tags page). 409
+    when the registry already has it — the vocabulary edit path is
+    PATCH, not re-create."""
+    norm = _normalize_tag(body.name)
+    _validate_tag(norm)
+    if session.get(TagDef, norm) is not None:
+        raise HTTPException(status_code=409, detail=f"tag {norm} already exists")
+    row = TagDef(name=norm, vocabulary=_normalize_vocabulary(body.vocabulary))
+    session.add(row)
+    session.commit()
+    return _serialize_tagdef(row, _recording_count(session, norm))
+
+
+@router.get("/{tag}")
+def get_tag(tag: str, session: Session = Depends(get_session)) -> dict:
+    """Registry row + live recording count for the tag editor page.
+    404 when the tag was never registered (and no recording carries it,
+    else auto-registration would have made the row)."""
+    norm = _normalize_tag(tag)
+    row = _tagdef_or_404(session, norm)
+    return _serialize_tagdef(row, _recording_count(session, norm))
+
+
+@router.patch("/{tag}")
+def update_tag(
+    body: TagUpdateRequest, tag: str, session: Session = Depends(get_session)
+) -> dict:
+    """Replace the vocabulary (full-list semantics, like PATCH
+    recording tags). Upsert: a tag that only exists on recordings (no
+    registry row) gets one — that is the whole auto-registration
+    contract."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    row = session.get(TagDef, norm)
+    vocab = _normalize_vocabulary(body.vocabulary)
+    if row is None:
+        row = TagDef(name=norm, vocabulary=vocab)
+        session.add(row)
+    else:
+        row.vocabulary = vocab
+    session.commit()
+    return _serialize_tagdef(row, _recording_count(session, norm))
+
+
+@router.delete("/{tag}", status_code=204)
+def delete_tag(tag: str, session: Session = Depends(get_session)) -> None:
+    """Remove the REGISTRY row only (vocabulary + listing presence). The
+    tag's memory (Neo4j namespace, digest, index) has its own operator
+    path: DELETE /tags/{tag}/memory. 409 while any recording carries the
+    tag — dangling references would re-auto-register it on the next
+    create/PATCH anyway."""
+    norm = _normalize_tag(tag)
+    row = _tagdef_or_404(session, norm)
+    if _recording_count(session, norm) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"tag {norm} has recordings; detach it from them first",
+        )
+    session.delete(row)
+    session.commit()
+
+
+def _serialize_tagdef(row: TagDef, count: int) -> dict:
+    return {
+        "name": row.name,
+        "vocabulary": list(row.vocabulary or []),
+        "recordings": count,
+        "created_at": row.created_at.isoformat(),
+    }
 
 
 @router.get("")
@@ -1169,6 +1309,12 @@ def list_tags(request: Request, session: Session = Depends(get_session)) -> dict
     tail is deterministic. Dialect split mirrors worker digest
     ``_select_recordings``: Postgres unnests the TEXT[], SQLite explodes
     the JSON array (tests).
+
+    Registry union (tag registry feature): tag_defs rows are merged in —
+    a registered tag with ZERO recordings still lists (created from the
+    Tags page ahead of any capture). Registry-only entries sort last
+    (count 0) in tag ASC order. ``registered``/``vocabulary_count``
+    carry the registry state so the client can badge them.
     """
 
     dialect_name = session.get_bind().dialect.name
@@ -1190,4 +1336,26 @@ def list_tags(request: Request, session: Session = Depends(get_session)) -> dict
                 "ORDER BY count DESC, tag ASC"
             )
         ).all()
-    return {"items": [{"tag": row[0], "count": row[1]} for row in rows]}
+    derived = [{"tag": row[0], "count": row[1]} for row in rows]
+    # Registry overlay: all tag_defs rows not already in the derived set
+    # append with count 0; those in both keep the derived count.
+    defs = {
+        d.name: (len(d.vocabulary or []))
+        for d in session.execute(select(TagDef)).scalars().all()
+    }
+    items: list[dict] = []
+    for entry in derived:
+        items.append(
+            {
+                "tag": entry["tag"],
+                "count": entry["count"],
+                "registered": entry["tag"] in defs,
+                "vocabulary_count": defs.get(entry["tag"], 0),
+            }
+        )
+    for name, vcount in sorted(defs.items()):
+        if name not in {e["tag"] for e in derived}:
+            items.append(
+                {"tag": name, "count": 0, "registered": True, "vocabulary_count": vcount}
+            )
+    return {"items": items}

@@ -28,6 +28,7 @@
 	| 'enrich'
 	| 'import'
 	| 'vault'
+	| 'tags'
 	| 'timeline'
 	| 'events'
 	| 'dots'
@@ -127,6 +128,9 @@
 	{:else if name === 'vault'}
 		<rect x="3.5" y="4" width="17" height="16" />
 		<path d="M3.5 9.5h17M3.5 15h17M7 6.75h.01M7 12.25h.01" />
+	{:else if name === 'tags'}
+		<path d="M4 11.5V4.5h7l9 9-7 7-9-9z" />
+		<circle cx="7.5" cy="8" r="1.4" />
 	{:else if name === 'timeline'}
 		<path d="M6 4v16" />
 		<circle cx="6" cy="6.5" r="1.8" fill="currentColor" stroke="none" />

@@ -298,8 +298,8 @@ def test_get_tags_counts_and_order(client: TestClient) -> None:
     assert body.status_code == 200
     items = body.json()["items"]
     assert items == [
-        {"tag": "dnd", "count": 2},
-        {"tag": "meeting", "count": 2},
+        {"tag": "dnd", "count": 2, "registered": True, "vocabulary_count": 0},
+        {"tag": "meeting", "count": 2, "registered": True, "vocabulary_count": 0},
     ]
 
 
@@ -315,7 +315,7 @@ def test_get_tags_count_desc_then_tag_asc(client: TestClient) -> None:
 def test_get_tags_spaces_preserved(client: TestClient) -> None:
     client.post("/recordings", json={"tags": ["dark castle"]})
     items = client.get("/tags").json()["items"]
-    assert items == [{"tag": "dark castle", "count": 1}]
+    assert items == [{"tag": "dark castle", "count": 1, "registered": True, "vocabulary_count": 0}]
 
 
 def test_get_tags_empty_catalog(client: TestClient) -> None:

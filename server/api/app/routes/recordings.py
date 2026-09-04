@@ -51,6 +51,7 @@ from app.db import (
     Stage,
     get_session,
 )
+from app.db_helpers import register_tag_defs
 
 router = APIRouter(prefix="/recordings")
 
@@ -409,6 +410,7 @@ async def create_recording_direct(
     rec.committed_bytes = size
     rec.sha256 = h.hexdigest()
     rec.state = RecordingState.processing
+    register_tag_defs(session, rec.tags)
     session.commit()
 
     request.app.state.on_finalize(rec.id, duration_sec)  # → Temporal
@@ -431,6 +433,7 @@ def create_recording(
     session.add(rec)
     for kind in PIPELINE_STAGE_KINDS:
         session.add(Stage(recording_id=rec.id, kind=kind))
+    register_tag_defs(session, rec.tags)
     session.commit()
 
     rec_dir = cfg.recordings_root / rec.id
@@ -623,6 +626,8 @@ async def update_recording(
         rec.type = new_type
     if body.recorded_at is not None:
         rec.recorded_at = new_recorded_at
+    if body.tags is not None:
+        register_tag_defs(session, rec.tags)
     session.commit()
     # Side effects, in order of blast radius. Everything is fire-and-
     # forget: the DB change stands even if Temporal is down (worker

@@ -88,3 +88,28 @@
   unless the bytes already are FLAC). Runtime mic check on a physical device
   is pending; backgrounding tears down the MediaStream (foreground service
   is the known future fix).
+
+## Tag registry + vocabularies (2026-09-04)
+
+- Tags are a first-class registry entity (`tag_defs` table): a tag can be
+  created on the Tags page BEFORE any recording carries it
+  (`POST /tags {name, vocabulary?}`). `GET /tags/{tag}`, `PATCH /tags/{tag}`
+  (full-list vocabulary replace; upserts legacy tags), `DELETE /tags/{tag}`
+  (registry row only; 409 while recordings carry the tag — tag memory has
+  its own purge path).
+- Recordings auto-register their tags into the registry on create/direct/
+  PATCH (`INSERT ... ON CONFLICT DO NOTHING`): the registry stays a
+  superset of tags seen on recordings, and `GET /tags` unions both
+  (registered tags with zero recordings list with `count: 0`; every row
+  carries `registered` + `vocabulary_count`).
+- Per-tag vocabulary (hot words, ≤200 entries × 64 chars, casefold-dedup,
+  casing preserved) flows into the pipeline: transcribe injects it as the
+  ASR `prompt` (whisper initial_prompt, ~900-char cap, whole-word
+  truncation; survives the suspect-chunk decoder reset — it is domain
+  bias, not decoder state) on every chunk and stereo channel; summarize
+  appends it as a glossary block in the system message (same rail as the
+  recap block). Applies on the next transcribe/summarize run — no
+  retroactive regeneration.
+- Client: `Tags` rail item (between Library and Vault) → `/tags` manifest
+  (ruled rows: name, recordings, vocabulary count) + `/tags/[tag]`
+  vocabulary editor with save/delete.

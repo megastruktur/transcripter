@@ -96,7 +96,7 @@ class Recording(Base):
     recorded_at: Mapped[datetime | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
-    stages: Mapped[list["Stage"]] = relationship(
+    stages: Mapped[list[Stage]] = relationship(
         back_populates="recording",
         cascade="all, delete-orphan",
     )
@@ -153,6 +153,34 @@ class GraphEdit(Base):
         default=list,
     )
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class TagDef(Base):
+    """Tag registry row: a tag as a first-class entity, independent of
+    any recording. Holds the per-tag hot-word vocabulary the worker's
+    transcribe/summarize stages inject into their prompts. Recordings
+    auto-register their tags here on create/PATCH (ON CONFLICT DO
+    NOTHING), so a row with zero recordings is normal (created from the
+    Tags page before any capture). ``name`` is the ALREADY-NORMALIZED
+    tag (trim + lowercase — recordings._normalize_tags); no surrogate
+    id: the tag string is the identity everywhere else (Neo4j namespace,
+    digest slugs, per-tag indexes) and a surrogate key would drift.
+    Mirrors worker.db.TagDef exactly — change the two IN SYNC."""
+
+    __tablename__ = "tag_defs"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Hot words/phrases (trim + dedupe at the route layer): fed to ASR as
+    # the initial_prompt and to summarize as a glossary block. Same
+    # TEXT[]/JSON dialect split as Recording.tags.
+    vocabulary: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
 
 _engine = None
 _SessionLocal: sessionmaker | None = None

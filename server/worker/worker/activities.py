@@ -38,6 +38,7 @@ from .db import (
     Recording,
     RecordingState,
     StageStatus,
+    TagDef,
     session,
     set_stage,
 )
@@ -186,6 +187,71 @@ def _rehydrate_if_vault(rec_id: str) -> None:
         rehydrate_meta(rec_id)
     except Exception:
         log.exception("rehydrate failed for %s (continuing)", rec_id)
+
+
+_HOTWORD_PROMPT_CAP = 900  # whisper initial_prompt budget; characters
+
+
+def _hotword_prompt(s, tags: list[str]) -> str | None:
+    """Tag vocabularies → one ASR bias prompt, or None when no tag has
+    words (zero behavior change for unregistered tags).
+
+    Union across the recording's tags preserves the API's registry order
+    (first-seen, case-preserved); duplicates across tags collapse by
+    casefold. The prefix frames the list as terminology, not dialogue —
+    an initial_prompt is decoded as "text that came before", so a bare
+    comma list can bleed into the transcript as if spoken. Capped at
+    _HOTWORD_PROMPT_CAP chars; the cap truncates whole words only.
+    """
+    if not tags:
+        return None
+    words: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        row = s.get(TagDef, tag)
+        for w in row.vocabulary if row is not None and row.vocabulary else []:
+            key = w.casefold()
+            if key not in seen:
+                seen.add(key)
+                words.append(w)
+    if not words:
+        return None
+    prefix = "Термины и имена, которые могут прозвучать: "
+    out = prefix + ", ".join(words)
+    if len(out) <= _HOTWORD_PROMPT_CAP:
+        return out
+    # Truncate at the last whole word inside the cap; never mid-word.
+    clipped = out[:_HOTWORD_PROMPT_CAP]
+    cut = clipped.rfind(", ")
+    return clipped[:cut] if cut > len(prefix) else clipped.rstrip()
+
+def _glossary_block(s, tags: list[str]) -> str | None:
+    """Tag vocabularies → the summarize glossary block, or None.
+
+    Same union/dedup as _hotword_prompt (one source of truth per stage;
+    the ASR string wraps the same list in its own framing prefix).
+    Semicolon-joined for the LLM glossary (commas live inside phrases);
+    capped at the same character budget.
+    """
+    if not tags:
+        return None
+    words: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        row = s.get(TagDef, tag)
+        for w in row.vocabulary if row is not None and row.vocabulary else []:
+            key = w.casefold()
+            if key not in seen:
+                seen.add(key)
+                words.append(w)
+    if not words:
+        return None
+    out = "; ".join(words)
+    if len(out) <= _HOTWORD_PROMPT_CAP:
+        return out
+    clipped = out[:_HOTWORD_PROMPT_CAP]
+    cut = clipped.rfind("; ")
+    return clipped[:cut] if cut > 0 else clipped.rstrip()
 
 
 def budget_transcribe(rec: Recording | None) -> float:
@@ -360,16 +426,23 @@ async def transcribe(rec_id: str) -> dict:
         rec = s.get(Recording, rec_id)
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_transcribe(rec)
+
+    # Tag vocabularies (registry feature): hot words from every tag the
+    # recording carries, biasing ASR via the initial_prompt. Loaded in
+    # its own short session (cheap PK lookups); tags without a registry
+    # row contribute nothing.
+    with session() as s:
+        hotwords = _hotword_prompt(s, list(rec.tags or []))
     try:
         channels = channel_names(meta_dir(rec_id))
         if channels:
-            return await _transcribe_stereo(rec_id, channels, c)
+            return await _transcribe_stereo(rec_id, channels, c, hotwords)
 
         manifest = load_manifest(meta_dir(rec_id))
         if manifest is not None:
-            result = await _transcribe_chunked(rec_id, manifest, c)
+            result = await _transcribe_chunked(rec_id, manifest, c, hotwords=hotwords)
         else:
-            result = await _transcribe_file(c, audio_file(rec_id), timeout_sec)
+            result = await _transcribe_file(c, audio_file(rec_id), timeout_sec, prompt=hotwords)
 
         result.to_json(meta_dir(rec_id) / "segments.json")
         segments_to_markdown(result, meta_dir(rec_id) / "transcript.md")
@@ -390,7 +463,9 @@ async def transcribe(rec_id: str) -> dict:
         raise
 
 
-async def _transcribe_stereo(rec_id: str, channels: list[str], c: WorkerConfig) -> dict:
+async def _transcribe_stereo(
+    rec_id: str, channels: list[str], c: WorkerConfig, hotwords: str | None = None
+) -> dict:
     """Stereo transcribe: run the chunked pipeline per channel (mic then
     system — sequential, same CPU voice stack), then merge the two tagged
     word streams into ONE chronological segments.json on the shared
@@ -408,7 +483,7 @@ async def _transcribe_stereo(rec_id: str, channels: list[str], c: WorkerConfig) 
                 f"stereo recording has no '{name}' chunk manifest; "
                 "regenerate from stage 'chunk'"
             )
-        result = await _transcribe_chunked(rec_id, manifest, c, name)
+        result = await _transcribe_chunked(rec_id, manifest, c, name, hotwords=hotwords)
         segments.extend(result.segments)
         words.extend(result.words)
         if language == "unknown" and result.language != "unknown":
@@ -436,7 +511,11 @@ async def _transcribe_stereo(rec_id: str, channels: list[str], c: WorkerConfig) 
 
 
 async def _transcribe_chunked(
-    rec_id: str, manifest: Manifest, c: WorkerConfig, channel: str | None = None
+    rec_id: str,
+    manifest: Manifest,
+    c: WorkerConfig,
+    channel: str | None = None,
+    hotwords: str | None = None,
 ) -> TranscriptionResult:
     """Sequential per-chunk transcription — NEVER parallel: the voice stack
     is one CPU box and concurrent large-v3 jobs run at ~half speed each
@@ -462,6 +541,9 @@ async def _transcribe_chunked(
                 )
             timeout_sec = _chunk_budget(ch.end - ch.start, TRANSCRIBE_BASE, TRANSCRIBE_PER_MIN)
             # A suspect chunk is re-squeezed with a reset decoder context.
+            # The tag-vocabulary hotword prompt survives the reset: it is
+            # domain bias (names/terms), not decoder state — only the
+            # chunk's own prior text is what the reset discards.
             reset = ch.transcribe_suspect
             last_err: Exception | None = None
             res: TranscriptionResult | None = None
@@ -469,7 +551,7 @@ async def _transcribe_chunked(
                 try:
                     res = await _transcribe_file(
                         c, chunk_path, timeout_sec,
-                        prompt="" if reset else None, reset_context=reset,
+                        prompt=hotwords, reset_context=reset,
                     )
                     break
                 except Exception as e:  # noqa: BLE001 — retry must catch ANY failure
@@ -681,6 +763,15 @@ async def summarize(rec_id: str) -> dict:
                     tags[0],
                 )
                 recap_block = None
+
+    # Tag vocabularies (registry feature): glossary block for the
+    # summarize prompt — same union/dedup/cap as the ASR hotword prompt.
+    # Best-effort like the recap: never fails the stage.
+    vocabulary_block: str | None = None
+    with session() as s:
+        rec = s.get(Recording, rec_id)
+        _tags = list(rec.tags) if rec is not None and rec.tags else []
+        vocabulary_block = _glossary_block(s, _tags)
     try:
         from .summarize import summarize_transcript
 
@@ -692,6 +783,7 @@ async def summarize(rec_id: str) -> dict:
                 prompt_template,
                 title,
                 recap_block,
+                vocabulary_block,
             )
         )
         # Meta path is canonical (see §1 in wave-A impl plan): export.py

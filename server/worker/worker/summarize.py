@@ -225,6 +225,7 @@ def summarize_transcript(
     prompt_template: str | None = None,
     title: str = "",
     recap_block: str | None = None,
+    vocabulary_block: str | None = None,
 ) -> str:
     transcript = (meta / "transcript.md").read_text(encoding="utf-8")
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
@@ -252,6 +253,16 @@ def summarize_transcript(
             + "\n\nPrior context from this series' knowledge base "
             + "(digest and retrieved excerpts of earlier sessions):\n\n"
             + recap_block
+        )
+    # Vocabulary rides the same single-system-message rail as the recap
+    # (same llama-server template constraint — see above). Appended
+    # after the recap so terminology stays the LAST instruction before
+    # the transcript; already capped by the caller.
+    if vocabulary_block:
+        system = (
+            system
+            + "\n\nГлоссарий(tag vocabulary — сохраняй точное написание терминов и имён):\n\n"
+            + vocabulary_block
         )
     messages = system_first_messages(
         [

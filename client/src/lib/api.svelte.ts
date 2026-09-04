@@ -133,6 +133,11 @@ export async function listProfiles(cfg: ApiConfig): Promise<ProfileInfo[]> {
 export type TagCount = {
 	tag: string;
 	count: number;
+	/** Registry row exists (tag_defs): the tag was created on the Tags
+	 * page or auto-registered by a recording. */
+	registered?: boolean;
+	/** Hot-word entries in the tag's vocabulary. */
+	vocabulary_count?: number;
 };
 
 /** Distinct freehand tags with session counts, ordered count desc then
@@ -144,6 +149,61 @@ export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
 	if (!resp.ok) throw new Error(`tags ${resp.status}`);
 	const body = (await resp.json()) as { items: TagCount[] };
 	return body.items;
+}
+
+/** One registry row (GET /tags/{tag}): vocabulary + live counts. */
+export type TagDef = {
+	name: string;
+	vocabulary: string[];
+	recordings: number;
+	created_at: string;
+};
+
+/** Create a tag in the registry before any recording carries it.
+ * Throws .status 409 (exists), 400 (bad name). */
+export async function createTag(cfg: ApiConfig, name: string, vocabulary: string[] = []): Promise<TagDef> {
+	const resp = await req(cfg, '/tags', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ name, vocabulary })
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(new Error(detail || `create tag ${resp.status}`), { status: resp.status });
+	}
+	return resp.json();
+}
+
+/** Registry row for the tag editor. Throws .status 404 (unregistered). */
+export async function fetchTagDef(cfg: ApiConfig, tag: string): Promise<TagDef> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}`);
+	if (!resp.ok) throw Object.assign(new Error(`tag ${resp.status}`), { status: resp.status });
+	return resp.json();
+}
+
+/** Replace the tag's vocabulary (full-list semantics). Upserts: a tag
+ * that only exists on recordings gains a registry row. */
+export async function updateTagVocabulary(cfg: ApiConfig, tag: string, vocabulary: string[]): Promise<TagDef> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}`, {
+		method: 'PATCH',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ vocabulary })
+	});
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(new Error(detail || `update tag ${resp.status}`), { status: resp.status });
+	}
+	return resp.json();
+}
+
+/** Remove the registry row (vocabulary). 409 while recordings carry the
+ * tag; the tag's memory has its own purge path. */
+export async function deleteTagDef(cfg: ApiConfig, tag: string): Promise<void> {
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}`, { method: 'DELETE' });
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(new Error(detail || `delete tag ${resp.status}`), { status: resp.status });
+	}
 }
 
 export type TimelineEvent = {

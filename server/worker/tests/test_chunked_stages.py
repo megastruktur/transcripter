@@ -192,13 +192,16 @@ async def test_suspect_marked_then_rerun_with_reset_context(rec, monkeypatch):
     assert m.chunks[1].transcribe_suspect is False
 
     # Regenerate: ONLY the suspect chunk is re-POSTed, with a reset decoder
-    # context (empty prompt + condition_on_previous_text=false hook).
+    # context (condition_on_previous_text=false hook). The tag-vocabulary
+    # hotword prompt REPLACED the old empty-prompt reset marker: a tag
+    # vocabulary is domain bias and survives the reset (None here — no
+    # vocabulary registered for rec1's tags).
     api.calls.clear()
     await activities.transcribe("rec1")
     assert len(api.calls) == 1
     call = api.calls[0]
     assert call["file"] == "chunk_000.flac"
-    assert call["prompt"] == ""
+    assert call["prompt"] is None
     assert call["c_o_p_t"] is False
 
 

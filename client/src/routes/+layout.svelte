@@ -28,6 +28,7 @@
 		{ href: '/', label: 'Record', icon: 'record' },
 		{ href: '/import', label: 'Import', icon: 'import' },
 		{ href: '/recordings', label: 'Library', icon: 'library' },
+		{ href: '/tags', label: 'Tags', icon: 'tags' },
 		{ href: '/vault', label: 'Vault', icon: 'vault' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
@@ -89,9 +90,11 @@
 				? 'Import'
 				: page.url.pathname.startsWith('/recordings')
 					? 'Recordings'
-					: page.url.pathname.startsWith('/vault')
-						? 'Vault'
-						: 'Settings'
+					: page.url.pathname.startsWith('/tags')
+						? 'Tags'
+						: page.url.pathname.startsWith('/vault')
+							? 'Vault'
+							: 'Settings'
 	);
 	onMount(async () => {
 		void checkServerConnection();
