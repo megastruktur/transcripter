@@ -188,7 +188,7 @@ services:
   # contract). Weights (~350 MB) download into the named volume on first
   # start; license: MIT code + CC-BY-NC-4.0 weights (personal self-host).
   diarizen:
-    image: transcripter-diarizen:0.1.0
+    image: ghcr.io/megastruktur/transcripter:diarizen-0.1.0
     profiles: ["diarizen"]
     environment:
       DIARIZEN_MODEL: ${DIARIZEN_MODEL:-BUT-FIT/diarizen-wavlm-base-s80-md}
