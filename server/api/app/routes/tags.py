@@ -1023,10 +1023,12 @@ async def purge_memory(
     session: Session = Depends(get_session),
 ) -> dict:
     """Admin: wipe the tag's MEMORY — Neo4j namespace, graph_edits,
-    digest note, semantic index — keeping every recording (audio,
-    transcript, summary, events.json). 202 + workflow: a large
-    namespace purges in batched DETACH DELETEs, which belongs behind a
-    pollable workflow, not a synchronous handler."""
+    digest note, semantic index, and the per-recording events.json
+    timeline artifacts of single-tag recordings (multi-tag recordings
+    keep their shared artifact) — keeping audio, transcripts and
+    summaries. 202 + workflow: a large namespace purges in batched
+    DETACH DELETEs, which belongs behind a pollable workflow, not a
+    synchronous handler."""
     norm = _normalize_tag(tag)
     _validate_tag(norm)
     cfg: ServerConfig = request.app.state.config

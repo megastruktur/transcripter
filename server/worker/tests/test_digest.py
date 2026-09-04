@@ -107,6 +107,13 @@ def _seed_recordings() -> list[str]:
             for kind in ("chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"):
                 s.add(Stage(recording_id=rid, kind=kind))
             s.commit()
+        # Timeline artifact: written by enrich before any digest run —
+        # run_digest drops rows without it (purge wipes them).
+        cfg = activities._cfg
+        assert cfg is not None
+        meta = cfg.recordings_root / rid / "meta"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "events.json").write_text("{}", encoding="utf-8")
         rids.append(rid)
     return rids
 
@@ -325,6 +332,82 @@ def test_build_digest_input_handles_no_rows(monkeypatch: pytest.MonkeyPatch) -> 
     inp = build_digest_input("missing", 5, cfg)
     assert inp.rows == []
     assert inp.graph.entities == []
+
+
+def test_build_digest_input_include_recording_id_rides_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The auto-digest path: the just-enriched recording is still
+    `processing` (finalize runs after the activity) yet MUST be selected
+    — the 2026-09-04 pathfinder race."""
+    import uuid
+
+    base = datetime(2026, 8, 1, tzinfo=UTC)
+    rid = str(uuid.uuid4())
+    with session() as s:
+        s.add(
+            Recording(
+                id=rid,
+                title="Enriching now",
+                tags=["pathfinder"],
+                state=RecordingState.processing,
+                sha256="x" * 64,
+                committed_bytes=0,
+                total_bytes=100,
+                duration_sec=None,
+                created_at=base + timedelta(days=5),
+            )
+        )
+        s.commit()
+    monkeypatch.setattr(
+        "worker.digest._fetch_graph_slice",
+        lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+    )
+    cfg = activities._cfg
+    inp = build_digest_input("pathfinder", 5, cfg, include_recording_id=rid)
+    assert rid in [r.recording_id for r in inp.rows]
+
+
+def test_run_digest_drops_rows_without_events_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Purged-but-not-rebuilt recordings (no meta/events.json) must not
+    surface empty sessions in the digest; a row with an artifact survives."""
+    rids = _seed_recordings()  # three done pathfinder recordings, all with artifacts
+    cfg = activities._cfg
+    assert cfg is not None
+    # Wipe two artifacts — the purge outcome for single-tag recordings.
+    for rid in rids[1:]:
+        (cfg.recordings_root / rid / "meta" / "events.json").unlink()
+
+    monkeypatch.setattr(
+        "worker.digest._fetch_graph_slice",
+        lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+    )
+    monkeypatch.setattr(
+        "worker.digest._call_llm", lambda prompt, cfg: "# Digest\n\nbody"
+    )
+    result = run_digest("pathfinder", 5, cfg, cfg.vault.path)
+    assert result["written"] is True
+    assert result["recordings"] == [rids[0]]  # artifact-less rows dropped
+
+
+def test_run_digest_all_rows_without_artifact_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = activities._cfg
+    assert cfg is not None
+    _seed_recordings()
+    # Wipe EVERY artifact: nothing survives the filter.
+    for f in (cfg.recordings_root).glob("*/meta/events.json"):
+        f.unlink()
+    monkeypatch.setattr(
+        "worker.digest._fetch_graph_slice",
+        lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+    )
+    result = run_digest("pathfinder", 5, cfg, cfg.vault.path)
+    assert result["written"] is False
+    assert "timeline artifact" in result["reason"]
 
 
 # ---------- write_digest -------------------------------------------------------

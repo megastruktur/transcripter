@@ -1,29 +1,39 @@
 """Tag-memory purge: wipe ONE tag's knowledge-graph memory.
 
-"Memory" of a tag is four stores, all created by the enrich pipeline:
+"Memory" of a tag is five stores, all created by the enrich pipeline:
 1. the Neo4j namespace (every node carries ``tag``; DETACH DELETE in
    batches, same bound as graph_gc);
 2. the ``graph_edits`` rows (the Phase A overlay) — stale edits would
    otherwise be re-applied on top of the fresh rebuild;
 3. the digest note (``<transcripts>/digests/<slug>.md``, incl. the
    ``-N`` collision variants);
-4. the semantic index (``<transcripts>/indexes/<slug>.sqlite``).
+4. the semantic index (``<transcripts>/indexes/<slug>.sqlite``);
+5. the per-recording ``meta/events.json`` timeline artifacts — for
+   recordings whose ONLY tag is the purged one (2026-09-04 pathfinder
+   incident: purge + regenerating a single recording left the OTHER
+   recordings' timelines alive, and the vault tag page aggregated them
+   back as if the memory had never been wiped). Multi-tag recordings
+   keep their artifact: the file is shared by every tag's timeline of
+   that recording, and wiping it would take the surviving tags'
+   histories down with it.
 
-Recordings, audio, transcripts and per-recording events.json are NOT
-touched: they are the input the enrich stage rebuilds the memory FROM.
+Recordings, audio and transcripts are NOT touched: they are the input
+the enrich stage rebuilds the memory FROM.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from neo4j import GraphDatabase
 from sqlalchemy import text
 
-from .db import session
+from .db import Recording, RecordingState, session
 
 log = logging.getLogger("transcripter.purge")
 
@@ -100,5 +110,74 @@ def purge_tag_memory(cfg: Any, tag: str) -> dict:
             log.exception("purge: index %s could not be removed", idx)
     counts["index_files"] = index_removed
 
+    # 5. Per-recording events.json timeline artifacts — single-tag
+    # recordings only (see module docstring). The rebuild (or a manual
+    # per-recording regenerate) re-writes the artifact from the fresh
+    # extraction; until then the vault timeline hides the recording.
+    counts["events_json"] = _purge_events_json(cfg, tag, transcripts)
+
     log.info("purge: tag %r wiped: %s", tag, counts)
     return counts
+
+
+def _purge_events_json(cfg: Any, tag: str, transcripts: Path) -> int:
+    """Delete ``meta/events.json`` for the tag's DONE recordings that
+    carry NO other tag. Storage copy + every vault mirror. Returns the
+    number of recordings whose artifact was removed (at least one copy).
+
+    Best-effort per recording: an unlink failure is logged and the sweep
+    continues (a half-purged tag is recoverable by re-running the purge
+    — it is idempotent).
+    """
+    from sqlalchemy import text as _text
+
+    from .export import Rec, scan_recording_folders
+
+    recordings_root = Path(cfg.recordings_root)
+    removed = 0
+    with session() as s:
+        if s.get_bind().dialect.name == "postgresql":
+            tag_filter = Recording.tags.contains([tag])
+            rows = (
+                s.query(Recording.id, Recording.tags)
+                .filter(Recording.state == RecordingState.done, tag_filter)
+                .all()
+            )
+        else:
+            # SQLite (unit tests): tags is JSON — same portable shape as
+            # digest._select_recordings.
+            tag_json = tag.replace("\\", "\\\\").replace('"', '\\"')
+            rows = s.execute(
+                _text(
+                    "SELECT id, tags FROM recordings "
+                    "WHERE state = 'done' AND EXISTS (SELECT 1 FROM json_each(recordings.tags) "
+                    f"WHERE value = '{tag_json}')"
+                )
+            ).all()
+    for rec_id, tags in rows:
+        if isinstance(tags, str):  # sqlite raw row: tags arrives as JSON text
+            try:
+                tags = json.loads(tags)
+            except ValueError:
+                tags = []
+        if [t for t in (tags or []) if t != tag]:
+            continue  # another tag still owns the shared artifact
+        # scan matches folders by the id8 suffix only; the rest of Rec
+        # is irrelevant here (title/dates may be stale in the catalog).
+        rec = Rec(id=rec_id, title="", created_at=datetime.now(UTC), duration_sec=None)
+        copies = [recordings_root / rec_id / "meta" / "events.json"]
+        copies += [
+            folder / ".transcripter" / "meta" / "events.json"
+            for folder in scan_recording_folders(transcripts, rec)
+        ]
+        hit = False
+        for path in copies:
+            try:
+                if path.is_file():
+                    path.unlink()
+                    hit = True
+            except OSError:
+                log.exception("purge: events.json %s could not be removed", path)
+        if hit:
+            removed += 1
+    return removed

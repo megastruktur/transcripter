@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -36,7 +36,7 @@ from typing import Any
 import httpx
 import yaml
 from neo4j import GraphDatabase
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
 from .db import Recording, RecordingState, session
 from .enrich import slugify
@@ -224,7 +224,9 @@ def _frontmatter(recording_ids: list[str], tag: str, count: int) -> str:
 # ---------- Postgres side -------------------------------------------------------
 
 
-def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
+def _select_recordings(
+    tag: str, last_n: int, *, include_recording_id: str | None = None
+) -> list[DigestRow]:
     """Last N *done* recordings carrying ``tag`` (already normalized).
 
     ``tag == "untagged"`` is the built-in catch-all namespace: it matches
@@ -232,8 +234,39 @@ def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
     IS NULL``; sqlite: ``json_array_length(tags) = 0``), not rows that
     literally carry the word. Ordering and limit are the same as for a
     regular tag: newest first by ``created_at DESC, id DESC``.
+
+    ``include_recording_id``: the auto-digest path runs at the tail of
+    the enrich activity, BEFORE ``finalize_recording`` flips the
+    recording to ``done`` — without it the just-enriched recording is
+    invisible to the ``state == done`` filter and the digest is built
+    from the wrong window (2026-09-04 pathfinder incident: the note was
+    stamped with pf2 while pf1 was the one enriching, against a graph
+    the purge had just emptied). The included row bypasses the state
+    filter; when it also falls outside the ``last_n`` window it is
+    fetched separately and merged back in its ``created_at`` position so
+    newest-first stays true.
+
+    Rows with NO ``meta/events.json`` anywhere are dropped: the digest
+    prompt renders per-session events from that artifact, and a
+    recording whose timeline artifact was wiped by a tag purge (see
+    purge.py — single-tag recordings) must not surface empty in the
+    digest until it is re-enriched. Multi-tag recordings keep the
+    artifact on purge, so they stay selectable. The file is written by
+    enrich BEFORE auto-digest runs, so the enriching recording always
+    has one.
     """
     with session() as s:
+        # or_(done, include): the include row rides along regardless of
+        # its state; without the param this collapses to the plain done
+        # filter. Shared verbatim by both dialect branches.
+        def state_filter() -> Any:
+            if include_recording_id is None:
+                return Recording.state == RecordingState.done
+            return or_(
+                Recording.state == RecordingState.done,
+                Recording.id == include_recording_id,
+            )
+
         dialect_name = s.get_bind().dialect.name
         if dialect_name == "postgresql":
             tag_filter = (
@@ -243,10 +276,7 @@ def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
             )
             rows = (
                 s.query(Recording)
-                .filter(
-                    Recording.state == RecordingState.done,
-                    tag_filter,
-                )
+                .filter(state_filter(), tag_filter)
                 .order_by(Recording.created_at.desc(), Recording.id.desc())
                 .limit(last_n)
                 .all()
@@ -263,13 +293,27 @@ def _select_recordings(tag: str, last_n: int) -> list[DigestRow]:
                 )
             rows = (
                 s.query(Recording)
-                .filter(
-                    Recording.state == RecordingState.done,
-                    tag_filter,
-                )
+                .filter(state_filter(), tag_filter)
                 .order_by(Recording.created_at.desc(), Recording.id.desc())
                 .limit(last_n)
                 .all()
+            )
+        if (
+            include_recording_id is not None
+            and include_recording_id not in {r.id for r in rows}
+        ):
+            # Outside the last_n window (older recording, or a purge
+            # wiped the other rows' artifacts): fetch it separately and
+            # merge by created_at so the newest-first order stays true.
+            extra = (
+                s.query(Recording)
+                .filter(Recording.id == include_recording_id)
+                .one()
+            )
+            rows = sorted(
+                rows + [extra],
+                key=lambda r: (r.created_at, r.id),
+                reverse=True,
             )
     return [
         DigestRow(
@@ -439,6 +483,8 @@ def build_digest_input(
     tag: str,
     last_n: int,
     cfg: Any,
+    *,
+    include_recording_id: str | None = None,
 ) -> DigestInput:
     """Compose the LLM input from Postgres + Neo4j.
 
@@ -446,7 +492,7 @@ def build_digest_input(
     prompt shape (entities grouped, events per-recording) without paying
     for an HTTP call.
     """
-    rows = _select_recordings(tag, last_n)
+    rows = _select_recordings(tag, last_n, include_recording_id=include_recording_id)
     graph = _fetch_graph_slice(
         tag,
         [r.recording_id for r in rows],
@@ -456,6 +502,33 @@ def build_digest_input(
         graph_database=cfg.graph.database,
     )
     return DigestInput(tag=tag, last_n=last_n, rows=rows, graph=graph)
+
+
+def _note_recording_ids(
+    rec_ids: list[str], recordings_root: Path, transcripts_root: Path
+) -> set[str]:
+    """Ids among ``rec_ids`` that have a ``meta/events.json`` timeline
+    artifact — storage copy first, vault mirrors second (a vault-mode
+    recording has no storage copy; same candidate order as
+    graph_edit._meta_candidates). Purged-but-not-rebuilt recordings drop
+    out of the digest window until they are re-enriched.
+    """
+    # Local import: export.scan_recording_folders is heavier than the
+    # rest of this module (walks the vault tree); keep it out of the
+    # import cycle and only pay it when a digest actually runs.
+    from .export import Rec, scan_recording_folders
+
+    out: set[str] = set()
+    for rec_id in rec_ids:
+        if (recordings_root / rec_id / "meta" / "events.json").is_file():
+            out.add(rec_id)
+            continue
+        rec = Rec(id=rec_id, title="", created_at=datetime.now(UTC), duration_sec=None)
+        for folder in scan_recording_folders(transcripts_root, rec):
+            if (folder / ".transcripter" / "meta" / "events.json").is_file():
+                out.add(rec_id)
+                break
+    return out
 
 
 # Frontmatter block matcher for _existing_digest_for_tag: leading ---,
@@ -532,6 +605,8 @@ def run_digest(
     last_n: int,
     cfg: Any,
     transcripts_root: Path,
+    *,
+    include_recording_id: str | None = None,
 ) -> dict:
     """Top-level orchestrator. Returns the activity payload.
 
@@ -552,11 +627,30 @@ def run_digest(
             f"tag {tag!r} is not file-safe (unicode word chars, spaces, dots, "
             "underscores, dashes; must not start with a space)"
         )
-    input = build_digest_input(tag, last_n, cfg)
+    input = build_digest_input(
+        tag, last_n, cfg, include_recording_id=include_recording_id
+    )
     if not input.rows:
         return {
             "written": False,
             "reason": f"no done recordings carry tag {tag!r}",
+        }
+    # Drop rows whose events.json was wiped by a purge and not yet
+    # rebuilt: the LLM prompt renders per-session events from the
+    # artifact, and an artifact-less row would surface as an empty
+    # session (the 2026-09-04 pathfinder digest showed a pf2 session
+    # with zero events after the purge).
+    with_artifact = _note_recording_ids(
+        [r.recording_id for r in input.rows], cfg.recordings_root, transcripts_root
+    )
+    input = replace(
+        input,
+        rows=[r for r in input.rows if r.recording_id in with_artifact],
+    )
+    if not input.rows:
+        return {
+            "written": False,
+            "reason": f"no recordings with a timeline artifact carry tag {tag!r}",
         }
     prompt = _render_prompt(tag, last_n, input.rows, input.graph)
     body = _call_llm(prompt, cfg)

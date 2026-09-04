@@ -183,7 +183,15 @@ def test_stale_digest_runs(recording_id: str, tmp_path: Path) -> None:
 
 def test_fresh_digest_skipped(recording_id: str, tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, window=3600)
-    _write_digest(tmp_path, "campaign", age_sec=60)  # well inside window
+    # Inside the window AND newer than the enrich start (mtime now —
+    # enrich_started_at is captured milliseconds earlier).
+    _write_digest(tmp_path, "campaign", age_sec=0)
+    import os
+    import time as _time
+
+    note = tmp_path / "transcripts" / "digests" / "campaign.md"
+    future = _time.time() + 60
+    os.utime(note, (future, future))
     graph = MagicMock()
     graph.events = []
     graph.entities = []

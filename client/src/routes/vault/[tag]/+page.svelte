@@ -456,8 +456,8 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 				<div class="memory-menu" role="menu" aria-label="Tag memory actions">
 					{#if memoryConfirm === 'purge'}
 						<div class="memory-confirm">
-							<span>Wipe graph, edits, digest and index?</span>
-							<small>Recordings stay. There is no undo.</small>
+							<span>Wipe graph, edits, digest, index and timelines?</span>
+							<small>Recordings stay. Rebuild restores the memory. No undo.</small>
 							<div class="memory-confirm-actions">
 								<button class="memory-confirm-yes" type="button" disabled={memoryBusy} onclick={() => void startMemoryAction(false)}>Confirm wipe</button>
 								<button type="button" onclick={() => (memoryConfirm = null)}>Cancel</button>

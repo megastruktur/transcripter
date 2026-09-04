@@ -1,5 +1,6 @@
-"""purge_tag_memory: the four-store wipe (graph namespace, graph_edits,
-digest note, semantic index) + the rebuild-id listing activity contract.
+"""purge_tag_memory: the five-store wipe (graph namespace, graph_edits,
+digest note, semantic index, per-recording events.json of single-tag
+recordings) + the rebuild-id listing activity contract.
 """
 
 from pathlib import Path
@@ -19,6 +20,8 @@ class _Cfg:
 
     class vault:
         path = Path("/tmp/does-not-matter")
+
+    recordings_root = Path("/tmp/does-not-matter-storage")
 
 
 def _graph_driver(batch_deletes: list[int], tag: str = "quest"):
@@ -41,9 +44,11 @@ def _graph_driver(batch_deletes: list[int], tag: str = "quest"):
     return driver
 
 
-def test_purges_all_four_stores(tmp_path, monkeypatch):
+def test_purges_all_five_stores(tmp_path, monkeypatch):
     cfg = _Cfg()
     cfg.vault.path = tmp_path
+    storage = tmp_path / "storage" / "recordings"
+    cfg.recordings_root = storage
     # graph: 10k batch + partial batch + empty confirm call
     driver = _graph_driver([10000, 3500, 0])
     # digest note + index on disk
@@ -54,21 +59,32 @@ def test_purges_all_four_stores(tmp_path, monkeypatch):
     idx_dir.mkdir()
     (idx_dir / "quest.sqlite").write_bytes(b"sqlite")
 
-    # graph_edits: two rows, one for the tag, one foreign
+    # catalog: r1 = done single-tag (artifact wiped); r2 = foreign tag;
+    # r3 = done but MULTI-tag (shared artifact stays); r4 = quest but
+    # not done (pipeline may still be writing it).
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
-    from worker.db import Base, GraphEdit, Recording
+    from worker.db import Base, GraphEdit, Recording, RecordingState
 
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as s:
-        s.add(Recording(id="r1", tags=["quest"]))
-        s.add(Recording(id="r2", tags=["other"]))
+        s.add(Recording(id="r1", tags=["quest"], state=RecordingState.done))
+        s.add(Recording(id="r2", tags=["other"], state=RecordingState.done))
+        s.add(
+            Recording(id="r3", tags=["quest", "other"], state=RecordingState.done)
+        )
+        s.add(Recording(id="r4", tags=["quest"]))
         s.add(GraphEdit(tag="quest", target="entity", op="update", obj_key="a"))
         s.add(GraphEdit(tag="other", target="entity", op="update", obj_key="b"))
         s.commit()
     monkeypatch.setattr("worker.purge.session", lambda: Session(engine))
+
+    for rid in ("r1", "r3"):
+        meta = storage / rid / "meta"
+        meta.mkdir(parents=True)
+        (meta / "events.json").write_text("{}", encoding="utf-8")
 
     with (
         patch("worker.purge.GraphDatabase.driver", return_value=driver) as gd,
@@ -80,8 +96,11 @@ def test_purges_all_four_stores(tmp_path, monkeypatch):
     assert counts["graph_edits"] == 1  # only the quest row
     assert counts["digest_files"] == 1
     assert counts["index_files"] == 1
+    assert counts["events_json"] == 1  # r1 only (r3 is multi-tag)
     assert not (digests / "quest.md").exists()
     assert not (idx_dir / "quest.sqlite").exists()
+    assert not (storage / "r1" / "meta" / "events.json").exists()
+    assert (storage / "r3" / "meta" / "events.json").exists()  # shared
 
     with Session(engine) as s:
         remaining = [e.tag for e in s.query(GraphEdit).all()]
@@ -109,6 +128,7 @@ def test_idempotent_on_empty_stores(tmp_path, monkeypatch):
         "graph_edits": 0,
         "digest_files": 0,
         "index_files": 0,
+        "events_json": 0,
     }
 
 

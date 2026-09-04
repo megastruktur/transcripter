@@ -823,6 +823,11 @@ async def enrich(rec_id: str) -> dict:
         set_stage(rec_id, "enrich", StageStatus.skipped, details={"reason": "no profile with enrich"})
         raise ApplicationError("skipped: no profile with enrich", non_retryable=True)
     graph_tags = tags or ["untagged"]
+    # Wall-clock enrich start: the auto-digest freshness rule below
+    # regenerates a note whose mtime predates THIS moment (a regenerate
+    # re-runs enrich while the note may still be file-fresh, but the
+    # graph content just changed underneath it).
+    enrich_started_at = time.time()
     try:
         from .embeddings import _embedder, entity_vectors
         from .enrich import (
@@ -1089,7 +1094,7 @@ async def enrich(rec_id: str) -> dict:
         # Phase 2 auto-digest — ONLY on success (never after a skip or
         # failure). Best-effort per tag; see _auto_digest_tags.
         if c.graph.auto_digest:
-            await _auto_digest_tags(graph_tags, c)
+            await _auto_digest_tags(graph_tags, c, rec_id, enrich_started_at)
         return details
     except asyncio.CancelledError:
         set_stage(rec_id, "enrich", StageStatus.failed, error="cancelled")
@@ -1107,16 +1112,28 @@ _KNOWN_ENTITIES_DEFAULT = 25
 _AUTO_DIGEST_LAST_N = 5
 
 
-async def _auto_digest_tags(tags: list[str], c: WorkerConfig) -> None:
+async def _auto_digest_tags(
+    tags: list[str], c: WorkerConfig, rec_id: str, enrich_started_at: float
+) -> None:
     """Refresh each tag's digest note when stale (Phase 2 auto-digest).
 
-    ``digests/<slug>.md`` under the transcripts root — mtime older than
-    ``graph.auto_digest_window_sec``, or missing → run
+    ``digests/<slug>.md`` under the transcripts root — run
     ``digest.run_digest`` INLINE (heartbeat-wrapped to_thread) with
-    ``last_n=5``. Inline rather than signal- or workflow-based: keeps
-    ordering (the digest reads the graph the same activity just wrote)
-    and needs no signal infrastructure; the price is enrich latency,
-    bounded by last_n=5 and the stale window.
+    ``last_n=5`` when the note is missing, older than
+    ``graph.auto_digest_window_sec``, OR older than this enrich run
+    (``mtime < enrich_started_at`` — a regenerate re-runs enrich for a
+    recording whose digest note may still be file-fresh, but the graph
+    content just changed underneath it). Inline rather than signal- or
+    workflow-based: keeps ordering (the digest reads the graph the same
+    activity just wrote) and needs no signal infrastructure; the price
+    is enrich latency, bounded by last_n=5 and the stale window.
+
+    ``rec_id`` rides into ``run_digest(include_recording_id=...)``: the
+    auto-digest runs BEFORE ``finalize_recording`` flips the recording
+    to ``done``, so without it the just-enriched recording would be
+    invisible to the digest selection (2026-09-04 pathfinder incident —
+    a note stamped with the wrong recording against an empty graph
+    slice).
 
     Best-effort per tag: any failure is logged and the remaining tags
     still get their turn — enrich already succeeded and must never be
@@ -1129,14 +1146,27 @@ async def _auto_digest_tags(tags: list[str], c: WorkerConfig) -> None:
     for tag in tags:
         digest_file = digests_dir / safe_filename(tag)
         try:
-            age = now - digest_file.stat().st_mtime
+            mtime = digest_file.stat().st_mtime
+            age = now - mtime
         except OSError:
             age = None  # missing (or unreadable) → treat as stale
+        else:
+            # Regenerate freshness: a note inside the window that
+            # predates this enrich run is stale anyway.
+            if mtime < enrich_started_at:
+                age = None
         if age is not None and age < c.graph.auto_digest_window_sec:
             continue
         try:
             await _heartbeat_while(
-                asyncio.to_thread(run_digest, tag, _AUTO_DIGEST_LAST_N, c, c.vault.path)
+                asyncio.to_thread(
+                    run_digest,
+                    tag,
+                    _AUTO_DIGEST_LAST_N,
+                    c,
+                    c.vault.path,
+                    include_recording_id=rec_id,
+                )
             )
         except Exception:
             log.exception("enrich: auto-digest failed for tag %r", tag)

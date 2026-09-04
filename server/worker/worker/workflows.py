@@ -480,6 +480,12 @@ class RebuildTagMemory:
         )
         if not rebuild:
             return {"purged": purge, "rebuilt": 0, "failed": []}
+        # Final digest: every child's auto-digest saw only the prefix of
+        # recordings rebuilt so far; refresh the note once after the last
+        # child so it reflects the FULL rebuilt set (and wipes the
+        # pre-rebuild staleness). Best-effort: a digest failure never
+        # fails the rebuild — the note regenerates on the next enrich or
+        # from the UI.
         ids = await workflow.execute_activity(
             "rebuild_tag_recording_ids",
             tag,
@@ -513,4 +519,22 @@ class RebuildTagMemory:
             finally:
                 self._done += 1
                 self._current = None
-        return {"purged": purge, "rebuilt": self._done - len(failed), "failed": failed}
+        digest: dict = {}
+        try:
+            digest = await workflow.execute_activity(
+                "tag_digest",
+                {"tag": tag, "last_n": 50},
+                start_to_close_timeout=timedelta(seconds=2400),
+                retry_policy=_no_retry(),
+                heartbeat_timeout=timedelta(seconds=120),
+            )
+        except ActivityError:
+            workflow.logger.warning(
+                "rebuild %s: final digest refresh failed; note stays as-is", tag
+            )
+        return {
+            "purged": purge,
+            "rebuilt": self._done - len(failed),
+            "failed": failed,
+            "digest": digest,
+        }
