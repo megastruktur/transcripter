@@ -4,9 +4,11 @@
 дайджеста по тегу и семантического поиска. Каждая стадия: что принимает,
 что извлекает, что дедуплицирует, что и куда пишет, что может упасть.
 
-Сверено с кодом v0.19.0 (2026-09-01). Главные перемены с прошлого
-пересмотра — волт стал долговечным домом записи: аудио и всё meta-дерево
-переезжают в Obsidian-волт, /storage — рабочий черновик конвейера.
+Сверено с кодом после коммита 92732ba (2026-09-04). Главные перемены с
+прошлого пересмотра — диаризация переехала на DiariZen (whole-file,
+профиль `diarizen`): per-chunk диаризация и отдельная стадия `separate`
+удалены, порядок конвейера стал `chunk → transcribe → diarize →
+merge_speakers → summarize → enrich`.
 
 ---
 
@@ -41,7 +43,7 @@ flowchart TB
         API -.->|"артефакты/аудио из волта (fallback)"| TR
     end
 
-    EXT["Внешние ML:<br/>Speaches large-v3 (STT)<br/>LinTO pyannote (diarization)<br/>LiteLLM :4000 → qwen3.6-35b (summarize/enrich/digest)<br/>embed-bge-m3: ONNX int8 в контейнере (default) или LiteLLM (http backend)"]
+    EXT["Внешние ML:<br/>Speaches large-v3 (STT)<br/>DiariZen (diarization: whole-file, profile diarizen)<br/>LiteLLM :4000 → qwen3.6-35b (summarize/enrich/digest)<br/>embed-bge-m3: ONNX int8 в контейнере (default) или LiteLLM (http backend)"]
 
     UPL --> API
     WF <--> EXT
@@ -170,8 +172,9 @@ meta/
     mic/chunk_000.flac ...       покрывает одинаковый интервал времени
     system/chunk_000.flac ...
     chunk_000.flac ...         ← FLAC-части (удаляются после merge)
-    chunk_000.segments.json    ← per-chunk STT (resume-результаты)
-    chunk_000.diarization.json ← per-chunk diarization
+    chunk_000.segments.json    ← per-chunk STT (resume-результаты);
+                                  per-chunk diarization НЕ пишется — диаризация
+                                  идёт whole-file (DiariZen), кэша не нужно
   segments.json                ← слова+сегменты с таймстампами (transcribe);
                                   stereo: единая хронология, каждое слово
                                   несёт "channel": "mic"|"system"
@@ -260,7 +263,7 @@ Retry-политики:
 |---|---|---|---|
 | chunk | `2×duration+300с` | ×2 | дёшево (ffmpeg) |
 | transcribe | `_ml_budget` | **×1** | минуты CPU-вычислений на shared-стеке; ретрай = повторный прогон всего |
-| diarize | `_ml_budget` | ×3, медленный backoff | LinTO грузит веса ~2 мин после старта профиля |
+| diarize | `_ml_budget` | ×3, медленный backoff | сервис может грузить веса (~350 МБ HF-кэш) после старта профиля |
 | merge_speakers | 120с | ×2 | чистая локальная работа |
 | summarize | 2400с | **×1** | бюджет прибит к потолку LiteLLM-прокси |
 | enrich | 2400с | ×3, backoff 5 мин | дренирование FIFO-очереди прокси |
@@ -321,8 +324,9 @@ per-source mono в `meta/channels/`; нарезка идёт per-channel в
 - Манифест `chunks.json` (`Manifest`) — атомарная запись
   (tmp+os.replace) после **каждого** чанка. Поля чанка: `index, file,
   start, end, transcribe: pending|done, transcribe_suspect,
-  diarize: pending|done`. Это граница resume: регенерация transcribe
-  доходит только по не-done (или suspect) чанкам.
+  diarize: pending|done` (поле `diarize` — инертный хвост контракта:
+  диаризация whole-file и манифест не читает). Это граница resume:
+  регенерация transcribe доходит только по не-done (или suspect) чанкам.
 - `keep_window(index, total, len, overlap)`: первая половина общей
   полосы принадлежит левому чанку, вторая — правому
   (`lo = overlap/2` для не-первых, `hi = len − overlap/2` для
@@ -336,9 +340,10 @@ per-source mono в `meta/channels/`; нарезка идёт per-channel в
   при следующем запуске он пересжимается с `reset_context`
   (prompt пустой, контекст декодера обнулён).
 
-Дальше все стадии, если манифест есть, идут **по чанкам последовательно
+Дальше transcribe, если манифест есть, идёт **по чанкам последовательно
 — никогда параллельно**: shared CPU voice-стек под параллельными
-large-v3-джобами проседает вдвое (инцидент 2026-08-25).
+large-v3-джобами проседает вдвое (инцидент 2026-08-25). Диаризация
+в чанках не участвует — DiariZen получает запись целиком (§6).
 
 ---
 
@@ -368,21 +373,38 @@ large-v3-джобами проседает вдвое (инцидент 2026-08-
   Interleaved-стерео никогда не транскрибируется напрямую: смешанные
   слова неразделимы постфактум — в этом весь смысл dual-tap.
 
-## 6. Стадия `diarize` — кто когда говорил
+## 6. Стадия `diarize` — кто когда говорил (DiariZen, whole-file)
 
-- HTTP POST аудио-файла в LinTO (`linto-diarization-pyannote`, CPU),
-  ответ `seg_begin/seg_end/spk_id` транслируется в `start/end/speaker`
-  на границе (`diarize.py`) и нигде больше.
-- Тоже chunked + per-chunk персист + resume. **Speaker-метки per-chunk**:
-  `spk_0` в чанке 1 — не тот же `spk_0` в чанке 2. Осознанно принято:
-  merge приписывает слова по временному перекрытию, ему достаточно
-  локальных меток.
-- Stereo (dual-tap): каналы диаризуются отдельно (в mic — комнатные
-  спикеры, в system — удалённые участники), метки неймспейсятся
-  глобально `mic:spk_N` / `system:spk_N` и персистятся в per-chunk кэш
-  (`chunks/<channel>/chunk_NNN.diarization.json`) — resume не
-  пересекает каналы. Оба канала — в одном `diarization.json`
-  на общей шкале времени.
+**Движок — BUT-FIT DiariZen** (`BUT-FIT/diarizen-wavlm-base-s80-md`,
+EEND-VC: overlap-aware локальные окна + глобальная кластеризация VBx),
+композ-профиль `diarizen` (image `transcripter-diarizen:0.1.0`, порт
+host `:8071` → container `:80`, weights ~350 МБ качаются в named volume
+`diarizen-hf-cache` на первом старте; лицензия: MIT код +
+CC-BY-NC-4.0 веса — personal self-host).
+
+**Whole-file контракт — смысл стадии.** Один HTTP POST всего аудио
+(`diarize_audio`, `diarize.py`) в `POST /diarization`; глобальная
+кластеризация VBx по всей шкале — единственный источник консистентных
+спикеров. Per-chunk диаризация **вырезана** (retired `_diarize_chunked`):
+чанк-локальные метки фрагментировали идентичность — 123-минутная запись
+с 6 людьми возвращала **36 меток**; пион DiariZen на тех же записях
+дал **7 спикеров на 61-й минуте** и **6 на 123-й** (RTF ≈ 0.2 CPU,
+~1.6 GiB RSS, ~16–18 % времени встречи в overlap-метках RTTM против
+13 % у Sortformer, у которого жёсткий кап в 4 спикера).
+
+- **Снифф диалекта** на границе (`diarize.py`): DiariZen говорит
+  нативно `start/end/speaker`; LinTO (`seg_begin/seg_end/spk_id`)
+  переводится там же и нигде больше — rollback = поменять endpoint в
+  env, без веток кода. Устаревший LinTO-контейнер (профиль
+  `diarization`) остаётся rollback-путём, pending removal.
+- **Stereo (dual-tap)**: каналы диаризуются отдельно — whole-file
+  per-channel FLAC из `meta/channels/` (очищенные после merge
+  пере-выводятся идемпотентным `split_channels`), метки неймспейсятся
+  глобально `mic:spk_N` / `system:spk_N`; оба канала — в одном
+  `diarization.json` на общей шкале времени. Чанкинг остаётся
+  ASR-only: диаризация чанков не видит никогда.
+- Спикеры приходят как `spk_0..spk_N` (max_speakers=20 у VBx),
+  глобально консистентные. One-CPU-lock в сервисе: инференс по одному.
 - Выход `diarization.json`. Стадия best-effort: фейл не роняет запись
   (транскрипт без спикеров всё равно полезен); перед запуском старый
   файл удаляется, чтобы merge не съел протухший результат.

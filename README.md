@@ -25,7 +25,7 @@ and a summary** — every stage re-runnable on demand.
 ## Highlights
 
 - **Client is thin, server does the ML.** Capture + FLAC encode + upload on the
-  desktop; transcription (faster-whisper), diarization (LinTO/pyannote) and
+  desktop; transcription (faster-whisper), diarization (DiariZen) and
   summarization (any OpenAI-compatible API) run in Docker on your hardware.
 - **Durable pipeline.** Temporal drives every stage with per-stage retry
   and status; a crash or restart never loses a recording mid-processing.
@@ -62,7 +62,7 @@ your LAN. The **default configuration is the fully local one**:
 cd server
 cp config.example.yaml config.yaml     # defaults are already local
 cp .env.example .env                   # set TRANSCRIPTER_TOKEN (openssl rand -hex 32)
-docker compose up -d --profile diarization
+docker compose up -d --profile diarizen
 ```
 
 All `docker compose` commands in this README run from `server/` — the
@@ -71,10 +71,8 @@ relative `./storage` bind and the `config.yaml` mount depend on it.
 | Concern       | Local answer                                                        |
 | ------------- | ------------------------------------------------------------------- |
 | Transcription | faster-whisper `small` (int8 CPU) inside the worker container       |
-| Diarization   | bundled LinTO container (`diarization` profile) — pyannote weights |
-|               | are baked into the image: no HuggingFace token, no runtime download |
-| Separation    | optional pyannote SpeechSeparation (`separation` profile) — for  |
-|               | mono recordings with overlapping speakers (see below)            |
+| Diarization   | bundled DiariZen container (`diarizen` profile) — global VBx       |
+|               | clustering, whole-file: consistent speakers across hours          |
 | Recordings    | `server/storage/recordings/` (bind mount — repoint at any dir)      |
 | Vault         | `VAULT_DIR` when set — Obsidian vault: notes + audio; else          |
 |               | `./storage/transcripts` (local-only fallback)                        |
@@ -85,13 +83,15 @@ whisper weights (~0.5 GB for `small`) from huggingface.co into the `models`
 named volume; container recreates keep them. After that the whole stack
 works with no internet access. Never run `docker compose down -v` unless
 you mean it — it deletes the whisper and bge-m3 model caches, the
-postgres database, the Speaches cache, and the Neo4j graph.
+postgres database, the Speaches and DiariZen caches, and the Neo4j graph.
 
-**Resources.** ~4 GB free RAM for the base stack (local whisper + LinTO).
-The LinTO container takes ~2 min to load its weights on first start —
-Temporal's diarize retry absorbs it, so an early recording's `diarize`
-stage may simply wait. Enabling the bundled Speaches profile with a larger
-model needs several GB more; check `docker stats`.
+**Resources.** ~4 GB free RAM for the base stack (local whisper). The
+DiariZen container needs ~2 GB RSS while diarizing (whole-file inference
+at ~0.2× realtime on CPU: a 61-min meeting finishes in ~12 min, a
+123-min one in ~24 min) and pulls ~350 MB of weights from huggingface.co
+into the `diarizen-hf-cache` volume on first start. Enabling the bundled
+Speaches profile with a larger model needs several GB more; check
+`docker stats`.
 
 **Optional: local summarizer.** Any OpenAI-compatible chat endpoint on the
 same host/LAN works — e.g. Ollama (`ollama pull qwen3:14b`, serves
@@ -145,11 +145,10 @@ deduplication, grouping, memory):
 |              |                                          | ~10-min FLAC chunks + manifest so a whisper        |
 |              |                                          | repetition loop poisons ≤1 chunk, not the recording |
 | `transcribe` | faster-whisper (local) or OpenAI API     | model configurable, `small` by default             |
-| `separate`   | pyannote SpeechSeparation (CPU, opt-in)  | mono recordings only; stereo skips (Layer 1        |
-|              |                                          | already separates sources); output feeds diarize  |
-| `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`);    |
-|              |                                          | prefers separation.json when the separate stage   |
-|              |                                          | produced one (overlap-aware speakers)             |
+| `diarize`    | DiariZen `BUT-FIT/diarizen-wavlm-base-s80-md` | optional (`enabled: false` → stage `skipped`);    |
+|              | (CPU, whole-file: `diarizen` profile)    | global VBx clustering over the entire recording    |
+|              |                                          | — speakers stay consistent across hours; overlap-  |
+|              |                                          | aware local windows; LinTO dialect still accepted  |
 | `merge_speakers` | IoU word↔segment matching           | fuses transcript words with speaker turns          |
 | `summarize`  | OpenAI-compatible endpoint               | optional; stage reports `skipped` when no model    |
 | `enrich`     | LLM extraction → Neo4j + per-tag vector index | optional; graph off → `skipped` (best-effort) |
@@ -162,35 +161,40 @@ transcript, speakers and summary tabs as sanitized Markdown
 (allowlist-only tags, no links/images); the events and JSON tabs stay
 raw.
 
-### Speech separation (overlapping speakers, mono recordings)
+### Diarization: DiariZen (whole-file, primary engine)
 
-For single-mic room recordings (meetings, TTRPG tables) where speakers
-talk over each other, plain diarization merges overlapping speech into one
-turn. The optional `separation` profile runs pyannote **SpeechSeparation**
-(PixIT/ToTaToNet) as a sidecar service; its output *is* the diarization —
-overlap-aware, with globally consistent speaker labels — and the diarize
-stage consumes it directly. Stereo dual-tap recordings (Layer 1) skip it.
+Diarization runs as a **single request over the whole recording** — never
+per-chunk. DiariZen (BUT-FIT, EEND-VC: overlap-aware local windows +
+global VBx clustering) earns its keep exactly there: one clustering pass
+over the full timeline gives globally consistent speakers across hours.
+Per-chunk diarization (LinTO-era and the retired pyannote separation
+stage both had it) fragmented speaker identity — a 123-min recording
+came back as **36 chunk-local labels** instead of 6 people; an earlier
+NVIDIA Sortformer pilot capped hard at 4 simultaneous speakers.
+DiariZen's pilot on a 61-min meeting resolved **7 speakers** and on a
+123-min recording **6**, at **RTF ≈ 0.2 on CPU** (~1.6 GiB RSS) — and
+marks **~16–18 % of meeting time as overlapping speech** (Sortformer
+detected ~13 %).
 
-The model (`pyannote/speech-separation-ami-1.0`) is **gated** on
-HuggingFace. One-time setup:
+**Rollback.** `diarize.py` sniffs the response dialect: DiariZen speaks
+`start`/`end`/`speaker` natively; LinTO's `seg_begin`/`seg_end`/`spk_id`
+is still translated at the same boundary. The deprecated LinTO container
+(`diarization` profile, host `:8070`) stays rollback-only — point
+`DIARIZATION_ENDPOINT` at it (or any external LinTO) and no code path
+changes. Pending removal.
 
-1. Accept the conditions on BOTH model cards while logged in:
-   <https://huggingface.co/pyannote/speech-separation-ami-1.0> and
-   <https://huggingface.co/pyannote/separation-ami-1.0> (the pipeline and
-   its separation weights are separate gated repos).
-2. Put the HF token in `server/.env`: `HF_TOKEN=hf_...`
-3. Build the image (weights bake in; runtime needs no token):
-   ```bash
-   cd server && set -a && source .env && set +a && \
-   DOCKER_BUILDKIT=1 docker build -f Dockerfile.separation \
-     --secret id=hf_token,env=HF_TOKEN -t transcripter-separation:0.1.0 .
-   ```
-4. Enable and point the worker at it (`server/.env`):
-   `SEPARATION_ENDPOINT=http://separation:80` (setting it forces the
-   stage on), then `docker compose --profile separation up -d`.
+### Speech separation — retired
 
-Without the endpoint the `separate` stage reports `skipped` and diarize
-falls back to LinTO — separation is purely additive.
+The pyannote **SpeechSeparation** stage (`separate`) is retired and gone
+from the pipeline: DiariZen's overlap-aware EEND-VC windows cover the
+"who talks over whom" case it was built for, without its CPU cost
+(RTF ≈ 0.75) or its 2-h whole-file OOM crashes. Historical notes: the
+model (`pyannote/speech-separation-ami-1.0`) is **gated** on HuggingFace
+(accept BOTH `speech-separation-ami-1.0` and `separation-ami-1.0` cards;
+the pipeline and its weights are separate gated repos) — still relevant
+only if you rebuild the old `Dockerfile.separation` image for a
+pre-DiariZen worker. `SEPARATION_ENDPOINT` in `.env`/compose is now
+inert.
 
 ### Chunking (long recordings, CPU voice stacks)
 
@@ -198,8 +202,10 @@ A single multi-hour STT request can collapse into the whisper **repetition
 loop** (one phrase repeated to the end of the file — observed on a 90-min
 recording after 01:01). With `chunk.enabled: true` the worker first slices
 the audio into ~10-minute chunks (2 s overlap, midpoint seam assignment —
-no duplicated or lost speech at the cuts) and then transcribes/diarizes the
-chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
+no duplicated or lost speech at the cuts) and then transcribes the
+chunks **sequentially** (never in parallel: one CPU voice stack).
+Chunking stays an **ASR-only** concern — diarization always sees the
+whole recording. Effects:
 
 - a poisoned chunk costs ~10 min of transcript instead of hours;
 - a failed chunk fails the stage with `chunk N of M` in `last_error`, and
@@ -209,11 +215,10 @@ chunks **sequentially** (never in parallel: one CPU voice stack). Effects:
   in the manifest; regenerating `transcribe` re-runs only suspect chunks
   with a reset decoder context (empty prompt +
   `condition_on_previous_text=false` where the STT server accepts it);
-- chunk FLACs are deleted after `merge_speakers` (retention `until_merged`);
-  re-running `transcribe`/`diarize` after that requires regenerating from
-  the `chunk` stage;
-- diarization speaker labels stay per-chunk (spk_0 in chunk 1 ≠ spk_0 in
-  chunk 2) — merge attributes words by time overlap and is unaffected.
+- stereo dual-tap recordings keep per-channel chunk FLACs
+  (`meta/channels/mic|system.flac`) for diarize: whole-file per-channel
+  FLACs with `mic:`/`system:` speaker namespacing, re-derived via the
+  idempotent `split_channels` when retention has cleaned them.
 
 Off by default (`chunk.enabled: false` → stage reports `skipped`, pipeline
 runs whole-file as before).
@@ -277,26 +282,54 @@ path and build notes: `client/ANDROID_POC.md`).
 
 ML services are compose **profiles**: the base stack needs none of them.
 
-> **Upgrading from before profiles?** A plain `docker compose up -d` no
-> longer starts the diarization container — it now lives behind the
-> `diarization` profile. Add `--profile diarization` to your usual commands
-> (recommended, config default `enabled: true` keeps working), or set
-> `diarization.enabled: false` in config.yaml to run transcript-only.
-> The worker logs a startup warning if diarization is enabled but its
-> endpoint is unreachable.
+> **Upgrading from the LinTO setup?** Bundled diarization now lives behind
+> the `diarizen` profile (DiariZen engine) — add `--profile diarizen` to
+> your usual commands (config default `diarization.enabled: true` keeps
+> working). The old `diarization` profile (LinTO) is deprecated,
+> rollback-only, and pending removal. Set `diarization.enabled: false` in
+> config.yaml to run transcript-only; the worker logs a startup warning
+> if diarization is enabled but its endpoint is unreachable.
 
 | Mode                          | Transcribe                     | Diarization                          | How                                                        |
 | ----------------------------- | ------------------------------ | ------------------------------------ | ---------------------------------------------------------- |
-| Bundled, zero-config (default)| faster-whisper in worker       | LinTO behind profile                 | `docker compose up -d --profile diarization`               |
+| Bundled, zero-config (default)| faster-whisper in worker       | DiariZen behind profile              | `docker compose up -d --profile diarizen`                  |
 | No ML containers              | faster-whisper in worker       | disabled — stages `skipped`          | `docker compose up -d` + `diarization.enabled: false`      |
-| Bundled Speaches              | Speaches behind profile `stt`  | LinTO behind profile                 | `docker compose --profile stt --profile diarization up -d` + config below |
-| External / voice stack        | any OpenAI-compatible STT      | any LinTO endpoint                   | point config/env at `http://<host>:<port>` — see below     |
+| Bundled Speaches              | Speaches behind profile `stt`  | DiariZen behind profile              | `docker compose --profile stt --profile diarizen up -d` + config below |
+| External / voice stack        | any OpenAI-compatible STT      | any DiariZen/LinTO endpoint          | point config/env at `http://<host>:<port>` — see below     |
 | Knowledge graph (Neo4j)       | any of the above               | any of the above                     | `docker compose --profile graph up -d` + `NEO4J_PASSWORD` in `.env` — see below |
+
+### Diarization via DiariZen (bundled, `diarizen` profile)
+
+```bash
+docker compose --profile diarizen up -d
+```
+
+The service answers the same HTTP contract every diarization backend in
+this repo speaks — `POST /diarization` (multipart audio) →
+`{"speakers": [...], "segments": [{start, end, speaker}]}` plus
+`GET/HEAD /healthcheck` — so the worker needs no special wiring: the
+default config endpoint (`http://diarization:80`, compose-internal DNS)
+or `DIARIZATION_ENDPOINT=http://diarizen:80` in `.env` both reach it.
+(A worker on the same compose network cannot reach a host-published
+`host-IP:8071` — use the internal DNS name.) One CPU inference at a
+time; published as host `:8071` (container `:80`).
+
+| Concern   | Value                                                              |
+| --------- | ------------------------------------------------------------------ |
+| Image     | `transcripter-diarizen:0.1.0` (GHCR: `ghcr.io/megastruktur/transcripter:diarizen-0.1.0`) |
+| Model     | `BUT-FIT/diarizen-wavlm-base-s80-md` (pruned, ~350 MB; override via `DIARIZEN_MODEL`) |
+| License   | MIT code + **CC-BY-NC-4.0 weights** — personal self-host use       |
+| Weights   | download into the `diarizen-hf-cache` volume on first start (~350 MB) |
+| Speed     | RTF ≈ 0.2 CPU (61-min → ~12 min, 123-min → ~24 min), ~1.6 GiB RSS  |
+| Speakers  | `spk_0..spk_N`, global clustering, no hard cap (pilot: 7 on 61 min, 6 on 123 min) |
+
+See [Diarization: DiariZen](#diarization-diarizen-whole-file-primary-engine)
+for the whole-file contract and the LinTO rollback story.
 
 ### Routing transcription to Speaches (bundled)
 
 ```bash
-docker compose --profile stt --profile diarization up -d
+docker compose --profile stt --profile diarizen up -d
 ```
 
 ```yaml
@@ -338,7 +371,7 @@ echo 'NEO4J_PASSWORD=<your-password>' >> .env
 # 2. Start the neo4j service alongside whatever else you already run.
 docker compose --profile graph up -d         # add this profile to existing flags
 # e.g. with bundled diarization:
-docker compose --profile diarization --profile graph up -d
+docker compose --profile diarizen --profile graph up -d
 ```
 
 Then point the worker at the graph in `config.yaml`:
@@ -389,7 +422,7 @@ The worker reaches any reachable endpoint; env beats config:
 
 ```bash
 # .env next to docker-compose.yml
-DIARIZATION_ENDPOINT=http://<voice-host>:8070
+DIARIZATION_ENDPOINT=http://<voice-host>:8071
 ```
 
 For transcription set `transcribe.base_url` to `http://<host>:8000/v1`.
@@ -431,7 +464,7 @@ Requirements: Docker + Docker Compose plugin, ~4 GB free RAM for models.
 cd server
 cp config.example.yaml config.yaml        # optional: tune models/storage
 echo 'TRANSCRIPTER_TOKEN=<your-secret>' > .env
-docker compose up -d --profile diarization
+docker compose up -d --profile diarizen
 ```
 
 | Service      | URL                        | Purpose                     |
@@ -439,7 +472,7 @@ docker compose up -d --profile diarization
 | API          | `http://localhost:8090`    | REST + health at `/health`  |
 | Temporal UI  | `http://localhost:8082`    | pipeline observability      |
 | Speaches     | internal (opt-in profile)  | OpenAI-compatible STT       |
-| Diarization  | host `:8070` (container `:80`) | LinTO HTTP service     |
+| Diarization  | host `:8071` (container `:80`) | DiariZen HTTP service     |
 
 Recordings land in `server/storage/recordings/<uuid>/` — point the compose
 bind-mount at your NAS/export path to store elsewhere.
@@ -457,8 +490,8 @@ docker compose -p transcripter-dev -f docker-compose.yml -f docker-compose.dev.y
 docker compose -p transcripter-dev down
 ```
 
-Deviations: api `127.0.0.1:18090`, temporal-ui `127.0.0.1:18082`, diarization
-`:18070`, separate `storage-dev/` bind. The client speaks both `http://` and
+Deviations: api `127.0.0.1:18090`, temporal-ui `127.0.0.1:18082`, a
+separate `storage-dev/` bind. The client speaks both `http://` and
 `https://` base URLs (reqwest `rustls-tls`).
 
 ### Configuration (`server/config.yaml`)
@@ -484,7 +517,9 @@ summarize:
 
 diarization:
   enabled: true           # false → diarize/merge skipped, no container needed
-  endpoint: http://diarization:80
+  endpoint: http://diarization:80   # bundled DiariZen (profile `diarizen`);
+                        # env DIARIZATION_ENDPOINT wins — point it at any
+                        # DiariZen or (rollback) LinTO endpoint
 ```
 
 Storage path, DB URL, and ports live in the same file / `docker-compose.yml`.
