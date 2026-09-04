@@ -29,6 +29,8 @@ from .activities import (
     graph_gc,
     merge_speakers,
     preload_local,
+    purge_tag_memory,
+    rebuild_tag_recording_ids,
     rename_entity,
     renew_tag_digest,
     summarize,
@@ -45,6 +47,7 @@ from .workflows import (
     GraphGc,
     GraphMaintenance,
     ProcessRecording,
+    RebuildTagMemory,
     RenameEntity,
     TagDigest,
 )
@@ -65,6 +68,8 @@ ACTIVITIES = [
     renew_tag_digest,
     fix_preview,
     fix_apply,
+    purge_tag_memory,
+    rebuild_tag_recording_ids,
 ]
 # (an unregistered activity fails workflows at runtime with NotFoundError
 # while the stage row sits pending — observed 2026-08-27 on enrich).
@@ -159,6 +164,7 @@ async def amain() -> None:
             GraphMaintenance,
             GraphFixPreview,
             GraphFixApply,
+            RebuildTagMemory,
         ],
         activities=ACTIVITIES,
     )

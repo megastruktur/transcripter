@@ -157,3 +157,24 @@ async def start_fix_apply(
         task_queue=TASK_QUEUE,
     )
     return handle.id
+
+
+REBUILD_TAG_MEMORY_WORKFLOW_NAME = "RebuildTagMemory"
+REBUILD_TAG_MEMORY_ID_PREFIX = "rebuild-tag-memory-"
+
+
+async def start_rebuild_tag_memory(tag: str, rebuild: bool) -> str:
+    """Admin: purge (± rebuild) one tag's memory.
+
+    Deterministic id per tag: while a rebuild for the tag is live, a
+    second start raises WorkflowAlreadyStarted → the API surfaces it as
+    a 409 ("already running"), the same guard shape the per-recording
+    regenerate uses."""
+    client = await get_client()
+    handle = await client.start_workflow(
+        REBUILD_TAG_MEMORY_WORKFLOW_NAME,
+        {"tag": tag, "rebuild": rebuild},
+        id=f"{REBUILD_TAG_MEMORY_ID_PREFIX}{tag}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id

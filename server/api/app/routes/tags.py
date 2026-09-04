@@ -956,6 +956,147 @@ async def post_fix_apply(
     return {"workflow_id": workflow_id, "tag": norm}
 
 
+async def _start_memory_or_503(tag: str, rebuild: bool) -> str:
+    try:
+        return await temporal_client.start_rebuild_tag_memory(tag, rebuild)
+    except Exception as e:
+        if "already started" in str(e).lower():
+            raise HTTPException(
+                status_code=409,
+                detail="a purge/rebuild is already running for this tag",
+            ) from e
+        _LOG.exception("memory purge/rebuild start failed for tag=%s", tag)
+        raise HTTPException(
+            status_code=503, detail="temporal unavailable; try again later"
+        )
+
+
+def _require_done_recordings(tag: str, session: Session) -> int:
+    """404 when no DONE recording carries the tag (nothing to purge or
+    rebuild); returns the done count for the response."""
+    count = len(_tag_recordings(session, tag))
+    if count == 0:
+        raise HTTPException(
+            status_code=404, detail=f"no done recordings carry tag {tag}"
+        )
+    return count
+
+
+def _require_not_processing(tag: str, session: Session) -> None:
+    """409 when any recording of the tag is mid-pipeline: a purge racing
+    a live enrich would delete nodes the running activity is about to
+    re-write (and the rebuild's child workflows would collide with the
+    deterministic process-recording-<id> ids)."""
+    gen = get_session()
+    try:
+        s = next(gen)
+        from sqlalchemy import text as _text
+
+        dialect = s.get_bind().dialect.name
+        if dialect == "postgresql":
+            stmt = _text(
+                "SELECT count(*) FROM recordings WHERE :tag = ANY(tags) "
+                "AND state = 'processing'"
+            )
+        else:
+            stmt = _text(
+                "SELECT count(*) FROM recordings WHERE EXISTS ("
+                "SELECT 1 FROM json_each(recordings.tags) "
+                "WHERE value = :tag) AND state = 'processing'"
+            )
+        if s.execute(stmt, {"tag": tag}).scalar():
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a recording of this tag is still processing — "
+                    "wait for the pipeline to finish before purging"
+                ),
+            )
+    finally:
+        gen.close()
+
+
+@router.delete("/{tag}/memory", status_code=202)
+async def purge_memory(
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Admin: wipe the tag's MEMORY — Neo4j namespace, graph_edits,
+    digest note, semantic index — keeping every recording (audio,
+    transcript, summary, events.json). 202 + workflow: a large
+    namespace purges in batched DETACH DELETEs, which belongs behind a
+    pollable workflow, not a synchronous handler."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    # Processing beats 404: a tag whose only recording is mid-pipeline
+    # must answer "wait for the pipeline", not "nothing to purge".
+    _require_not_processing(norm, session)
+    done = _require_done_recordings(norm, session)
+    workflow_id = await _start_memory_or_503(norm, rebuild=False)
+    return {"workflow_id": workflow_id, "tag": norm, "done_recordings": done}
+
+
+@router.post("/{tag}/rebuild", status_code=202)
+async def rebuild_memory(
+    request: Request,
+    tag: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Admin: purge the tag's memory, then re-run enrich per done
+    recording (oldest first, sequential). Destructive like purge — the
+    confirm belongs in the UI. 202 + workflow id (deterministic per
+    tag: a live rebuild 409s)."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    _require_graph(cfg, norm)
+    # Same guard order as purge: processing → done-records → start.
+    _require_not_processing(norm, session)
+    done = _require_done_recordings(norm, session)
+    workflow_id = await _start_memory_or_503(norm, rebuild=True)
+    return {"workflow_id": workflow_id, "tag": norm, "done_recordings": done}
+
+
+@router.get("/{tag}/memory/{workflow_id}")
+async def get_memory_status(
+    request: Request,
+    tag: Annotated[str, Path()],
+    workflow_id: Annotated[str, Path()],
+) -> dict:
+    """Poll a purge/rebuild: running (with the workflow's progress
+    query: total/done/current) | done | failed | unknown. The progress
+    query is only meaningful for rebuilds; purge-only runs report
+    done=0/total=0 until they finish."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    if not workflow_id.startswith("rebuild-tag-memory-"):
+        raise HTTPException(status_code=400, detail="not a memory workflow id")
+    from temporalio.client import WorkflowExecutionStatus, WorkflowFailureError
+
+    client = await temporal_client.get_client()
+    handle = client.get_workflow_handle(workflow_id)
+    try:
+        desc = await handle.describe()
+    except RPCError:  # unknown workflow id (evicted or typo)
+        return {"state": "unknown"}
+    if desc.status == WorkflowExecutionStatus.RUNNING:
+        try:
+            progress = await handle.query("progress") or {}
+        except RPCError:
+            progress = {}
+        return {"state": "running", "progress": progress}
+    try:
+        result = await handle.result()
+    except WorkflowFailureError as e:
+        return {"state": "failed", "detail": str(e)[:300]}
+    except RPCError:  # completed but evicted — nothing to fetch
+        return {"state": "unknown"}
+    return {"state": "done", "result": result}
+
+
 @router.get("/{tag}/fix-apply/{workflow_id}")
 async def get_fix_apply(
     request: Request,

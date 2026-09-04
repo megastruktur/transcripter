@@ -1936,3 +1936,44 @@ async def graph_gc(_: dict) -> dict:
     """
     c = cfg()
     return await _heartbeat_while(asyncio.to_thread(run_graph_gc_impl, c))
+
+
+@activity.defn
+async def purge_tag_memory(tag: str) -> dict:
+    """Admin: wipe ONE tag's memory (Neo4j namespace + graph_edits rows
+    + digest note + semantic index) — see worker/purge.py for the exact
+    store list. Not a pipeline stage: no stage rows. Recordings, audio,
+    transcripts and events.json are untouched; the rebuild half of the
+    ``RebuildTagMemory`` workflow re-runs enrich per recording to
+    reconstruct the graph from those artifacts.
+
+    Graph disabled → non-retryable skip (same shape as enrich's guard).
+    """
+    c = cfg()
+    if not c.graph.enabled:
+        raise ApplicationError("skipped: graph disabled", non_retryable=True)
+    from .purge import purge_tag_memory as run_purge
+
+    return await _heartbeat_while(asyncio.to_thread(run_purge, c, tag))
+
+
+@activity.defn
+async def rebuild_tag_recording_ids(tag: str) -> list[str]:
+    """Ids of the tag's DONE recordings, oldest first — the rebuild
+    order for ``RebuildTagMemory``. Oldest-first mirrors how the memory
+    accumulated originally (known-entities snapshots grow the same way
+    a live session series would). Any state besides done (uploading,
+    processing, failed) is skipped: enrich needs a finished transcript
+    and the workflow must not race a live pipeline.
+    """
+    with session() as s:
+        rows = (
+            s.query(Recording)
+            .filter(
+                Recording.tags.contains([tag]),
+                Recording.state == RecordingState.done,
+            )
+            .order_by(Recording.created_at.asc(), Recording.id.asc())
+            .all()
+        )
+        return [r.id for r in rows]

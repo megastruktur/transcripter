@@ -7,7 +7,7 @@ from typing import TypedDict
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from temporalio.exceptions import ActivityError, CancelledError
+from temporalio.exceptions import ActivityError, CancelledError, ChildWorkflowError
 from temporalio.workflow import ActivityCancellationType
 
 with workflow.unsafe.imports_passed_through():
@@ -427,3 +427,90 @@ class GraphFixApply:
             retry_policy=RetryPolicy(maximum_attempts=2),
             heartbeat_timeout=timedelta(seconds=60),
         )
+
+
+@workflow.defn
+class RebuildTagMemory:
+    """Admin: purge one tag's memory, optionally rebuild it.
+
+    ``args = {"tag": str, "rebuild": bool}``. Purge = the
+    ``purge_tag_memory`` activity (graph namespace + edits + digest +
+    index; see worker/purge.py). Rebuild = SEQUENTIAL child
+    ``ProcessRecording`` runs starting at ``enrich`` for every done
+    recording of the tag — sequential on purpose: a parallel mass-enrich
+    is exactly the 2026-08-29 LiteLLM FIFO starvation pattern
+    (extraction starving the small Y/N dedup calls), and each child
+    carries its own retry policy. The workflow id is deterministic per
+    tag (``rebuild-tag-memory-<tag>``): the API 409s a second start
+    while one is live.
+
+    A failed child does not fail the whole rebuild: enrich is
+    best-effort, the recording keeps its transcript+summary, and the
+    remaining recordings still get their turn (the failure is recorded
+    in the result + queryable progress).
+    """
+
+    def __init__(self) -> None:
+        self._total = 0
+        self._done = 0
+        self._current: str | None = None
+        self._finished: list[str] = []
+        self._failed: list[str] = []
+
+    @workflow.query
+    def progress(self) -> dict:
+        return {
+            "total": self._total,
+            "done": self._done,
+            "current": self._current,
+            "finished": self._finished,
+            "failed": self._failed,
+        }
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        tag: str = args["tag"]
+        rebuild: bool = args.get("rebuild", False)
+        purge = await workflow.execute_activity(
+            "purge_tag_memory",
+            tag,
+            start_to_close_timeout=timedelta(minutes=10),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+            heartbeat_timeout=timedelta(seconds=120),
+        )
+        if not rebuild:
+            return {"purged": purge, "rebuilt": 0, "failed": []}
+        ids = await workflow.execute_activity(
+            "rebuild_tag_recording_ids",
+            tag,
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=_retry(),
+        )
+        self._total = len(ids)
+        failed: list[str] = []
+        for rec_id in ids:
+            self._current = rec_id
+            try:
+                await workflow.execute_child_workflow(
+                    "ProcessRecording",
+                    {"recording_id": rec_id, "start_stage": "enrich"},
+                    id=f"process-recording-{rec_id}",
+                    # Each recording keeps the deterministic
+                    # process-recording-<id> name: a rebuild is a
+                    # regenerate by another door, and the API's
+                    # "already running" guard stays meaningful.
+                    execution_timeout=timedelta(seconds=3600),
+                )
+                self._finished.append(rec_id)
+            except ChildWorkflowError:
+                workflow.logger.warning(
+                    "rebuild %s: enrich child failed for %s; continuing",
+                    tag,
+                    rec_id,
+                )
+                failed.append(rec_id)
+                self._failed.append(rec_id)
+            finally:
+                self._done += 1
+                self._current = None
+        return {"purged": purge, "rebuilt": self._done - len(failed), "failed": failed}

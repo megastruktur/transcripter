@@ -17,6 +17,8 @@
 		fetchTimeline,
 		fetchDigest,
 		fetchDigestStatus,
+		fetchMemoryStatus,
+		purgeTagMemory,
 		regenerateDigest,
 		searchTag,
 		patchEntity,
@@ -336,6 +338,71 @@ async function runSearch(): Promise<void> {
 		}
 	}
 
+// Tag-memory admin (2026-09-04): ellipsis menu on the header — Purge
+// memory… / Rebuild memory. Destructive, so each goes through an armed
+// confirm (the same two-step shape the recording Delete uses). The
+// 202 hands a workflow id; a 5s poll drives the brass status line.
+let memoryMenuOpen = $state(false);
+let memoryConfirm = $state<'purge' | 'rebuild' | null>(null);
+let memoryBusy = $state(false);
+let memoryError = $state('');
+let memoryStatusLine = $state('');
+let memoryPoll: ReturnType<typeof globalThis.setTimeout> | null = null;
+let memoryTag = '';
+
+function closeMemoryMenu(): void {
+	memoryMenuOpen = false;
+	memoryConfirm = null;
+}
+
+async function startMemoryAction(rebuild: boolean): Promise<void> {
+	if (memoryBusy) return;
+	memoryBusy = true;
+	memoryError = '';
+	memoryConfirm = null;
+	closeMemoryMenu();
+	try {
+		const { workflow_id } = await purgeTagMemory(loadApiConfig(), tag, rebuild);
+		memoryTag = tag;
+		memoryStatusLine = rebuild ? 'Rebuilding memory…' : 'Purging memory…';
+		scheduleMemoryPoll(workflow_id, rebuild);
+	} catch (caught) {
+		memoryError = String(caught instanceof Error ? caught.message : caught);
+	} finally {
+		memoryBusy = false;
+	}
+}
+
+function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
+	if (memoryPoll) globalThis.clearTimeout(memoryPoll);
+	memoryPoll = globalThis.setTimeout(async () => {
+		try {
+			const status = await fetchMemoryStatus(loadApiConfig(), tag, workflowId);
+			if (status.state === 'running') {
+				const p = status.progress;
+				memoryStatusLine = rebuild && p
+					? `Rebuilding memory — ${Math.min(p.done, p.total)} of ${p.total} sessions`
+					: rebuild ? 'Rebuilding memory…' : 'Purging memory…';
+				scheduleMemoryPoll(workflowId, rebuild);
+				return;
+			}
+			if (status.state === 'failed') {
+				memoryError = status.detail ?? 'memory workflow failed';
+				memoryStatusLine = '';
+			} else if (status.state === 'unknown') {
+				memoryStatusLine = '';
+			} else {
+				memoryStatusLine = '';
+				void refresh();
+				void refreshDigestStatus();
+			}
+		} catch {
+			memoryError = 'memory status poll failed';
+			memoryStatusLine = '';
+		}
+	}, 5_000);
+}
+
 
 	function sessionDate(session: TimelineSession): string {
 		return dateLabel(session.date);
@@ -344,7 +411,7 @@ async function runSearch(): Promise<void> {
 	/** Event kind → left-rail accent. Explicit entries cover the default
 	 * enrich vocabulary (milestone/change/decision/meeting); kinds invented
 	 * by custom profiles get a deterministic color from the same ramp.
- * Cyan stays out — it is reserved for verified state. */
+	 * Cyan stays out — it is reserved for verified state. */
 	const KIND_ACCENTS: Record<string, string> = {
 		milestone: 'var(--brass)',
 		decision: 'var(--red)',
@@ -370,6 +437,11 @@ async function runSearch(): Promise<void> {
 
 <svelte:head><title>{tag} · Vault · Transcriptor Maximus</title></svelte:head>
 
+<svelte:window
+	onkeydown={(event) => { if (event.key === 'Escape' && memoryMenuOpen) { event.stopPropagation(); closeMemoryMenu(); } }}
+	onpointerdown={(event) => { if (memoryMenuOpen && !(event.target instanceof Element && event.target.closest('.memory-menu-wrap'))) closeMemoryMenu(); }}
+/>
+
 <section class="page tag-page">
 	<header class="tag-header">
 		<BackButton href="/vault" label="Back to vault" />
@@ -378,7 +450,43 @@ async function runSearch(): Promise<void> {
 		{:else}
 			<h1 class="page-title tag-title">{tag}</h1>
 		{/if}
+		<div class="memory-menu-wrap">
+			<button class="memory-toggle" type="button" aria-label="Tag memory actions" aria-haspopup="menu" aria-expanded={memoryMenuOpen} onclick={() => (memoryMenuOpen ? closeMemoryMenu() : (memoryMenuOpen = true))}><Icon name="dots" size={15} /></button>
+			{#if memoryMenuOpen}
+				<div class="memory-menu" role="menu" aria-label="Tag memory actions">
+					{#if memoryConfirm === 'purge'}
+						<div class="memory-confirm">
+							<span>Wipe graph, edits, digest and index?</span>
+							<small>Recordings stay. There is no undo.</small>
+							<div class="memory-confirm-actions">
+								<button class="memory-confirm-yes" type="button" disabled={memoryBusy} onclick={() => void startMemoryAction(false)}>Confirm wipe</button>
+								<button type="button" onclick={() => (memoryConfirm = null)}>Cancel</button>
+							</div>
+						</div>
+					{:else if memoryConfirm === 'rebuild'}
+						<div class="memory-confirm">
+							<span>Wipe and rebuild from every session?</span>
+							<small>Runs enrich per recording — takes a while.</small>
+							<div class="memory-confirm-actions">
+								<button class="memory-confirm-yes" type="button" disabled={memoryBusy} onclick={() => void startMemoryAction(true)}>Confirm rebuild</button>
+								<button type="button" onclick={() => (memoryConfirm = null)}>Cancel</button>
+							</div>
+						</div>
+					{:else}
+						<button type="button" role="menuitem" class="memory-item memory-danger" onclick={() => (memoryConfirm = 'purge')}>Purge memory…</button>
+						<button type="button" role="menuitem" class="memory-item" onclick={() => (memoryConfirm = 'rebuild')}>Rebuild memory</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
 	</header>
+
+	{#if memoryStatusLine}
+		<p class="memory-status" role="status">{memoryStatusLine}</p>
+	{/if}
+	{#if memoryError}
+		<p class="memory-error" role="alert">{memoryError}</p>
+	{/if}
 
 	{#if error}
 		<div class="tag-error" role="alert"><strong>Timeline unavailable</strong><span>{error}</span></div>
@@ -510,7 +618,25 @@ async function runSearch(): Promise<void> {
 </section>
 <style>
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
-	.tag-header { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 10px; }
+	.tag-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+	.memory-menu-wrap { position: relative; display: flex; min-width: 0; }
+	.memory-toggle { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; cursor: pointer; line-height: 0; }
+	.memory-toggle:hover, .memory-toggle[aria-expanded='true'] { color: var(--bone); border-color: rgba(215, 167, 71, 0.4); background: rgba(215, 167, 71, 0.08); }
+	.memory-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 40; min-width: 220px; display: grid; padding: 4px; border: 1px solid var(--line); border-radius: 3px; background: var(--iron-raised); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); }
+	.memory-item { width: 100%; min-height: 26px; display: flex; align-items: center; padding: 0 8px; border: 0; border-radius: 2px; background: transparent; color: #c6baaa; font-size: 11px; text-align: left; cursor: pointer; }
+	.memory-item:hover { background: rgba(215, 167, 71, 0.1); color: var(--bone); }
+	.memory-danger { color: #f36b60; }
+	.memory-danger:hover { background: rgba(213, 45, 36, 0.12); color: #f36b60; }
+	.memory-confirm { display: grid; gap: 4px; padding: 6px 8px; }
+	.memory-confirm span { font-size: 11px; color: var(--bone); }
+	.memory-confirm small { font-size: 9px; color: var(--ash); }
+	.memory-confirm-actions { display: flex; gap: 6px; margin-top: 2px; }
+	.memory-confirm-actions button { min-height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); font-size: 10px; font-weight: 700; cursor: pointer; }
+	.memory-confirm-actions button:hover { color: var(--bone); border-color: rgba(215, 167, 71, 0.4); }
+	.memory-confirm-yes { border-color: rgba(213, 45, 36, 0.5) !important; color: #f36b60 !important; }
+	.memory-confirm-yes:hover { background: rgba(213, 45, 36, 0.16) !important; }
+	.memory-status { margin: 0; padding: 6px 10px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.08); color: var(--brass); font-size: 11px; font-weight: 700; }
+	.memory-error { margin: 0; padding: 6px 10px; border-left: 2px solid var(--red); background: rgba(213, 45, 36, 0.08); color: #f36b60; font-size: 11px; }
 	.tag-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24px; }
 	.tag-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.tag-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
