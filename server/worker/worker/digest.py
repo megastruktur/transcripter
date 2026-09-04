@@ -28,6 +28,7 @@ import logging
 import os
 import re
 import uuid
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,7 +39,7 @@ import yaml
 from neo4j import GraphDatabase
 from sqlalchemy import or_, text
 
-from .db import Recording, RecordingState, session
+from .db import Recording, RecordingState, Stage, session
 from .enrich import slugify
 from .llm_payload import system_first_messages
 
@@ -105,13 +106,44 @@ _DIGEST_PROMPT_HEADER = (
     "4. Entity updates: for entities with state_change events, one line "
     "each — what changed for whom. Skip when none.\n"
     "5. Open threads / unresolved questions if any.\n"
-    "Write in the same language as the session material. Markdown only, "
-    "no frontmatter — the host prepends its own.\n\n"
+    "{language_directive}"
+    "Markdown only, no frontmatter — the host prepends its own.\n\n"
     "---\n\n"
     "Tag: {tag}\n"
     "Sessions: {sessions} (count: {count})\n"
     "Events (session title — date — kind — ts — summary):\n{events}\n\n"
     "Relations (from — rel — to):\n{relations}\n"
+)
+
+# Language directive variants for _render_prompt. The STT-detected code
+# ('ru', 'en'…) maps to a BCP-47-ish name the model understands; the
+# dominant language of the selection wins (Counter over non-None rows —
+# 2026-09-04: the LLM ignored the soft "same language as the material"
+# line and wrote English digests over Russian sessions).
+_LANGUAGE_NAMES = {
+    "ru": "Russian",
+    "en": "English",
+    "uk": "Ukrainian",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "pl": "Polish",
+    "kk": "Kazakh",
+    "be": "Belarusian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "tr": "Turkish",
+}
+
+# Soft fallback when no row carries a usable STT language code.
+_LANGUAGE_DIRECTIVE_FALLBACK = (
+    "Write in the same language as the session material. "
 )
 
 
@@ -128,6 +160,11 @@ class DigestRow:
     # Timeline key: coalesce(recorded_at, created_at) — the date the
     # session HAPPENED (an import backdate), falling back to catalog time.
     recording_date: datetime
+    # STT-detected language ('ru', 'en'…; None/'' /'unknown' normalize to
+    # None). Feeds the digest prompt's explicit language directive
+    # (2026-09-04: the LLM ignored the soft "same language as the
+    # material" line and wrote English digests over Russian sessions).
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +187,27 @@ class DigestInput:
 
 
 # ---------- helpers -------------------------------------------------------------
+
+
+def _stage_language(s: Any, rec_ids: list[str]) -> dict[str, str | None]:
+    """STT language per recording id, from the transcribe stage's
+    ``details`` JSON (written by the transcribe activity). One query for
+    the whole selection. Values are normalized: missing details,
+    non-string values, ``''`` and ``'unknown'`` all map to None — a
+    None language degrades the digest prompt to the soft
+    "same language as the material" line instead of a wrong directive.
+    """
+    out: dict[str, str | None] = dict.fromkeys(rec_ids, None)
+    for st in (
+        s.query(Stage)
+        .filter(Stage.recording_id.in_(rec_ids), Stage.kind == "transcribe")
+        .all()
+    ):
+        lang = st.details.get("language") if isinstance(st.details, dict) else None
+        if not (isinstance(lang, str) and lang.strip() and lang.strip() != "unknown"):
+            continue  # missing / empty / 'unknown' → stays None
+        out[st.recording_id] = lang.strip()
+    return out
 
 
 def safe_filename(tag: str) -> str:
@@ -315,12 +373,14 @@ def _select_recordings(
                 key=lambda r: (r.created_at, r.id),
                 reverse=True,
             )
+        langs = _stage_language(s, [r.id for r in rows])
     return [
         DigestRow(
             recording_id=r.id,
             title=r.title or "",
             created_at=r.created_at,
             recording_date=r.recorded_at or r.created_at,
+            language=langs.get(r.id),
         )
         for r in rows
     ]
@@ -430,6 +490,19 @@ def _render_prompt(
         r.recording_id: f"{r.title or '(untitled)'} ({r.recording_date.date().isoformat()})"
         for r in rows
     }
+    # Language directive: the DOMINANT non-None language of the selection.
+    # A mixed-language set of sessions is still one digest — majority
+    # wins; the code is rendered as its English name in the directive
+    # (see _LANGUAGE_NAMES) when known, else verbatim.
+    langs = [r.language for r in rows if r.language]
+    if langs:
+        dominant = Counter(langs).most_common(1)[0][0]
+        directive = (
+            f"Write the ENTIRE digest in "
+            f"{_LANGUAGE_NAMES.get(dominant, dominant)} ({dominant}). "
+        )
+    else:
+        directive = _LANGUAGE_DIRECTIVE_FALLBACK
     entities_text = "\n".join(
         f"- {e['label']} ({e['type']}) — {e['session_count']} session(s)"
         for e in graph.entities
@@ -450,6 +523,7 @@ def _render_prompt(
         entities=entities_text,
         events=events_text,
         relations=rels_text,
+        language_directive=directive,
     )
 
 

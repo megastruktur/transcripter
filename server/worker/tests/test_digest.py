@@ -266,6 +266,68 @@ def test_render_prompt_says_none_when_empty() -> None:
     assert "Sessions: T1 (2026-08-01)" in prompt
 
 
+def test_render_prompt_dominant_language_directive() -> None:
+    """2026-09-04: the STT language of the rows must produce an EXPLICIT
+    'Write the ENTIRE digest in Russian (ru).' directive — the soft
+    'same language as the material' line was ignored by the model and
+    Russian sessions got English digests."""
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC), language="ru"),
+        DigestRow("r2", "T2", datetime(2026, 8, 2, tzinfo=UTC),
+                  datetime(2026, 8, 2, tzinfo=UTC), language="ru"),
+    ]
+    prompt = _render_prompt("pathfinder", 2, rows, _make_graph_slice())
+    assert "Write the ENTIRE digest in Russian (ru)." in prompt
+    assert "same language as the session material" not in prompt
+
+
+def test_render_prompt_majority_language_wins() -> None:
+    """A mixed selection still gets ONE directive — the dominant
+    language (Counter.most_common)."""
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC), language="ru"),
+        DigestRow("r2", "T2", datetime(2026, 8, 2, tzinfo=UTC),
+                  datetime(2026, 8, 2, tzinfo=UTC), language="en"),
+        DigestRow("r3", "T3", datetime(2026, 8, 3, tzinfo=UTC),
+                  datetime(2026, 8, 3, tzinfo=UTC), language="ru"),
+    ]
+    prompt = _render_prompt("pathfinder", 3, rows, _make_graph_slice())
+    assert "Write the ENTIRE digest in Russian (ru)." in prompt
+
+
+def test_render_prompt_no_language_soft_fallback() -> None:
+    """No usable STT language (legacy rows / 'unknown') → the original
+    soft directive, never a wrong explicit one."""
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC)),
+    ]
+    prompt = _render_prompt("pathfinder", 1, rows, DigestGraphSlice([], [], []))
+    assert "Write in the same language as the session material." in prompt
+    assert "ENTIRE digest" not in prompt
+
+
+def test_select_recordings_carries_stage_language() -> None:
+    """_select_recordings reads the transcribe stage's details.language
+    into DigestRow.language — 'unknown'/missing normalize to None."""
+    rids = _seed_recordings()
+    from worker.digest import _select_recordings
+
+    with session() as s:
+        st = s.query(Stage).filter_by(recording_id=rids[0], kind="transcribe").one()
+        st.details = {"language": "ru", "segments": 10}
+        st2 = s.query(Stage).filter_by(recording_id=rids[1], kind="transcribe").one()
+        st2.details = {"language": "unknown", "segments": 10}
+        s.commit()
+    rows = _select_recordings("pathfinder", 3)
+    by_id = {r.recording_id: r for r in rows}
+    assert by_id[rids[0]].language == "ru"
+    assert by_id[rids[1]].language is None
+    assert by_id[rids[2]].language is None  # no details at all
+
+
 # ---------- build_digest_input (Postgres + Neo4j) -----------------------------
 
 
