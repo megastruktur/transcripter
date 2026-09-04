@@ -262,8 +262,12 @@ On top of the graph:
 - **Tag page**: session timeline with click-to-seek events, an entity
   list with inline user rename (`PATCH /tags/{tag}/entities/{slug}`;
   user-corrected entities are exempt from auto-dedup), and the digest.
-- **Digests**: `POST /tags/{tag}/digest {last_n}` renders a digest note
-  of the last N tagged sessions to `<transcripts>/digests/<tag>.md`;
+- **Digests**: `POST /tags/{tag}/digest {last_n}` (body optional — the
+  client fires a bare POST; `{}` or `{"last_n": N}` both valid) renders a
+  digest note of the last N tagged sessions to
+  `<transcripts>/digests/<tag>.md`, **written in the dominant language of
+  the selected recordings** (STT-detected, from the transcribe stage's
+  details; falls back to "same language as the material" when unknown);
   `GET /tags/{tag}/digest` serves it back. With `graph.auto_digest:
   true` (default) it also auto-refreshes after enrich, at most once per
   `auto_digest_window_sec`.
