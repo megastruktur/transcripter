@@ -60,6 +60,10 @@ services:
       TEMPORAL_ADDRESS: temporal:7233
       # Empty default keeps config.yaml effective; a value set in .env wins.
       DIARIZATION_ENDPOINT: ${DIARIZATION_ENDPOINT:-}
+      # Layer 2: pyannote SpeechSeparation endpoint. Empty default keeps
+      # config.yaml effective; a value set in .env wins (and forces
+      # separation enabled — see worker/config.py SEPARATION_ENDPOINT).
+      SEPARATION_ENDPOINT: ${SEPARATION_ENDPOINT:-}
       # Pin the faster-whisper download cache to the `models` volume so a
       # container recreate doesn't re-download weights (local backend only).
       WHISPER_DOWNLOAD_ROOT: ${WHISPER_DOWNLOAD_ROOT:-/models}
@@ -155,6 +159,51 @@ services:
       start_period: 120s
     restart: unless-stopped
 
+  # Optional speech separation (overlapping speakers in mono recordings):
+  # pyannote SpeechSeparation. Start with: docker compose --profile separation up -d
+  # The `separate` pipeline stage degrades to LinTO-only diarization when
+  # this service is absent (same opt-in pattern as diarization).
+  separation:
+    image: transcripter-separation:0.1.0
+    profiles: ["separation"]
+    environment:
+      SEPARATION_DEVICE: cpu
+    ports:
+      - "8072:80"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:80/healthcheck', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+    restart: unless-stopped
+
+  # Optional diarization: BUT-FIT DiariZen (EEND-VC: overlap-aware local
+  # windows + global VBx clustering — no speaker-count cap, unlike
+  # Sortformer's hard 4). Replaces LinTO for 5+ speaker recordings.
+  # Start with: docker compose --profile diarizen up -d
+  # The worker's DIARIZATION_ENDPOINT points here when the bundled service
+  # is used (set DIARIZATION_ENDPOINT=http://diarizen:80 in .env, or leave
+  # the default config endpoint which this service answers on the same
+  # contract). Weights (~350 MB) download into the named volume on first
+  # start; license: MIT code + CC-BY-NC-4.0 weights (personal self-host).
+  diarizen:
+    image: transcripter-diarizen:0.1.0
+    profiles: ["diarizen"]
+    environment:
+      DIARIZEN_MODEL: ${DIARIZEN_MODEL:-BUT-FIT/diarizen-wavlm-base-s80-md}
+    volumes:
+      - diarizen-hf-cache:/cache/huggingface
+    ports:
+      - "8071:80"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:80/healthcheck', timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
   # Optional STT backend: OpenAI-compatible faster-whisper server.
   # Start with: docker compose --profile stt up -d
   # Route transcription to it via config.yaml:
@@ -231,6 +280,9 @@ services:
 volumes:
   pgdata:
   models:
+  # c2: transient staging for api+worker (/storage) — local NVMe.
+  # DiariZen HF weights cache (profile `diarizen`).
+  diarizen-hf-cache:
   # c2: transient staging for api+worker (/storage) — local NVMe.
   staging:
   speaches-hf-cache:

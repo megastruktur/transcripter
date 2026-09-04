@@ -49,7 +49,6 @@ from .workflows import (
     TagDigest,
 )
 
-# Module-level so tests can assert it matches every @activity.defn
 ACTIVITIES = [
     chunk,
     transcribe,

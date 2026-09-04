@@ -129,19 +129,18 @@ async def test_stereo_transcribe_tags_words_by_channel(rec, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stereo_diarize_namespaces_speakers(rec, monkeypatch):
-    import worker.diarize as diarize_mod
-
-    monkeypatch.setattr(diarize_mod, "diarize_audio", _fake_diarize)
+    monkeypatch.setattr(activities, "diarize_audio", _fake_diarize)
 
     details = await activities.diarize("rec1")
 
     assert details["speakers"] == ["mic:spk_0", "system:spk_0"]
+    assert details["channels"] == 2
     data = json.loads((rec / "diarization.json").read_text())
     speakers = {s["speaker"] for s in data["segments"]}
     assert speakers == {"mic:spk_0", "system:spk_0"}
-    # The per-chunk cache carries the namespaced labels (resume safety).
-    cached = json.loads((rec / "chunks" / "mic" / "chunk_000.diarization.json").read_text())
-    assert {s["speaker"] for s in cached["segments"]} == {"mic:spk_0"}
+    # Whole-file per channel: each channel FLAC went to the service as one
+    # request (global clustering), then namespaced.
+    assert data["segments"][0]["speaker"] == "mic:spk_0"
 
 
 @pytest.mark.asyncio

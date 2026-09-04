@@ -1,0 +1,24 @@
+# DiariZen pilot image — CPU inference
+# BUT-FIT DiariZen (MIT code, CC-BY-NC-4.0 weights), pyannote 3.1 fork inside
+FROM python:3.10-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ffmpeg build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# torch CPU per upstream constraints.txt
+RUN pip install --no-cache-dir torch==2.1.1 torchaudio==2.1.1 \
+        --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir \
+        einops h5py joblib librosa numpy==1.26.4 pandas pesq pystoi \
+        pyyaml scipy soundfile tabulate toml tqdm accelerate==1.6.0
+
+RUN git clone --depth 1 https://github.com/BUTSpeechFIT/DiariZen /opt/DiariZen
+RUN cd /opt/DiariZen && pip install --no-cache-dir -e . \
+    && cd pyannote-audio && pip install --no-cache-dir -e . -c ../constraints.txt
+
+ENV DIARIZEN_MODEL=BUT-FIT/diarizen-wavlm-base-s80-md
+# model: pruned base (fast CPU); large-v2 available for quality runs
+COPY diarizen-pilot/pilot.py /opt/pilot.py
+
+ENTRYPOINT ["python", "/opt/pilot.py"]

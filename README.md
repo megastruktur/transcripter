@@ -71,9 +71,10 @@ relative `./storage` bind and the `config.yaml` mount depend on it.
 | Concern       | Local answer                                                        |
 | ------------- | ------------------------------------------------------------------- |
 | Transcription | faster-whisper `small` (int8 CPU) inside the worker container       |
-| Diarization   | bundled LinTO container (`diarization` profile) — pyannote weights  |
+| Diarization   | bundled LinTO container (`diarization` profile) — pyannote weights |
 |               | are baked into the image: no HuggingFace token, no runtime download |
-| Summary       | off by default; optionally point at a local LLM server (below)      |
+| Separation    | optional pyannote SpeechSeparation (`separation` profile) — for  |
+|               | mono recordings with overlapping speakers (see below)            |
 | Recordings    | `server/storage/recordings/` (bind mount — repoint at any dir)      |
 | Vault         | `VAULT_DIR` when set — Obsidian vault: notes + audio; else          |
 |               | `./storage/transcripts` (local-only fallback)                        |
@@ -144,7 +145,11 @@ deduplication, grouping, memory):
 |              |                                          | ~10-min FLAC chunks + manifest so a whisper        |
 |              |                                          | repetition loop poisons ≤1 chunk, not the recording |
 | `transcribe` | faster-whisper (local) or OpenAI API     | model configurable, `small` by default             |
-| `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`)      |
+| `separate`   | pyannote SpeechSeparation (CPU, opt-in)  | mono recordings only; stereo skips (Layer 1        |
+|              |                                          | already separates sources); output feeds diarize  |
+| `diarize`    | LinTO `linto-diarization-pyannote` (CPU) | optional (`enabled: false` → stage `skipped`);    |
+|              |                                          | prefers separation.json when the separate stage   |
+|              |                                          | produced one (overlap-aware speakers)             |
 | `merge_speakers` | IoU word↔segment matching           | fuses transcript words with speaker turns          |
 | `summarize`  | OpenAI-compatible endpoint               | optional; stage reports `skipped` when no model    |
 | `enrich`     | LLM extraction → Neo4j + per-tag vector index | optional; graph off → `skipped` (best-effort) |
@@ -156,6 +161,36 @@ over the API and shown in the client. The recording page renders the
 transcript, speakers and summary tabs as sanitized Markdown
 (allowlist-only tags, no links/images); the events and JSON tabs stay
 raw.
+
+### Speech separation (overlapping speakers, mono recordings)
+
+For single-mic room recordings (meetings, TTRPG tables) where speakers
+talk over each other, plain diarization merges overlapping speech into one
+turn. The optional `separation` profile runs pyannote **SpeechSeparation**
+(PixIT/ToTaToNet) as a sidecar service; its output *is* the diarization —
+overlap-aware, with globally consistent speaker labels — and the diarize
+stage consumes it directly. Stereo dual-tap recordings (Layer 1) skip it.
+
+The model (`pyannote/speech-separation-ami-1.0`) is **gated** on
+HuggingFace. One-time setup:
+
+1. Accept the conditions on BOTH model cards while logged in:
+   <https://huggingface.co/pyannote/speech-separation-ami-1.0> and
+   <https://huggingface.co/pyannote/separation-ami-1.0> (the pipeline and
+   its separation weights are separate gated repos).
+2. Put the HF token in `server/.env`: `HF_TOKEN=hf_...`
+3. Build the image (weights bake in; runtime needs no token):
+   ```bash
+   cd server && set -a && source .env && set +a && \
+   DOCKER_BUILDKIT=1 docker build -f Dockerfile.separation \
+     --secret id=hf_token,env=HF_TOKEN -t transcripter-separation:0.1.0 .
+   ```
+4. Enable and point the worker at it (`server/.env`):
+   `SEPARATION_ENDPOINT=http://separation:80` (setting it forces the
+   stage on), then `docker compose --profile separation up -d`.
+
+Without the endpoint the `separate` stage reports `skipped` and diarize
+falls back to LinTO — separation is purely additive.
 
 ### Chunking (long recordings, CPU voice stacks)
 

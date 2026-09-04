@@ -41,6 +41,7 @@ from .db import (
     session,
     set_stage,
 )
+from .diarize import diarize_audio
 from .graph_gc import run_graph_gc as run_graph_gc_impl
 from .transcribe import (
     ApiTranscriber,
@@ -279,7 +280,6 @@ async def chunk(rec_id: str) -> dict:
         set_stage(rec_id, "chunk", StageStatus.failed, error=str(e))
         raise
 
-
 async def _heartbeat_while[T](aw: Awaitable[T]) -> T:
     """Heartbeat every 60 s while a long ML call runs (Temporal heartbeat
     timeout is 120 s — see workflows.py). Outside an activity context (unit
@@ -507,51 +507,11 @@ async def _transcribe_chunked(
 async def _diarize_chunked(
     rec_id: str, manifest: Manifest, c: WorkerConfig, channel: str | None = None
 ):
-    """Sequential per-chunk diarization (never parallel — same CPU voice
-    stack). Per-chunk progress persists, so the Temporal diarize retry
-    resumes at the failed chunk instead of re-running them all.
-
-    Speaker labels stay PER-CHUNK (spk_0 in chunk 1 is not spk_0 in chunk
-    2) — accepted: merge_speakers attributes words by time overlap, which
-    per-chunk labels satisfy. In stereo mode `channel` namespaces them
-    globally (mic:spk_0 vs system:spk_0) so the two sources' speakers can
-    never collide in the merged diarization.json."""
-    from .diarize import DiarizationResult, diarize_audio
-
-    meta = meta_dir(rec_id)
-    d = channel_dir(meta, channel) if channel else chunks_dir(meta)
-    total = len(manifest.chunks)
-    segments = []
-    speakers: set[str] = set()
-    prefix = f"{channel}:" if channel else ""
-    for ch in manifest.chunks:
-        result_path = d / f"chunk_{ch.index:03d}.diarization.json"
-        if ch.diarize != "done":
-            chunk_path = d / ch.file
-            if not chunk_path.exists():
-                raise RuntimeError(
-                    f"chunk file {ch.file} is gone (chunks are cleaned after "
-                    "merge_speakers); regenerate from stage 'chunk'"
-                )
-            timeout_sec = _chunk_budget(ch.end - ch.start, DIARIZE_BASE, DIARIZE_PER_MIN)
-            res = await _heartbeat_while(diarize_audio(chunk_path, c, timeout_sec))
-            # Namespace speakers before persisting: the per-chunk cache must
-            # carry the final labels so a resume never re-clashes them.
-            if channel:
-                for seg in res.segments:
-                    seg.speaker = f"{prefix}{seg.speaker}"
-                res.speakers = sorted({seg.speaker for seg in res.segments})
-            result_path.write_text(res.model_dump_json())
-            ch.diarize = "done"
-            save_manifest(manifest, meta, channel)  # resume boundary
-        else:
-            res = DiarizationResult.model_validate_json(
-                result_path.read_text(encoding="utf-8")
-            )
-        lo, hi = keep_window(ch.index, total, ch.end - ch.start, manifest.overlap_sec)
-        segments.extend(shift_into(res.segments, ch.start, lo, hi))
-        speakers.update(res.speakers)
-    return DiarizationResult(speakers=sorted(speakers), segments=segments)
+    """RETIRED: per-chunk diarization fragmented speaker identities (the
+    36-labels-on-123-minutes incident). DiariZen's global clustering made
+    the whole-file path the only one; kept out of the codebase — see the
+    diarize activity. This stub documents the removal."""
+    raise NotImplementedError("per-chunk diarization retired; use whole-file")
 
 
 @activity.defn
@@ -577,53 +537,52 @@ async def diarize(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_diarize(rec)
     try:
+        # DiariZen (the primary engine) needs the WHOLE recording in one
+        # request: its global VBx clustering is the only source of
+        # consistent speakers (per-chunk runs fragment identities — the
+        # 36-labels-on-123-minutes incident). Both the original audio and
+        # the stereo per-channel FLACs are available here (channels are
+        # cleaned up after merge_speakers, not before; a regenerate from
+        # diarize re-derives them via split_channels when needed).
         channels = channel_names(meta_dir(rec_id))
         if channels:
-            # Stereo: diarize each source separately; _diarize_chunked
-            # namespaces speakers (mic:spk_0, system:spk_0) so the two
-            # sources never collide. One shared-timeline diarization.json.
+            # Stereo: diarize each source's full-length FLAC; namespace
+            # speakers (mic:spk_0, system:spk_0) so the two sources never
+            # collide. One shared-timeline diarization.json.
             segments = []
             speakers: set[str] = set()
-            chunk_count = 0
             for name in channels:
-                ch_manifest = load_manifest(meta_dir(rec_id), name)
-                if ch_manifest is None:
-                    raise RuntimeError(
-                        f"stereo recording has no '{name}' chunk manifest; "
-                        "regenerate from stage 'chunk'"
-                    )
-                res = await _diarize_chunked(rec_id, ch_manifest, c, name)
+                ch_path = meta_dir(rec_id) / "channels" / f"{name}.flac"
+                if not ch_path.is_file():
+                    # Cleaned up after an earlier merge (retention) —
+                    # split_channels is idempotent and re-derives both
+                    # full-length channel FLACs from the original audio.
+                    pairs = split_channels(audio_file(rec_id), meta_dir(rec_id))
+                    ch_path = next(p for n, p in pairs if n == name)
+                res = await _heartbeat_while(diarize_audio(ch_path, c, timeout_sec))
+                prefix = f"{name}:"
+                for seg in res.segments:
+                    seg.speaker = f"{prefix}{seg.speaker}"
                 segments.extend(res.segments)
-                speakers.update(res.speakers)
-                chunk_count = max(chunk_count, len(ch_manifest.chunks))
+                speakers.update(seg.speaker for seg in res.segments)
             from .diarize import DiarizationResult
 
-            out.write_text(
-                DiarizationResult(
-                    speakers=sorted(speakers), segments=segments
-                ).model_dump_json()
+            result = DiarizationResult(
+                speakers=sorted(speakers), segments=segments
             )
+            out.write_text(result.model_dump_json())
             details = {
-                "speakers": sorted(speakers),
+                "speakers": result.speakers,
                 "channels": 2,
-                "chunks": chunk_count,
             }
             set_stage(rec_id, "diarize", StageStatus.done, details=details)
             return details
 
-        manifest = load_manifest(meta_dir(rec_id))
-        if manifest is not None:
-            result = await _diarize_chunked(rec_id, manifest, c)
-        else:
-            from .diarize import diarize_audio
-
-            result = await _heartbeat_while(
-                diarize_audio(audio_file(rec_id), c, timeout_sec)
-            )
+        result = await _heartbeat_while(
+            diarize_audio(audio_file(rec_id), c, timeout_sec)
+        )
         out.write_text(result.model_dump_json())
         details: dict = {"speakers": result.speakers}
-        if manifest is not None:
-            details["chunks"] = len(manifest.chunks)
         set_stage(rec_id, "diarize", StageStatus.done, details=details)
         return details
     except asyncio.CancelledError:
@@ -649,6 +608,10 @@ async def merge_speakers(rec_id: str) -> dict:
             cleanup_chunks(meta_dir(rec_id))
             return {"skipped": "no diarization"}
 
+        # Layer 2: separation-based diarization already attributes overlap
+        # words to per-speaker segments. Splicing per-speaker ASR on top of
+        # the mixed transcript would mix two timing domains and can worsen
+        # overlap text — deferred (merge.splice_overlaps holds the sketch).
         turns = write_diarized_transcript(meta_dir(rec_id))
         details = {"turns": turns}
         set_stage(rec_id, "merge_speakers", StageStatus.done, details=details)

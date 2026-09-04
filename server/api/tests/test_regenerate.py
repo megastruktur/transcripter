@@ -66,7 +66,7 @@ def test_regenerate_backfills_missing_stage_rows(client: TestClient) -> None:
     try:
         s.query(Stage).filter_by(recording_id=rid, kind="chunk").delete()
         s.commit()
-        assert s.query(Stage).filter_by(recording_id=rid).count() == 5
+        assert s.query(Stage).filter_by(recording_id=rid).count() == 6
     finally:
         gen.close()
 
@@ -79,7 +79,7 @@ def test_regenerate_backfills_missing_stage_rows(client: TestClient) -> None:
     s = next(gen)
     try:
         kinds = {st.kind for st in s.query(Stage).filter_by(recording_id=rid)}
-        assert kinds == {"chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
+        assert kinds == {"chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich"}
     finally:
         gen.close()
 

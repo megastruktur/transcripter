@@ -38,6 +38,15 @@ class DiarizationConfig(BaseModel):
     endpoint: str = "http://diarization:80"
 
 
+class SeparationConfig(BaseModel):
+    """RETIRED: pyannote SpeechSeparation stage (Layer 2). The `separate`
+    pipeline stage is gone — DiariZen subsumes it (overlap-aware windows
+    + global clustering). The model stays only so historical stage rows
+    keep parsing; no code path constructs it."""
+
+    enabled: bool = False
+    endpoint: str = "http://separation:80"
+
 class ChunkConfig(BaseModel):
     # OFF by default: short recordings gain nothing from slicing. Enable on
     # CPU voice stacks where a single long request can hit the whisper
@@ -187,6 +196,7 @@ class WorkerConfig(BaseModel):
     transcribe: TranscribeConfig = Field(default_factory=TranscribeConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
     diarization: DiarizationConfig = Field(default_factory=DiarizationConfig)
+    separation: SeparationConfig = Field(default_factory=SeparationConfig)
     chunk: ChunkConfig = Field(default_factory=ChunkConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -232,6 +242,8 @@ def load_config() -> WorkerConfig:
         cfg.database.url = env_db
     if env_diar := os.environ.get("DIARIZATION_ENDPOINT"):
         cfg.diarization.endpoint = env_diar
+    # SEPARATION_ENDPOINT: retired with the separate stage. A stale value
+    # in .env/compose is ignored (no stage left to enable).
     # Same priority pattern as DIARIZATION_ENDPOINT: a value set in the
     # environment (compose passes SUMMARIZE_MODEL from .env) wins over
     # config.yaml; unset/empty keeps the yaml value effective.

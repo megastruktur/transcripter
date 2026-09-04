@@ -44,7 +44,7 @@ class StageStatus(enum.Enum):
     skipped = "skipped"
 
 
-STAGE_KINDS = ("chunk", "transcribe", "diarize", "merge_speakers", "summarize", "enrich")
+STAGE_KINDS = ("chunk", "separate", "transcribe", "diarize", "merge_speakers", "summarize", "enrich")
 
 
 class Recording(Base):

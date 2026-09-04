@@ -233,38 +233,37 @@ async def test_chunked_transcribe_missing_files_tells_regenerate_chunk(rec, monk
 
 
 @pytest.mark.asyncio
-async def test_chunked_diarize_concatenates_and_resumes(rec, monkeypatch):
+async def test_chunked_diarize_is_whole_file_now(rec, monkeypatch):
+    """Chunks exist for ASR, but diarize must NOT consume them: DiariZen's
+    global clustering needs the whole recording (per-chunk runs fragmented
+    speaker identities — the 36-labels incident). One request, original
+    audio, global speakers pass through unshifted."""
     _manifest(rec)
     calls: list[str] = []
 
     async def fake_diarize(audio, cfg, timeout_sec=None):
         calls.append(audio.name)
-        if audio.name == "chunk_000.flac":
-            return DiarizationResult(
-                speakers=["spk_0"],
-                segments=[DiarSegment(start=0.0, end=599.0, speaker="spk_0")],
-            )
         return DiarizationResult(
-            speakers=["spk_0"],
-            segments=[DiarSegment(start=1.0, end=500.0, speaker="spk_0")],
+            speakers=["spk_0", "spk_1"],
+            segments=[
+                DiarSegment(start=0.0, end=599.0, speaker="spk_0"),
+                DiarSegment(start=599.0, end=1098.0, speaker="spk_1"),
+            ],
         )
 
-    import worker.diarize as diarize_mod
-
-    monkeypatch.setattr(diarize_mod, "diarize_audio", fake_diarize)
+    monkeypatch.setattr(activities, "diarize_audio", fake_diarize)
 
     details = await activities.diarize("rec1")
 
-    assert details["chunks"] == 2
+    # Exactly one request, and it carried the ORIGINAL audio file.
+    assert calls == ["audio.flac"]
+    assert details["speakers"] == ["spk_0", "spk_1"]
     data = json.loads((rec / "diarization.json").read_text())
-    # chunk 1 segment shifted +598 → 599..1098; speakers unioned.
-    assert [(s["start"], s["end"]) for s in data["segments"]] == [(0.0, 599.0), (599.0, 1098.0)]
-    assert data["speakers"] == ["spk_0"]
-
-    # All chunks done → a diarize retry (Temporal ×4) does zero HTTP calls.
-    calls.clear()
-    await activities.diarize("rec1")
-    assert calls == []
+    # Global timeline arrives unshifted — no per-chunk stitching.
+    assert [(s["start"], s["end"]) for s in data["segments"]] == [
+        (0.0, 599.0),
+        (599.0, 1098.0),
+    ]
 
 
 @pytest.mark.asyncio

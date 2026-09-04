@@ -47,9 +47,7 @@ async def test_disabled_skips_without_http(meta, monkeypatch):
     async def fail_call(*a, **kw):  # any HTTP attempt fails the test
         raise AssertionError("diarize_audio must not be called when disabled")
 
-    import worker.diarize as diarize_mod
-
-    monkeypatch.setattr(diarize_mod, "diarize_audio", fail_call)
+    monkeypatch.setattr(activities, "diarize_audio", fail_call)
     monkeypatch.setattr(activities, "set_stage", fake_set_stage)
 
     result = await activities.diarize("rec1")
@@ -81,9 +79,7 @@ async def test_enabled_calls_diarize(meta, monkeypatch):
         seen["timeout_sec"] = timeout_sec
         return FakeResult()
 
-    import worker.diarize as diarize_mod
-
-    monkeypatch.setattr(diarize_mod, "diarize_audio", fake_call)
+    monkeypatch.setattr(activities, "diarize_audio", fake_call)
     monkeypatch.setattr(activities, "set_stage", lambda *a, **kw: None)
 
     result = await activities.diarize("rec1")
