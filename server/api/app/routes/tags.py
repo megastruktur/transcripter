@@ -58,7 +58,14 @@ _TAG_RE = re.compile(r"^[\w][ \w.-]{0,63}$", re.UNICODE)
 
 
 class DigestRequest(BaseModel):
-    last_n: int = Field(default=5, ge=1, le=50)
+    """POST /digest body. All-optional: the client fires a bare POST
+    (no JSON body at all — curl-style trigger), and FastAPI would 422 a
+    required-model parameter before any handler code runs. The endpoint
+    resolves ``last_n`` itself; ``last_n`` stays a Field so an explicit
+    JSON body keeps the same validation as before."""
+
+    last_n: int | None = Field(default=None, ge=1, le=50)
+
 
 
 def _normalize_tag(raw: str) -> str:
@@ -200,9 +207,9 @@ def get_timeline(
 
 @router.post("/{tag}/digest", status_code=202)
 async def post_digest(
-    body: DigestRequest,
     request: Request,
     tag: Annotated[str, Path()],
+    body: DigestRequest | None = None,
 ) -> dict:
     cfg: ServerConfig = request.app.state.config
     norm = _normalize_tag(tag)
@@ -217,10 +224,11 @@ async def post_digest(
                 "compose graph profile or set graph.uri in config.yaml"
             ),
         )
+    last_n = body.last_n if body and body.last_n is not None else 5
     try:
         # Attribute access (not ``from app.temporal_client import start_digest``)
         # so the conftest's monkeypatch on the module attribute is honored.
-        workflow_id = await temporal_client.start_digest(norm, body.last_n)
+        workflow_id = await temporal_client.start_digest(norm, last_n)
     except Exception:  # noqa: BLE001 — same blind-catch shape as recordings.update_recording
         # Temporal being unreachable should not look like a 500 to the
         # client: same shape as PATCH rename uses (log + 503).
@@ -228,7 +236,7 @@ async def post_digest(
         raise HTTPException(
             status_code=503, detail="temporal unavailable; try again later"
         )
-    return {"workflow_id": workflow_id, "tag": norm, "last_n": body.last_n}
+    return {"workflow_id": workflow_id, "tag": norm, "last_n": last_n}
 
 
 @router.get("/{tag}/digest")

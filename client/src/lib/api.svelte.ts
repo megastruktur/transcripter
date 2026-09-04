@@ -298,12 +298,21 @@ export async function fetchDigest(cfg: ApiConfig, tag: string): Promise<string> 
 }
 
 /** Trigger digest (re)generation: the server replies 202 and runs the
- * workflow asynchronously — poll fetchDigest until the note appears. */
+ * workflow asynchronously — poll fetchDigest until the note appears.
+ * Body `{}` keeps the POST a JSON request (the endpoint accepts a bare
+ * POST too, but an explicit empty object documents the contract and is
+ * safe against future required fields). */
 export async function regenerateDigest(cfg: ApiConfig, tag: string): Promise<void> {
-	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest`, { method: 'POST' });
+	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest`, {
+		method: 'POST',
+		body: JSON.stringify({})
+	});
 	if (!resp.ok) {
-		const detail = await resp.json().catch(() => ({ detail: resp.status }));
-		throw new Error(detail.detail ?? `digest ${resp.status}`);
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `digest ${resp.status}`),
+			{ status: resp.status }
+		);
 	}
 }
 

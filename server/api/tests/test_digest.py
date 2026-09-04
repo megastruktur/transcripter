@@ -199,3 +199,19 @@ def test_digest_calls_temporal_client_with_normalized_tag(
     r = client.post("/tags/%20pathfinder%20/digest", json={"last_n": 7})
     assert r.status_code == 202
     temporal_client.start_digest.assert_awaited_once_with("pathfinder", 7)
+
+
+def test_digest_post_without_body_returns_202_default(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-09-04 regression: the client fired a bare POST (no JSON body)
+    and FastAPI 422'd the required DigestRequest model before any handler
+    code ran — the UI surfaced it as "Digest request failed:
+    [object Object]". The body is now optional; no body = last_n 5."""
+    _enable_graph(client, monkeypatch)
+    r = client.post("/tags/pathfinder/digest")
+    assert r.status_code == 202
+    assert r.json()["last_n"] == 5
+    from app import temporal_client
+
+    temporal_client.start_digest.assert_awaited_once_with("pathfinder", 5)
