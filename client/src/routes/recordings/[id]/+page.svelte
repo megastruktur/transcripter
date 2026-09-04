@@ -467,17 +467,24 @@
 		} catch (caught) {
 			if (digestTag !== tag) return;
 			const status = (caught as { status?: number }).status;
-			if (status === 404) {
-				if (Date.now() - startedAt >= DIGEST_POLL_BUDGET_MS) {
-					digestGenerating = false;
-					digestNote = 'Still generating — check again in a minute.';
-					return;
-				}
+			// 404 (note not written yet) and status-less transport blips
+			// (webview "Failed to fetch") are transient: keep polling while
+			// the budget lasts. A real HTTP status (401/500…) is terminal —
+			// retrying cannot fix it (2026-09-04: one webview blip aborted
+			// the whole poll loop and stranded the panel on an error).
+			if (
+				(status === 404 || status === undefined) &&
+				Date.now() - startedAt < DIGEST_POLL_BUDGET_MS
+			) {
 				scheduleDigestPoll(tag, startedAt);
 				return;
 			}
 			digestGenerating = false;
-			digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+			if (status === 404) {
+				digestNote = 'Still generating — check back in a minute.';
+			} else {
+				digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+			}
 		}
 	}
 
