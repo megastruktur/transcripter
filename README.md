@@ -458,6 +458,12 @@ non-empty word timestamps end-to-end. Image updates go through
 
 ## Server setup
 
+> **Megaserver prod status (2026-09-04):** Komodo stack `transcripter` runs
+> api/worker images `ghcr.io/megastruktur/transcripter:v0.23.1-api|worker` —
+> **Python 3.14.7** (first 3.14 release; v0.23.0 and earlier were 3.12).
+> Compose pins the released tags in `server/docker-compose.yml`; deploy via
+> Komodo DeployStack (git pull + compose up), never host `.env`.
+
 Requirements: Docker + Docker Compose plugin, ~4 GB free RAM for models.
 
 ```bash
