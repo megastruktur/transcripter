@@ -442,7 +442,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	onpointerdown={(event) => { if (memoryMenuOpen && !(event.target instanceof Element && event.target.closest('.memory-menu-wrap'))) closeMemoryMenu(); }}
 />
 
-<section class="page tag-page">
+<section class="page tag-page" class:tag-page--lattice={tab === 'lattice' && !loading && !!data}>
 	<header class="tag-header">
 		<BackButton href="/vault" label="Back to vault" />
 		{#if loading}
@@ -499,18 +499,20 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	{:else if data}
 		<ViewTabs tabs={TABS} active={tab} ariaLabel="Tag views" onchange={(key) => switchTab(key as TabKey)} />
 
-		<SearchRecess
-			ariaLabel={`Semantic search · ${tag}`}
-			placeholder="Search this tag's sessions…"
-			bind:query={searchQuery}
-			loading={searchLoading}
-			error={searchError}
-			note={searchNote}
-			results={searchResults}
-			onsearch={runSearch}
-			onclear={clearSearch}
-			onopenhit={openHit}
-		/>
+		{#if tab !== 'lattice'}
+			<SearchRecess
+				ariaLabel={`Semantic search · ${tag}`}
+				placeholder="Search this tag's sessions…"
+				bind:query={searchQuery}
+				loading={searchLoading}
+				error={searchError}
+				note={searchNote}
+				results={searchResults}
+				onsearch={runSearch}
+				onclear={clearSearch}
+				onopenhit={openHit}
+			/>
+		{/if}
 
 		{#if tab === 'timeline'}
 			<div class="session-list">
@@ -618,6 +620,10 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 </section>
 <style>
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
+	/* Lattice tab: the page becomes the canvas frame — height chains
+	   down from the scroll viewport so the graph fills the workspace
+	   instead of a fixed 46vh strip. Other tabs keep normal flow. */
+	.tag-page--lattice { height: 100%; }
 	.tag-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
 	.memory-menu-wrap { position: relative; display: flex; min-width: 0; }
 	.memory-toggle { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; cursor: pointer; line-height: 0; }

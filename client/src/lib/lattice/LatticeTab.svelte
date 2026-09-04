@@ -1,15 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import dagre from '@dagrejs/dagre';
-	import {
-		SvelteFlow,
-		Background,
-		type Node,
-		type Edge
-	} from '@xyflow/svelte';
-	import '@xyflow/svelte/dist/style.css';
-	import LatticeNode from '$lib/lattice/LatticeNode.svelte';
-	import LatticeEdge from '$lib/lattice/LatticeEdge.svelte';
+	import { SvelteFlowProvider } from '@xyflow/svelte';
+	import LatticeCanvas from '$lib/lattice/LatticeCanvas.svelte';
 	import EmptyState from '$lib/EmptyState.svelte';
 	import Skeleton from '$lib/Skeleton.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -25,9 +17,11 @@
 	} from '$lib/api.svelte';
 
 	/** Phase D Lattice tab: the tag's knowledge graph. Desktop = PCB
-	 * node-link canvas (dagre TB, orthogonal step edges); narrow
-	 * viewports = edge list (node-link is unreadable at 360px). Node
-	 * tap opens the entity drawer (relations of the picked entity). */
+	 * node-link canvas filling the page (dagre TB in portrait, LR in
+	 * landscape — owned by LatticeCanvas); narrow viewports = edge list
+	 * (node-link is unreadable at 360px). Node tap opens the entity
+	 * drawer (relations of the picked entity); wide mode docks it over
+	 * the canvas's right edge, compact keeps it in flow. */
 
 	let {
 		tag,
@@ -38,9 +32,6 @@
 		entitiesSeed: GraphEntity[];
 		relationsSeed: GraphRelation[];
 	} = $props();
-
-	const nodeTypes = { lattice: LatticeNode };
-	const edgeTypes = { trace: LatticeEdge };
 
 	let loading = $state(true);
 	let error = $state('');
@@ -58,39 +49,6 @@
 
 	// Edge-list filter (compact mode).
 	let filterText = $state('');
-
-	const nodes = $state.raw<Node<Record<string, unknown>>[]>([]);
-	const edges = $state.raw<Edge<Record<string, unknown>>[]>([]);
-
-	const _NODE_W = 148;
-	const _NODE_H = 44;
-
-	function buildCanvas(): void {
-		const g = new dagre.graphlib.Graph();
-		g.setDefaultEdgeLabel(() => ({}));
-		g.setGraph({ rankdir: 'TB', nodesep: 28, ranksep: 52, marginx: 16, marginy: 16 });
-		for (const ent of entities) g.setNode(ent.slug, { width: _NODE_W, height: _NODE_H });
-		for (const rel of relations) g.setEdge(rel.from, rel.to);
-		dagre.layout(g);
-		const positioned = entities.map((ent) => {
-			const pos = g.node(ent.slug);
-			return {
-				id: ent.slug,
-				type: 'lattice',
-				position: { x: pos.x - _NODE_W / 2, y: pos.y - _NODE_H / 2 },
-				data: { slug: ent.slug, label: ent.label, type: ent.type, sessions: ent.sessions }
-			};
-		});
-		const traced = relations.map((rel, i) => ({
-			id: `t${i}-${rel.from}-${rel.to}`,
-			type: 'trace',
-			source: rel.from,
-			target: rel.to,
-			label: rel.type
-		}));
-		nodes.splice(0, nodes.length, ...positioned);
-		edges.splice(0, edges.length, ...traced);
-	}
 
 	const filteredRelations = $derived(
 		relations.filter((r) => {
@@ -116,7 +74,6 @@
 			const data = await fetchGraph(loadApiConfig(), tag);
 			entities = data.entities;
 			relations = data.relations;
-			if (!compact) buildCanvas();
 		} catch (caught) {
 			const status = (caught as { status?: number }).status;
 			if (status === 409) unavailable = true;
@@ -127,13 +84,8 @@
 	}
 
 	function onResize(): void {
-		const wasCompact = compact;
 		compact = window.innerWidth <= 420;
-		// Crossing the breakpoint (re)builds the canvas: entering wide
-		// needs positions, leaving wide makes them stale (harmless).
-		if (!wasCompact && !compact && entities.length > 0) buildCanvas();
 	}
-
 	onMount(() => {
 		// Seed from the already-fetched timeline when present (instant
 		// render); the graph endpoint refines with session counts.
@@ -141,7 +93,6 @@
 			entities = entitiesSeed;
 			relations = relationsSeed;
 			loading = false;
-			if (!compact) buildCanvas();
 		}
 		onResize();
 		window.addEventListener('resize', onResize);
@@ -300,34 +251,29 @@
 		{/if}
 	</div>
 {:else}
-	<div class="lattice-canvas">
-		<SvelteFlow
-			{nodes}
-			{edges}
-			{nodeTypes}
-			{edgeTypes}
-			fitView
-			panOnDrag
-			zoomOnScroll
-			nodesConnectable={false}
-			elementsSelectable
-			proOptions={{ hideAttribution: true }}
-			onnodeclick={({ node }) => (pickedSlug = (node.data as { slug?: string }).slug ?? null)}
-		>
-			<Background gap={22} size={1.2} bgColor="transparent" patternColor="rgba(231,214,190,0.06)" />
-		</SvelteFlow>
+	<div class="lattice-viewport">
+		<SvelteFlowProvider>
+			<LatticeCanvas {entities} {relations} onpick={(slug) => (pickedSlug = slug || null)} />
+		</SvelteFlowProvider>
+		{#if picked}
+			{@render drawerContent(picked, true)}
+		{/if}
 	</div>
 {/if}
 
-{#if picked}
-	<aside class="lattice-drawer" aria-label={`Entity ${picked.label}`}>
+{#if compact && picked}
+	{@render drawerContent(picked)}
+{/if}
+{#snippet drawerContent(entity: GraphEntity, overlay = false)}
+	<aside class="lattice-drawer" class:lattice-drawer--overlay={overlay} aria-label={`Entity ${entity.label}`}>
 		<header class="lattice-drawer-head">
-			<strong>{picked.label}</strong>
-			<small>{picked.type || 'entity'} · {picked.sessions} session{picked.sessions === 1 ? '' : 's'}</small>
+			<strong>{entity.label}</strong>
+			<small>{entity.type || 'entity'} · {entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
 			<button class="lattice-drawer-close" type="button" onclick={() => { pickedSlug = null; resetActions(); }} aria-label="Close entity panel">
 				<Icon name="close" size={11} strokeWidth={1.6} />
 			</button>
 		</header>
+
 		{#if mergeOpen}
 			<form
 				class="lattice-act-form"
@@ -336,7 +282,7 @@
 					void doMerge();
 				}}
 			>
-				<label class="lattice-act-label" for="lattice-merge-target">Fold “{picked.label}” into</label>
+				<label class="lattice-act-label" for="lattice-merge-target">Fold “{entity.label}” into</label>
 				<select id="lattice-merge-target" class="lattice-act-select" bind:value={mergeTarget} disabled={actSaving}>
 					<option value="" disabled>pick the surviving entity…</option>
 					{#each drawerTargets as ent (ent.slug)}
@@ -360,7 +306,7 @@
 					void doLink();
 				}}
 			>
-				<label class="lattice-act-label" for="lattice-link-target">Link “{picked.label}” to</label>
+				<label class="lattice-act-label" for="lattice-link-target">Link “{entity.label}” to</label>
 				<select id="lattice-link-target" class="lattice-act-select" bind:value={linkTarget} disabled={actSaving}>
 					<option value="" disabled>pick an entity…</option>
 					{#each drawerTargets as ent (ent.slug)}
@@ -386,8 +332,8 @@
 		{:else}
 			{#each pickedEdges as rel (rel.from + rel.to + rel.type)}
 				<div class="lattice-drawer-edge">
-					<span>{rel.from === picked.slug ? '→' : '←'}</span>
-					<strong>{labelOf(rel.from === picked.slug ? rel.to : rel.from)}</strong>
+					<span>{rel.from === entity.slug ? '→' : '←'}</span>
+					<strong>{labelOf(rel.from === entity.slug ? rel.to : rel.from)}</strong>
 					<em>{rel.type}</em>
 					<small>{rel.sessions}×</small>
 					{#if edgeArmed === edgeKey(rel)}
@@ -421,28 +367,22 @@
 				<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => void doDeleteEntity()} title="Confirm delete">Delete?</button>
 				<button class="lattice-edge-act" type="button" disabled={actSaving} onclick={() => (delArmed = false)} title="Cancel delete">No</button>
 			{:else}
-				<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => { resetActions(); delArmed = true; }} title="Delete entity" aria-label={`Delete entity ${picked.label}`}>
+				<button class="lattice-edge-act lattice-edge-danger" type="button" disabled={actSaving} onclick={() => { resetActions(); delArmed = true; }} title="Delete entity" aria-label={`Delete entity ${entity.label}`}>
 					<Icon name="trash" size={11} strokeWidth={1.6} />
 				</button>
 			{/if}
 		</footer>
 	</aside>
-{/if}
+{/snippet}
 
 <style>
-	.lattice-canvas {
+	.lattice-viewport {
+		flex: 1 1 auto;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
 		position: relative;
-		overflow: hidden;
-		height: min(46vh, 360px);
-		min-height: 240px;
-		background: rgba(0, 0, 0, 0.18);
-		box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.32);
-		border-top: 1px solid var(--line);
-		border-bottom: 1px solid var(--line);
 	}
-	/* Library default paints edge labels white-on-transparent; the tab
-	   owns the PCB palette — void plate, ash text (WCAG on --void). */
-	:global(.svelte-flow__edge-label) { background: var(--void); color: var(--ash); }
 	.lattice-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.lattice-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
 	.lattice-error span { color: #c6baaa; }
@@ -458,6 +398,24 @@
 	.lattice-edge-sessions { font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; }
 	.lattice-empty { margin: 0; padding: 10px 2px; color: var(--ash); font-size: 11px; }
 	.lattice-drawer { margin-top: 8px; padding: 9px 11px; background: rgba(0,0,0,.22); border-top: 1px solid var(--line); box-shadow: inset 0 1px 3px rgba(0,0,0,.3); }
+	/* Wide mode docks the drawer over the canvas's right edge — a
+	   popover-style plate (perimeter border is correct for overlays);
+	   compact keeps the in-flow recess under the edge list. Must stay
+	   AFTER .lattice-drawer: equal specificity, source order wins. */
+	.lattice-drawer--overlay {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		bottom: 6px;
+		z-index: 20;
+		width: min(248px, calc(100% - 24px));
+		margin: 0;
+		overflow-y: auto;
+		background: var(--iron-raised);
+		border: 1px solid var(--line);
+		border-radius: 3px;
+		box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
+	}
 	.lattice-drawer-head { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
 	.lattice-drawer-head strong { font-size: 12px; color: var(--bone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.lattice-drawer-head small { grid-column: 1; font-size: 9px; color: #8b8278; }

@@ -3,12 +3,18 @@
 
 	/** PCB trace: orthogonal step with right-angle corners only, ash
 	 * stroke, the relation type as a void-backed label at the trace's
-	 * elbow (non-interactive — edge actions live in the node drawer). */
-	let { id, sourceX, sourceY, targetX, targetY, label }: EdgeProps = $props();
+	 * elbow (non-interactive — edge actions live in the node drawer).
+	 * The step direction follows the dagre rank direction: vertical
+	 * elbow for TB, horizontal elbow for LR. */
+	let { id, sourceX, sourceY, targetX, targetY, label, data }: EdgeProps = $props();
 
+	const horizontal = $derived((data as { horizontal?: boolean } | undefined)?.horizontal === true);
+	const midX = $derived((targetX - sourceX) / 2 + sourceX);
 	const midY = $derived((targetY - sourceY) / 2 + sourceY);
 	const edgePath = $derived(
-		`M ${sourceX} ${sourceY} L ${sourceX} ${midY} L ${targetX} ${midY} L ${targetX} ${targetY}`
+		horizontal
+			? `M ${sourceX} ${sourceY} L ${midX} ${sourceY} L ${midX} ${targetY} L ${targetX} ${targetY}`
+			: `M ${sourceX} ${sourceY} L ${sourceX} ${midY} L ${targetX} ${midY} L ${targetX} ${targetY}`
 	);
 	const center = $derived(getEdgeCenter({ sourceX, sourceY, targetX, targetY }));
 </script>

@@ -3,13 +3,16 @@
 
 	/** Lattice entity node: a PCB pad — iron-raised surface, type accent
 	 * as the left solder-mask stripe, bone label, ash type micro-label.
-	 * The tab builds node.data as { slug, label, type, sessions }; the
-	 * generic-free NodeProps keeps this compatible with NodeTypes. */
+	 * The canvas builds node.data as { slug, label, type, sessions,
+	 * horizontal }; the generic-free NodeProps keeps this compatible
+	 * with NodeTypes. Handles follow the dagre rank direction: Top/
+	 * Bottom for TB, Left/Right for LR. */
 	let { data }: NodeProps = $props();
 
 	const entity = $derived(data ?? {});
 	const label = $derived(typeof entity.label === 'string' ? entity.label : '');
 	const type = $derived(typeof entity.type === 'string' ? entity.type : '');
+	const horizontal = $derived(entity.horizontal === true);
 	const accent = $derived(typeAccent(type));
 
 	function typeAccent(type: string): string {
@@ -31,14 +34,14 @@
 	}
 </script>
 
-<Handle type="target" position={Position.Top} class="lattice-handle" />
+<Handle type="target" position={horizontal ? Position.Left : Position.Top} class="lattice-handle" />
 <div class="lattice-node" style="--node-accent: {accent}" title={`${label} · ${type || 'entity'}`}>
 	<span class="lattice-node-label">{label}</span>
 	{#if type}
 		<span class="lattice-node-type">{type}</span>
 	{/if}
 </div>
-<Handle type="source" position={Position.Bottom} class="lattice-handle" />
+<Handle type="source" position={horizontal ? Position.Right : Position.Bottom} class="lattice-handle" />
 
 <style>
 	.lattice-node {
