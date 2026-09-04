@@ -330,3 +330,68 @@ def test_migrate_type_columns_idempotent() -> None:
 
     main._migrate_type_columns()
     main._migrate_type_columns()
+
+
+def test_backfill_tag_defs_registers_existing_tags(client: TestClient) -> None:
+    """The startup superset backfill: tags already on recordings (created
+    before the registry existed, restored backups, manual INSERTs) gain
+    tag_defs rows. The client fixture's recordings carry tags, but
+    auto-registration (v0.24.0) already covers THAT path — simulate the
+    pre-registry state by deleting the rows first, then prove the
+    backfill re-creates them."""
+    from app import main
+    from app.db import TagDef, get_session
+
+    # A recording with tags — but NOT via the registry-aware routes: the
+    # point is tags that predate/evade auto-registration.
+    client.post("/recordings", json={"title": "pre-registry", "tags": ["legacy tag"]})
+    gen = get_session()
+    try:
+        s = next(gen)
+        s.query(TagDef).delete()
+        s.commit()
+    finally:
+        gen.close()
+
+    main._backfill_tag_defs()
+
+    gen = get_session()
+    try:
+        s = next(gen)
+        names = {d.name for d in s.query(TagDef).all()}
+        assert len(names) > 0  # the fixture created at least one recording
+        # every tag of every recording is registered
+        from app.db import Recording
+
+        rec_tags = {
+            t for rec in s.query(Recording).all() for t in (rec.tags or []) if t
+        }
+        assert rec_tags <= names
+    finally:
+        gen.close()
+
+
+def test_backfill_tag_defs_preserves_vocabulary_and_idempotent() -> None:
+    from app import main
+    from app.db import TagDef, get_session
+
+    # A pre-existing registry row with a vocabulary must survive the
+    # backfill untouched (ON CONFLICT DO NOTHING).
+    gen = get_session()
+    try:
+        s = next(gen)
+        s.add(TagDef(name="dnd", vocabulary=["Абсалом"]))
+        s.commit()
+    finally:
+        gen.close()
+
+    main._backfill_tag_defs()
+    main._backfill_tag_defs()  # re-run: still no-op
+
+    gen = get_session()
+    try:
+        s = next(gen)
+        dnd = s.get(TagDef, "dnd")
+        assert dnd is not None and dnd.vocabulary == ["Абсалом"]
+    finally:
+        gen.close()

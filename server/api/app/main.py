@@ -138,9 +138,53 @@ def _migrate_type_columns() -> None:
         )
 
 
+def _backfill_tag_defs() -> None:
+    """Tag-registry superset invariant: every tag carried by any recording
+    has a tag_defs row (auto-registration normally maintains this on
+    create/PATCH; this catches recordings predating the registry — the
+    v0.24.0 deploy had five tags with zero registry rows and the tag
+    pages 404'd — plus restores from old backups and manual INSERTs).
+    NOT one-off by design: ON CONFLICT DO NOTHING makes re-runs free, so
+    the invariant is re-established on every startup. Runs on BOTH
+    dialects (Postgres: SQL unnest; SQLite: ORM loop — the JSON-variant
+    tags column has no unnest; the table always exists, create_all ran
+    above)."""
+    from sqlalchemy import text
+
+    if engine().dialect.name == "postgresql":
+        with engine().begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO tag_defs (name, vocabulary, created_at, updated_at) "
+                    "SELECT DISTINCT t, '{}'::text[], now(), now() "
+                    "FROM recordings, unnest(recordings.tags) AS t "
+                    "WHERE t <> '' ON CONFLICT (name) DO NOTHING"
+                )
+            )
+    else:
+        from app.db import Recording, TagDef, get_session
+
+        gen = get_session()
+        try:
+            session = next(gen)
+            names = {
+                tag
+                for rec in session.query(Recording).all()
+                for tag in (rec.tags or [])
+                if tag
+            }
+            for name in names:
+                if session.get(TagDef, name) is None:
+                    session.add(TagDef(name=name))
+            session.commit()
+        finally:
+            gen.close()
+
+
 _migrate_stage_kind_enum()
 _migrate_tags_column()
 _migrate_type_columns()
+_backfill_tag_defs()
 
 app.include_router(recordings.router)
 app.include_router(regenerate.router)
