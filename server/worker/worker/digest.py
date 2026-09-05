@@ -746,7 +746,7 @@ def run_digest(
     # row / empty context → empty string → the section collapses.
     with session() as s:
         row = s.get(TagDef, tag)
-        tag_context = (row.context or "") if row is not None else ""
+        tag_context = (row.context or "").strip() if row is not None else ""
     prompt = _render_prompt(tag, last_n, input.rows, input.graph, tag_context)
     body = _call_llm(prompt, cfg)
     path = write_digest(transcripts_root, input, body)

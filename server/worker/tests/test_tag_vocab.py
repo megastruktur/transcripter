@@ -97,7 +97,7 @@ def test_context_block_headings_and_union(Session):
     assert "### a\nАбсалом — жрец-еретик." in out
     assert "### b\nСпринт по биллингу." in out
     assert "### c" not in out
-    # registry order preserved, sections separated by a blank line
+    # recording tag order preserved, sections separated by a blank line
     assert out.index("### a") < out.index("### b")
     assert "\n\n" in out
 

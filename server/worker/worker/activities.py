@@ -258,7 +258,7 @@ def _context_block(s, tags: list[str]) -> str | None:
     """Tag registry contexts → one narrative block for LLM prompts, or
     None when no tag carries a non-empty ``tag_defs.context``.
 
-    Union across the recording's tags in registry order; every non-empty
+    Union across the recording's tags in recording tag order; every non-empty
     context renders under its own ``### <tag>`` heading so the model can
     tell WHICH series the context describes (a recording may bridge two
     campaigns/projects). NOT an ASR source: the initial_prompt is decoded
