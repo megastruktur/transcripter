@@ -147,6 +147,11 @@
 		overflow: hidden;
 		flex: 1 1 auto;
 		min-height: 240px;
+		/* WebKit/WebView2 flex cells can let a percentage-measured child
+		   (SvelteFlow sizes itself from its parent) push past the cell —
+		   hard-clamp to the viewport flex chain so the canvas can never
+		   grow the page under the tab strip (all engines, 2026-09-05). */
+		max-height: 100%;
 		background: rgba(0, 0, 0, 0.18);
 		box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.32);
 		border-top: 1px solid var(--line);

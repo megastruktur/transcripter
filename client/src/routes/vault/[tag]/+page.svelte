@@ -629,8 +629,12 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
 	/* Lattice tab: the page becomes the canvas frame — height chains
 	   down from the scroll viewport so the graph fills the workspace
-	   instead of a fixed 46vh strip. Other tabs keep normal flow. */
-	.tag-page--lattice { height: 100%; }
+	   instead of a fixed 46vh strip. Other tabs keep normal flow.
+	   overflow:hidden — the lattice view is a fixed frame by design:
+	   nothing inside may grow the page (a WebView flex-quirk letting
+	   the canvas out of its cell would otherwise scroll the tab strip
+	   out of sight — reported on all engines 2026-09-05). */
+	.tag-page--lattice { height: 100%; overflow: hidden; }
 	.tag-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
 	.memory-menu-wrap { position: relative; display: flex; min-width: 0; }
 	.memory-toggle { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; cursor: pointer; line-height: 0; }
