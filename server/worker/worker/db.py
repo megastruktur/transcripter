@@ -150,6 +150,10 @@ class TagDef(Base):
         nullable=False,
         default=list,
     )
+    # Free-form operator context injected into the tag's LLM prompts
+    # (summarize / enrich / digest) — see app.db.TagDef. The worker only
+    # READS it; the API owns writes. Change IN SYNC with app.db.TagDef.
+    context: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 

@@ -56,6 +56,32 @@ def test_empty_key_omits_header(meta, monkeypatch):
     assert "authorization" not in (sent["headers"] or {})
 
 
+def test_context_block_rides_system_message(meta, monkeypatch):
+    """Tag context must land inside the SINGLE system message (never a
+    second system entry) between the recap and the glossary."""
+    sent = _capture(monkeypatch)
+    summarize_transcript(
+        meta,
+        _cfg(),
+        recap_block="RECAP",
+        vocabulary_block="GLOSS",
+        context_block="### pf\nПартия: Абсалом.",
+    )
+    msgs = sent["json"]["messages"]
+    system = msgs[0]["content"]
+    assert len([m for m in msgs if m["role"] == "system"]) == 1
+    assert "Контекст серии от оператора" in system
+    assert "### pf\nПартия: Абсалом." in system
+    # order: recap → context → glossary (terminology stays last)
+    assert system.index("RECAP") < system.index("Контекст серии") < system.index("GLOSS")
+
+
+def test_context_block_absent_changes_nothing(meta, monkeypatch):
+    sent = _capture(monkeypatch)
+    summarize_transcript(meta, _cfg())
+    assert "Контекст серии" not in sent["json"]["messages"][0]["content"]
+
+
 def test_key_env_sends_bearer(meta, monkeypatch):
     sent = _capture(monkeypatch)
     summarize_transcript(meta, _cfg("SUM_KEY", monkeypatch))

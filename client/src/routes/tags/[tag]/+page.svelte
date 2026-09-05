@@ -8,7 +8,7 @@
 		deleteTagDef,
 		fetchTagDef,
 		loadApiConfig,
-		updateTagVocabulary,
+		updateTag,
 		type TagDef
 	} from '$lib/api.svelte';
 
@@ -21,6 +21,9 @@
 	// list on save (full-list semantics, same as recording tags PATCH).
 	let words = $state<string[]>([]);
 	let newWord = $state('');
+	// Context editor state: local text while editing, PATCHed on save.
+	// One Save commits BOTH editors (single PATCH, single toast slot).
+	let contextText = $state('');
 	let saving = $state(false);
 	let saveError = $state('');
 	let savedAt = $state('');
@@ -31,6 +34,7 @@
 		try {
 			def = await fetchTagDef(loadApiConfig(), tag);
 			words = [...def.vocabulary];
+			contextText = def.context;
 			error = '';
 		} catch (caught) {
 			error = String(caught);
@@ -60,8 +64,12 @@
 		saving = true;
 		saveError = '';
 		try {
-			def = await updateTagVocabulary(loadApiConfig(), tag, words);
+			def = await updateTag(loadApiConfig(), tag, {
+				vocabulary: words,
+				context: contextText
+			});
 			words = [...def.vocabulary];
+			contextText = def.context;
 			savedAt = new Date().toLocaleTimeString();
 		} catch (caught) {
 			saveError = String(caught);
@@ -141,7 +149,7 @@
 
 			<div class="vocab-actions">
 				<button class="vocab-save" type="button" disabled={saving} onclick={() => void save()}>
-					{saving ? 'Saving…' : 'Save vocabulary'}
+					{saving ? 'Saving…' : 'Save tag'}
 				</button>
 				{#if savedAt}
 					<span class="vocab-saved">Saved {savedAt}</span>
@@ -151,6 +159,20 @@
 				{/if}
 			</div>
 		</div>
+
+		<div class="vocab-section">
+			<div class="vocab-heading">
+				<strong>Context</strong>
+				<span class="vocab-hint">What the LLM should know about this series — players, characters, projects, tone. Applied to summaries, extraction and digests on the next run.</span>
+			</div>
+			<textarea
+				class="context-input"
+				rows="6"
+				placeholder="Setting, who is who, standing instructions…"
+				bind:value={contextText}
+			></textarea>
+		</div>
+
 
 		<div class="danger-section">
 			{#if !confirmingDelete}
@@ -187,6 +209,9 @@
 	.vocab-heading { display: grid; gap: 2px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 	.vocab-heading strong { color: #b5aa9c; font-size: 12px; }
 	.vocab-hint { color: #746d64; font-size: 10px; }
+	.context-input { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; font-family: inherit; line-height: 1.45; resize: vertical; }
+	.context-input::placeholder { color: #746d64; }
+	.context-input:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
 
 	.vocab-add { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 	.vocab-add input { min-height: 42px; }

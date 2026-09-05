@@ -282,6 +282,33 @@ def test_render_prompt_dominant_language_directive() -> None:
     assert "same language as the session material" not in prompt
 
 
+def test_render_prompt_tag_context_section() -> None:
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC)),
+    ]
+    prompt = _render_prompt("pathfinder", 1, rows, _make_graph_slice(),
+                            "Партия: Абсалом (жрец), Мендель (кузнец).")
+    assert "Operator context for this series" in prompt
+    assert "Партия: Абсалом (жрец), Мендель (кузнец)." in prompt
+    # the section lands before the material divider
+    assert prompt.index("Operator context") < prompt.index("---")
+
+
+def test_render_prompt_tag_context_empty_collapses() -> None:
+    """Empty/whitespace context must not leave the section header or a
+    blank hole in the prompt."""
+    rows = [
+        DigestRow("r1", "T1", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC)),
+    ]
+    for ctx in ("", "   \n "):
+        prompt = _render_prompt("pathfinder", 1, rows, _make_graph_slice(), ctx)
+        assert "Operator context" not in prompt
+        # language directive still directly precedes the markdown rule
+        assert "Markdown only, no frontmatter" in prompt
+
+
 def test_render_prompt_majority_language_wins() -> None:
     """A mixed selection still gets ONE directive — the dominant
     language (Counter.most_common)."""

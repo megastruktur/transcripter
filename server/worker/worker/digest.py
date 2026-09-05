@@ -39,7 +39,7 @@ import yaml
 from neo4j import GraphDatabase
 from sqlalchemy import or_, text
 
-from .db import Recording, RecordingState, Stage, session
+from .db import Recording, RecordingState, Stage, TagDef, session
 from .enrich import slugify
 from .llm_payload import system_first_messages
 
@@ -107,6 +107,7 @@ _DIGEST_PROMPT_HEADER = (
     "each — what changed for whom. Skip when none.\n"
     "5. Open threads / unresolved questions if any.\n"
     "{language_directive}"
+    "{context_section}"
     "Markdown only, no frontmatter — the host prepends its own.\n\n"
     "---\n\n"
     "Tag: {tag}\n"
@@ -482,6 +483,7 @@ def _render_prompt(
     last_n: int,
     rows: list[DigestRow],
     graph: DigestGraphSlice,
+    tag_context: str = "",
 ) -> str:
     # Session identity for the LLM: "title (YYYY-MM-DD)" keyed by the
     # recording id — the graph slice's event "origin" values are raw ids,
@@ -503,6 +505,18 @@ def _render_prompt(
         )
     else:
         directive = _LANGUAGE_DIRECTIVE_FALLBACK
+    # Tag context (2026-09-05): the registry row's operator-written
+    # narrative for THIS tag (single-namespace digest — no union needed).
+    # The whole section collapses to an empty string when unset so the
+    # prompt for context-less tags is byte-identical to the old shape.
+    context_section = (
+        "Operator context for this series (reference information from the "
+        "operator — who is who, setting, standing instructions; use it to "
+        "interpret the material, it is not session content):\n"
+        f"{tag_context}\n\n"
+        if tag_context.strip()
+        else ""
+    )
     entities_text = "\n".join(
         f"- {e['label']} ({e['type']}) — {e['session_count']} session(s)"
         for e in graph.entities
@@ -524,6 +538,7 @@ def _render_prompt(
         events=events_text,
         relations=rels_text,
         language_directive=directive,
+        context_section=context_section,
     )
 
 
@@ -726,7 +741,13 @@ def run_digest(
             "written": False,
             "reason": f"no recordings with a timeline artifact carry tag {tag!r}",
         }
-    prompt = _render_prompt(tag, last_n, input.rows, input.graph)
+    # Tag context (2026-09-05): read from the registry in the same
+    # module-level session factory the rest of digest.py uses. Missing
+    # row / empty context → empty string → the section collapses.
+    with session() as s:
+        row = s.get(TagDef, tag)
+        tag_context = (row.context or "") if row is not None else ""
+    prompt = _render_prompt(tag, last_n, input.rows, input.graph, tag_context)
     body = _call_llm(prompt, cfg)
     path = write_digest(transcripts_root, input, body)
     return {

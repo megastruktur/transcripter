@@ -151,21 +151,28 @@ export async function fetchTags(cfg: ApiConfig): Promise<TagCount[]> {
 	return body.items;
 }
 
-/** One registry row (GET /tags/{tag}): vocabulary + live counts. */
+/** One registry row (GET /tags/{tag}): vocabulary + context + counts. */
 export type TagDef = {
 	name: string;
 	vocabulary: string[];
+	/** Operator-written LLM context (summarize / enrich / digest prompts). */
+	context: string;
 	recordings: number;
 	created_at: string;
 };
 
 /** Create a tag in the registry before any recording carries it.
  * Throws .status 409 (exists), 400 (bad name). */
-export async function createTag(cfg: ApiConfig, name: string, vocabulary: string[] = []): Promise<TagDef> {
+export async function createTag(
+	cfg: ApiConfig,
+	name: string,
+	vocabulary: string[] = [],
+	context = ''
+): Promise<TagDef> {
 	const resp = await req(cfg, '/tags', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ name, vocabulary })
+		body: JSON.stringify({ name, vocabulary, context })
 	});
 	if (!resp.ok) {
 		const detail = (await resp.json().catch(() => null))?.detail;
@@ -181,13 +188,17 @@ export async function fetchTagDef(cfg: ApiConfig, tag: string): Promise<TagDef> 
 	return resp.json();
 }
 
-/** Replace the tag's vocabulary (full-list semantics). Upserts: a tag
- * that only exists on recordings gains a registry row. */
-export async function updateTagVocabulary(cfg: ApiConfig, tag: string, vocabulary: string[]): Promise<TagDef> {
+/** Update registry fields (full-replace per field, absent = unchanged).
+ * Upserts: a tag that only exists on recordings gains a registry row. */
+export async function updateTag(
+	cfg: ApiConfig,
+	tag: string,
+	fields: { vocabulary?: string[]; context?: string }
+): Promise<TagDef> {
 	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}`, {
 		method: 'PATCH',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ vocabulary })
+		body: JSON.stringify(fields)
 	});
 	if (!resp.ok) {
 		const detail = (await resp.json().catch(() => null))?.detail;

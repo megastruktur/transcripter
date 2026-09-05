@@ -228,7 +228,7 @@ def test_activity_passes_corrections_block_to_extraction(recording_id: str, tmp_
         s.add(_edit(tag="campaign", feedback="the operator built it, not Glennis"))
         s.commit()
 
-    def fake_extract(path, title, prompt_template, c, known_entities="", corrections=""):
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections="", tag_context=""):
         captured["known_entities"] = known_entities
         captured["corrections"] = corrections
         return graph
@@ -261,7 +261,7 @@ def test_activity_without_corrections_sends_empty_block(recording_id: str, tmp_p
     graph.entities = []
     graph.relations = []
 
-    def fake_extract(path, title, prompt_template, c, known_entities="", corrections=""):
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections="", tag_context=""):
         captured["corrections"] = corrections
         return graph
 
@@ -277,3 +277,97 @@ def test_activity_without_corrections_sends_empty_block(recording_id: str, tmp_p
         asyncio.run(activities.enrich(recording_id))
 
     assert captured["corrections"] == ""
+
+
+# ---------- tag context ({tag_context}) ----------
+
+
+def test_render_prompt_substitutes_tag_context() -> None:
+    from worker.enrich import _render_prompt
+
+    out = _render_prompt(
+        "T={title} KE={known_entities} CO={corrections} TC={tag_context} B={transcript}",
+        "t",
+        "BODY",
+        "ke",
+        "co",
+        "tc-block",
+    )
+    assert out == "T=t KE=ke CO=co TC=tc-block B=BODY"
+
+
+def test_render_prompt_without_tag_context_placeholder_unchanged() -> None:
+    """A profile that never opted in must render exactly as before —
+    the context never leaks into a placeholder-less prompt."""
+    from worker.enrich import _render_prompt
+
+    out = _render_prompt("B={transcript}", "t", "BODY", "ke", "co", "tc")
+    assert out == "B=BODY"
+    assert "tc" not in out
+
+
+def test_activity_passes_tag_context_to_extraction(recording_id: str, tmp_path: Path) -> None:
+    """The activity reads tag_defs.context for the recording's graph
+    namespaces and hands the rendered block to extract_from_transcript
+    as the 7th argument, after corrections."""
+    cfg = _make_cfg(tmp_path)
+    captured: dict[str, Any] = {}
+    graph = MagicMock()
+    graph.events = []
+    graph.entities = []
+    graph.relations = []
+
+    from worker.db import TagDef
+
+    with session() as s:
+        s.add(TagDef(name="campaign", context="Партия: Абсалом (жрец)."))
+        s.commit()
+
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections="", tag_context=""):
+        captured["tag_context"] = tag_context
+        return graph
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=None),
+        patch("worker.enrich.extract_from_transcript", side_effect=fake_extract),
+        patch("worker.enrich.resolve_slugs", return_value=graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        asyncio.run(activities.enrich(recording_id))
+
+    assert captured["tag_context"] == "### campaign\nПартия: Абсалом (жрец)."
+    # The fallback prompt carries the placeholder the block fills.
+    from worker.enrich import _FALLBACK_ENRICH_PROMPT
+
+    assert "{tag_context}" in _FALLBACK_ENRICH_PROMPT
+
+
+def test_activity_without_context_sends_empty_block(recording_id: str, tmp_path: Path) -> None:
+    """No registry row / empty context → empty string, not None (the
+    render contract: empty reads like disabled)."""
+    cfg = _make_cfg(tmp_path)
+    captured: dict[str, Any] = {}
+    graph = MagicMock()
+    graph.events = []
+    graph.entities = []
+    graph.relations = []
+
+    def fake_extract(path, title, prompt_template, c, known_entities="", corrections="", tag_context=""):
+        captured["tag_context"] = tag_context
+        return graph
+
+    with (
+        patch("worker.activities.cfg", return_value=cfg),
+        patch("worker.profiles.match_profile_by_type", return_value=None),
+        patch("worker.enrich.extract_from_transcript", side_effect=fake_extract),
+        patch("worker.enrich.resolve_slugs", return_value=graph),
+        patch("worker.enrich.pre_existing_lookup", return_value=MagicMock()),
+        patch("worker.enrich.write_to_graph", return_value=0),
+        patch.dict("os.environ", {"NEO4J_PASSWORD": "x"}),
+    ):
+        asyncio.run(activities.enrich(recording_id))
+
+    assert captured["tag_context"] == ""

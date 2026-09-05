@@ -226,6 +226,7 @@ def summarize_transcript(
     title: str = "",
     recap_block: str | None = None,
     vocabulary_block: str | None = None,
+    context_block: str | None = None,
 ) -> str:
     transcript = (meta / "transcript.md").read_text(encoding="utf-8")
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
@@ -253,6 +254,18 @@ def summarize_transcript(
             + "\n\nPrior context from this series' knowledge base "
             + "(digest and retrieved excerpts of earlier sessions):\n\n"
             + recap_block
+        )
+    # Tag context (2026-09-05) rides the same single-system-message rail,
+    # between the recap and the glossary: the recap is retrieved FACTS
+    # (what happened before), the context is operator INSTRUCTIONS (who
+    # is who, how to read this series), and the glossary stays the LAST
+    # terminology instruction before the transcript.
+    if context_block:
+        system = (
+            system
+            + "\n\nКонтекст серии от оператора (учитывай при саммаризации;\n"
+            "это справочная информация, а не часть транскрипта):\n\n"
+            + context_block
         )
     # Vocabulary rides the same single-system-message rail as the recap
     # (same llama-server template constraint — see above). Appended

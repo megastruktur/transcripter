@@ -122,6 +122,64 @@ def test_patch_upserts_legacy_tag(client: TestClient) -> None:
     assert client.get("/tags/legacy").status_code == 200
 
 
+# ---------- context (per-tag LLM prompt addendum) ----------
+
+
+def test_create_with_context_round_trip(client: TestClient) -> None:
+    r = client.post(
+        "/tags",
+        json={"name": "dnd", "vocabulary": ["Абсалом"], "context": "  Партия: Мендель (кузнец).  "},
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["context"] == "Партия: Мендель (кузнец)."
+    assert client.get("/tags/dnd").json()["context"] == "Партия: Мендель (кузнец)."
+
+
+def test_patch_context_only_keeps_vocabulary(client: TestClient) -> None:
+    client.post("/tags", json={"name": "t1", "vocabulary": ["a"], "context": "old"})
+    r = client.patch("/tags/t1", json={"context": "new context"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["context"] == "new context"
+    assert body["vocabulary"] == ["a"]  # absent field untouched
+
+
+def test_patch_vocabulary_only_keeps_context(client: TestClient) -> None:
+    """The pre-context client shape (bare {vocabulary}) must not clear
+    the context."""
+    client.post("/tags", json={"name": "t1", "context": "keep me"})
+    r = client.patch("/tags/t1", json={"vocabulary": ["b"]})
+    assert r.status_code == 200
+    assert r.json()["context"] == "keep me"
+
+
+def test_patch_empty_body_422(client: TestClient) -> None:
+    client.post("/tags", json={"name": "t1"})
+    r = client.patch("/tags/t1", json={})
+    assert r.status_code == 422  # model_validator: at least one field
+
+
+def test_patch_context_clears_to_empty(client: TestClient) -> None:
+    client.post("/tags", json={"name": "t1", "context": "was here"})
+    r = client.patch("/tags/t1", json={"context": "   "})
+    assert r.status_code == 200
+    assert r.json()["context"] == ""
+
+
+def test_autoregistration_keeps_manual_context(client: TestClient) -> None:
+    """ON CONFLICT DO NOTHING must preserve a manually written context
+    when a recording later attaches the tag."""
+    client.post("/tags", json={"name": "pf", "context": "сеттинг: Dark Heresy"})
+    client.post("/recordings", json={"title": "t", "tags": ["pf"]})
+    assert client.get("/tags/pf").json()["context"] == "сеттинг: Dark Heresy"
+
+
+def test_get_tag_context_defaults_empty(client: TestClient) -> None:
+    client.post("/tags", json={"name": "t1"})
+    assert client.get("/tags/t1").json()["context"] == ""
+
+
 # ---------- DELETE /tags/{tag} ----------
 
 

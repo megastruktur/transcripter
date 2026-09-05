@@ -30,7 +30,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from temporalio.service import RPCError
@@ -1174,10 +1174,29 @@ class TagListResponse(BaseModel):
 class TagCreateRequest(BaseModel):
     name: str
     vocabulary: list[str] = Field(default_factory=list)
+    context: str = ""
 
 
 class TagUpdateRequest(BaseModel):
-    vocabulary: list[str]
+    """Both fields optional but at least one required (model_validator);
+    ``vocabulary`` keeps full-list semantics, ``context`` full-text
+    semantics — absent means 'leave unchanged', not 'clear'."""
+
+    vocabulary: list[str] | None = None
+    context: str | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one_field(self) -> TagUpdateRequest:
+        if self.vocabulary is None and self.context is None:
+            raise ValueError("patch must set vocabulary or context")
+        return self
+
+
+def _normalize_context(raw: str) -> str:
+    """Whitespace-only cleanup. No length cap (2026-09-05 decision:
+    cap when it hurts), no content restrictions — the context is prompt
+    text the operator writes for their own LLM."""
+    return raw.strip()
 
 def _normalize_vocabulary(raw: list[str]) -> list[str]:
     """Trim, drop blanks, dedupe CASE-INSENSITIVELY (first spelling wins —
@@ -1244,7 +1263,11 @@ def create_tag(body: TagCreateRequest, session: Session = Depends(get_session)) 
     _validate_tag(norm)
     if session.get(TagDef, norm) is not None:
         raise HTTPException(status_code=409, detail=f"tag {norm} already exists")
-    row = TagDef(name=norm, vocabulary=_normalize_vocabulary(body.vocabulary))
+    row = TagDef(
+        name=norm,
+        vocabulary=_normalize_vocabulary(body.vocabulary),
+        context=_normalize_context(body.context),
+    )
     session.add(row)
     session.commit()
     return _serialize_tagdef(row, _recording_count(session, norm))
@@ -1264,19 +1287,21 @@ def get_tag(tag: str, session: Session = Depends(get_session)) -> dict:
 def update_tag(
     body: TagUpdateRequest, tag: str, session: Session = Depends(get_session)
 ) -> dict:
-    """Replace the vocabulary (full-list semantics, like PATCH
-    recording tags). Upsert: a tag that only exists on recordings (no
+    """Replace the vocabulary (full-list semantics, like PATCH recording
+    tags) and/or the context (full-text semantics). Absent fields are
+    left unchanged. Upsert: a tag that only exists on recordings (no
     registry row) gets one — that is the whole auto-registration
-    contract."""
+    contract; on upsert the ABSENT field keeps its implicit default."""
     norm = _normalize_tag(tag)
     _validate_tag(norm)
     row = session.get(TagDef, norm)
-    vocab = _normalize_vocabulary(body.vocabulary)
     if row is None:
-        row = TagDef(name=norm, vocabulary=vocab)
+        row = TagDef(name=norm)
         session.add(row)
-    else:
-        row.vocabulary = vocab
+    if body.vocabulary is not None:
+        row.vocabulary = _normalize_vocabulary(body.vocabulary)
+    if body.context is not None:
+        row.context = _normalize_context(body.context)
     session.commit()
     return _serialize_tagdef(row, _recording_count(session, norm))
 
@@ -1303,6 +1328,7 @@ def _serialize_tagdef(row: TagDef, count: int) -> dict:
     return {
         "name": row.name,
         "vocabulary": list(row.vocabulary or []),
+        "context": row.context or "",
         "recordings": count,
         "created_at": row.created_at.isoformat(),
     }

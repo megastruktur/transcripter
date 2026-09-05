@@ -76,6 +76,40 @@ def test_glossary_block_none(Session):
         assert activities._glossary_block(s, ["ghost"]) is None
 
 
+def test_context_block_none_when_unset(Session):
+    with Session() as s:
+        assert activities._context_block(s, []) is None
+        assert activities._context_block(s, ["ghost"]) is None
+        # registered but empty contexts stay silent
+        s.add(TagDef(name="a"))
+        s.commit()
+        assert activities._context_block(s, ["a"]) is None
+
+
+def test_context_block_headings_and_union(Session):
+    with Session() as s:
+        s.add(TagDef(name="a", context="Абсалом — жрец-еретик."))
+        s.add(TagDef(name="b", context="Спринт по биллингу."))
+        s.add(TagDef(name="c"))  # no context → no section
+        s.commit()
+        out = activities._context_block(s, ["a", "b", "c"])
+    assert out is not None
+    assert "### a\nАбсалом — жрец-еретик." in out
+    assert "### b\nСпринт по биллингу." in out
+    assert "### c" not in out
+    # registry order preserved, sections separated by a blank line
+    assert out.index("### a") < out.index("### b")
+    assert "\n\n" in out
+
+
+def test_context_block_strips_whitespace(Session):
+    with Session() as s:
+        s.add(TagDef(name="a", context="  \n  сеттинг: Dark Heresy \n "))
+        s.commit()
+        out = activities._context_block(s, ["a"])
+    assert out == "### a\nсеттинг: Dark Heresy"
+
+
 # ---------- transcribe stage plumbing ----------
 
 

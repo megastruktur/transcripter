@@ -254,6 +254,30 @@ def _glossary_block(s, tags: list[str]) -> str | None:
     return clipped[:cut] if cut > 0 else clipped.rstrip()
 
 
+def _context_block(s, tags: list[str]) -> str | None:
+    """Tag registry contexts → one narrative block for LLM prompts, or
+    None when no tag carries a non-empty ``tag_defs.context``.
+
+    Union across the recording's tags in registry order; every non-empty
+    context renders under its own ``### <tag>`` heading so the model can
+    tell WHICH series the context describes (a recording may bridge two
+    campaigns/projects). NOT an ASR source: the initial_prompt is decoded
+    as prior speech — narrative instructions there bias the transcript;
+    ASR hot words remain vocabulary's job. No length cap (2026-09-05
+    decision: cap when it hurts)."""
+    if not tags:
+        return None
+    parts: list[str] = []
+    for tag in tags:
+        row = s.get(TagDef, tag)
+        text_ = (row.context or "").strip() if row is not None else ""
+        if text_:
+            parts.append(f"### {tag}\n{text_}")
+    if not parts:
+        return None
+    return "\n\n".join(parts)
+
+
 def budget_transcribe(rec: Recording | None) -> float:
     """HTTP client budget, kept 30 s under the Temporal StartToClose budget.
 
@@ -766,12 +790,16 @@ async def summarize(rec_id: str) -> dict:
 
     # Tag vocabularies (registry feature): glossary block for the
     # summarize prompt — same union/dedup/cap as the ASR hotword prompt.
-    # Best-effort like the recap: never fails the stage.
+    # Tag contexts (2026-09-05): the same registry rows' narrative block,
+    # fetched in the SAME session/transaction as the glossary. Best-effort
+    # like the recap: never fails the stage.
     vocabulary_block: str | None = None
+    context_block: str | None = None
     with session() as s:
         rec = s.get(Recording, rec_id)
         _tags = list(rec.tags) if rec is not None and rec.tags else []
         vocabulary_block = _glossary_block(s, _tags)
+        context_block = _context_block(s, _tags)
     try:
         from .summarize import summarize_transcript
 
@@ -784,6 +812,7 @@ async def summarize(rec_id: str) -> dict:
                 title,
                 recap_block,
                 vocabulary_block,
+                context_block,
             )
         )
         # Meta path is canonical (see §1 in wave-A impl plan): export.py
@@ -999,6 +1028,14 @@ async def enrich(rec_id: str) -> dict:
             )
         )
 
+        # Tag context (2026-09-05): the registry rows' narrative block
+        # rendered into {tag_context}. Same opt-in model as corrections —
+        # the placeholder itself is the knob; the lookup reads tag_defs
+        # (Postgres-cheap) and always runs, an unused placeholder renders
+        # empty.
+        with session() as s:
+            tag_context_block = _context_block(s, graph_tags) or ""
+
         # Extract (json_object + ×3 attempts) — synchronous LLM call.
         extracted = await _heartbeat_while(
             asyncio.to_thread(
@@ -1009,6 +1046,7 @@ async def enrich(rec_id: str) -> dict:
                 c,
                 known_entities_block,
                 corrections_block,
+                tag_context_block,
             )
         )
 

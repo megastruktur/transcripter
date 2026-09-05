@@ -181,9 +181,28 @@ def _backfill_tag_defs() -> None:
             gen.close()
 
 
+def _migrate_tag_defs_context() -> None:
+    """Add ``tag_defs.context`` for databases created before the
+    per-tag LLM context feature. create_all only sees the CURRENT
+    schema; existing Postgres tables keep their old shape, so the
+    column is added idempotently at startup (same pattern as
+    _migrate_tags_column). SQLite test databases get the column from
+    create_all."""
+    if engine().dialect.name != "postgresql":
+        return
+    from sqlalchemy import text
+
+    with engine().begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE tag_defs ADD COLUMN IF NOT EXISTS context TEXT NOT NULL DEFAULT ''"
+            )
+        )
+
 _migrate_stage_kind_enum()
 _migrate_tags_column()
 _migrate_type_columns()
+_migrate_tag_defs_context()
 _backfill_tag_defs()
 
 app.include_router(recordings.router)

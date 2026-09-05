@@ -87,10 +87,11 @@ _DEDUP_NEGATIVE = {"n", "no", "false", "different", "нет", "不"}
 # ``graph.enrich_all`` is on — a profile that matched but has no enrich
 # section still means the author opted out. Russian like the shipped
 # profiles; deliberately minimal ontology because a domain profile
-# always beats it. MUST keep all three placeholders ({title},
-# {transcript}, {known_entities}, {corrections}): the activity always
-# renders the known-entities and corrections blocks for it, and the
-# same literal-.replace() rules apply (JSON braces below are safe).
+# always beats it. MUST keep all five placeholders ({title},
+# {transcript}, {known_entities}, {corrections}, {tag_context}): the
+# activity always renders the known-entities, corrections and tag-context
+# blocks for it, and the same literal-.replace() rules apply (JSON
+# braces below are safe).
 _FALLBACK_ENRICH_PROMPT = """\
 Ты извлекаешь структурированные данные из транскрипта записи «{title}».
 Верни JSON-объект:
@@ -107,6 +108,9 @@ relations — связи между сущностями (например: work
 Пустые разделы — пустые списки.
 Известные сущности этого пространства (переиспользуй их slug, если упоминаешь):
 {known_entities}
+Контекст серии от оператора (кто есть кто; справочная информация,
+не факты транскрипта — используй для правильных типов и имён):
+{tag_context}
 Устойчивые правки оператора к прошлым ошибкам извлечения (это не факты
 транскрипта — это указания; применяй их, если предмет правки возникает):
 {corrections}
@@ -275,15 +279,16 @@ def _render_prompt(
     transcript: str,
     known_entities: str = "",
     corrections: str = "",
+    tag_context: str = "",
 ) -> str:
     """Substitute {title} / {transcript} / {known_entities} /
-    {corrections}. The contract requires ``{transcript}``; profiles.py
-    already enforces that on load — and also enforces
+    {corrections} / {tag_context}. The contract requires ``{transcript}``;
+    profiles.py already enforces that on load — and also enforces
     ``{known_entities}`` whenever a profile enables the known-entities
-    lookup. ``{title}`` is optional; ``{corrections}`` renders only
-    when the profile opts in by using the placeholder (no config
-    knob — an unused placeholder renders empty)."""
-    # Literal replacement of exactly four placeholders — NOT str.format:
+    lookup. ``{title}`` is optional; ``{corrections}`` and
+    ``{tag_context}`` render only when the profile opts in by using the
+    placeholder (no config knob — an unused placeholder renders empty)."""
+    # Literal replacement of exactly five placeholders — NOT str.format:
     # profile prompts legitimately embed JSON schema examples with braces
     # ({"events": [...]}) which format() would read as replacement fields
     # and die with KeyError (observed live 2026-08-27 on a profile's
@@ -293,6 +298,7 @@ def _render_prompt(
         .replace("{transcript}", transcript)
         .replace("{known_entities}", known_entities)
         .replace("{corrections}", corrections)
+        .replace("{tag_context}", tag_context)
     )
 
 
@@ -303,6 +309,7 @@ def extract_from_transcript(
     cfg: Any,
     known_entities: str = "",
     corrections: str = "",
+    tag_context: str = "",
 ) -> ExtractedGraph:
     """One HTTP call to the chat endpoint; retry the same call twice if the
     model returns non-JSON or HTTP 5xx. Raises after the third failure —
@@ -321,7 +328,7 @@ def extract_from_transcript(
     """
     transcript = transcript_path.read_text(encoding="utf-8")
     user_content = _render_prompt(
-        prompt_template, title, transcript, known_entities, corrections
+        prompt_template, title, transcript, known_entities, corrections, tag_context
     )
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
