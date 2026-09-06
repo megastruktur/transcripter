@@ -117,6 +117,7 @@ relations — связи между сущностями (например: work
 ТРАНСКРИПТ:
 {transcript}"""
 
+
 @dataclass(frozen=True)
 class ExtractedEvent:
     ts: str
@@ -217,9 +218,7 @@ def _coerce_mentions(raw: Any, known_slugs: set[str] | None) -> list[str]:
     return out
 
 
-def _coerce_event(
-    raw: Any, known_slugs: set[str] | None = None
-) -> ExtractedEvent | None:
+def _coerce_event(raw: Any, known_slugs: set[str] | None = None) -> ExtractedEvent | None:
     if not isinstance(raw, dict):
         return None
     ts = str(raw.get("ts", "")).strip()
@@ -265,14 +264,12 @@ def _parse_extraction(payload: Any) -> ExtractedGraph:
     entities = [e for e in (_coerce_entity(x) for x in raw_entities) if e is not None]
     known_slugs = {e.slug for e in entities}
     return ExtractedGraph(
-        events=[
-            e
-            for e in (_coerce_event(x, known_slugs) for x in raw_events)
-            if e is not None
-        ],
+        events=[e for e in (_coerce_event(x, known_slugs) for x in raw_events) if e is not None],
         entities=entities,
         relations=[r for r in (_coerce_relation(x) for x in raw_relations) if r is not None],
     )
+
+
 def _render_prompt(
     template: str,
     title: str,
@@ -400,6 +397,7 @@ def _json_payload(content: str) -> str:
             s = s.rstrip()[:-3]
     return s.strip()
 
+
 def _repair_json(s: str) -> str:
     """Best-effort repair of near-valid JSON the model emits despite
     response_format=json_object: trailing commas before ``}``/``]`` and
@@ -474,14 +472,16 @@ def _repair_json(s: str) -> str:
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
-def _dedup_prompt(
-    new_label: str, new_type: str, existing_label: str, existing_type: str
-) -> str:
+def _dedup_prompt(new_label: str, new_type: str, existing_label: str, existing_type: str) -> str:
     return (
         "You are deduplicating entities for a knowledge graph.\n"
         f"Existing entity: label={existing_label!r}, type={existing_type!r}.\n"
         f"New candidate:  label={new_label!r}, type={new_type!r}.\n"
-        "Are these the same real-world entity? Answer with a single token: Y or N."
+        "Are these the same real-world entity? The label/name is the primary "
+        "signal: identical or near-identical labels mean the same entity "
+        "even when the type differs (types drift between extractions; a "
+        "misclassified type is NOT a different entity). Answer with a single "
+        "token: Y or N."
     )
 
 
@@ -627,7 +627,6 @@ def dedup_llm_gate(cfg: Any) -> bool:
     return False
 
 
-
 def _dedup_verdict(
     new_label: str,
     new_type: str,
@@ -769,8 +768,7 @@ def write_to_graph(
                     f"MERGE (e:`{safe_entity_label}` {{tag: $tag, slug: $slug}}) "
                     "ON CREATE SET e.label = $label, e.type = $type, "
                     "e.origin_recording_id = $rec, e.first_seen_recording = $rec, "
-                    "e.recording_ids = [$rec] "
-                    + embed_clause +
+                    "e.recording_ids = [$rec] " + embed_clause +
                     # Multi-recording provenance: a shared entity MERGEs onto
                     # one node, so origin_recording_id alone can never show
                     # recurrence — digests read recording_ids instead.
@@ -881,7 +879,6 @@ def write_to_graph(
                             b=node_id,
                         )
 
-
             for rel in graph.relations:
                 a = slug_to_node.get(rel.from_slug)
                 b = slug_to_node.get(rel.to_slug)
@@ -941,8 +938,7 @@ def rename_entity_in_graph(
         with driver.session(database=graph_database) as session:
             # Snapshot FIRST: does the node exist, does it carry a vector.
             row = session.run(
-                "MATCH (e {tag: $tag, slug: $slug}) "
-                "RETURN e.embedding AS embedding LIMIT 1",
+                "MATCH (e {tag: $tag, slug: $slug}) RETURN e.embedding AS embedding LIMIT 1",
                 tag=tag,
                 slug=slug,
             ).single()
@@ -960,8 +956,7 @@ def rename_entity_in_graph(
             tx.run(
                 "MATCH (e {tag: $tag, slug: $slug}) "
                 "SET e.label = $label" + type_clause + ", "
-                "e.user_corrected = true"
-                + (", e.embedding = $vec" if new_vec is not None else ""),
+                "e.user_corrected = true" + (", e.embedding = $vec" if new_vec is not None else ""),
                 tag=tag,
                 slug=slug,
                 label=label,
@@ -1004,8 +999,7 @@ def _event_mentions(event: ExtractedEvent, entities: list[ExtractedEntity]) -> l
     return [
         ent.slug
         for ent in entities
-        if ent.label
-        and re.search(r"\b" + re.escape(ent.label.lower()) + r"\b", summary_lower)
+        if ent.label and re.search(r"\b" + re.escape(ent.label.lower()) + r"\b", summary_lower)
     ]
 
 
@@ -1068,16 +1062,13 @@ def write_events_json(
             for e in resolved.entities
         ],
         "relations": [
-            {"from": r.from_slug, "to": r.to_slug, "type": r.type}
-            for r in resolved.relations
+            {"from": r.from_slug, "to": r.to_slug, "type": r.type} for r in resolved.relations
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8"
-        )
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -1232,6 +1223,7 @@ def resolve_slugs(
         out_relations.append(ExtractedRelation(from_slug=f, to_slug=t, type=rel.type))
     return ExtractedGraph(events=graph.events, entities=out, relations=out_relations)
 
+
 def _disambiguate(slug: str, taken: dict[str, ExtractedEntity]) -> str:
     n = 2
     while True:
@@ -1242,6 +1234,7 @@ def _disambiguate(slug: str, taken: dict[str, ExtractedEntity]) -> str:
         if n > 999:
             # Pathological: bail with a hash so we never spin forever.
             return f"{slug}-{hash(slug) & 0xFFFF:x}"
+
 
 def _next_free_slug(
     slug: str,
@@ -1264,7 +1257,6 @@ def _next_free_slug(
         n += 1
         if n > 999:
             return f"{slug}-{hash((slug, n)) & 0xFFFF:x}"
-
 
 
 class ExistingEntityLookup:
@@ -1330,7 +1322,6 @@ def pre_existing_lookup(
     """Build an ``ExistingEntityLookup`` bound to the configured graph."""
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
 
-
     return ExistingEntityLookup(driver, graph_database, tag, exclude_rec)
 
 
@@ -1379,9 +1370,7 @@ def render_known_entities(rows: list[dict[str, str]]) -> str:
     ``list_known_entities`` (the pre-extraction snapshot of the target
     namespace).
     """
-    return "\n".join(
-        f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows
-    )
+    return "\n".join(f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows)
 
 
 def render_corrections(items: list[str]) -> str:
@@ -1447,8 +1436,6 @@ def active_corrections_for_tags(tags: list[str]) -> list[str]:
     return block
 
 
-
-
 def list_known_entities(
     graph_uri: str,
     graph_user: str,
@@ -1486,9 +1473,6 @@ def list_known_entities(
                 rec=exclude_rec,
                 limit=limit,
             )
-            return [
-                {"slug": r["slug"], "label": r["label"], "type": r["type"]}
-                for r in rows
-            ]
+            return [{"slug": r["slug"], "label": r["label"], "type": r["type"]} for r in rows]
     finally:
         driver.close()

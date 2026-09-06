@@ -52,9 +52,7 @@ def _seed_done(client: TestClient, tag: str = "quest", state: str = "done") -> s
     try:
         s = next(gen)
         s.execute(
-            __import__("sqlalchemy").text(
-                "UPDATE recordings SET state = :st WHERE id = :id"
-            ),
+            __import__("sqlalchemy").text("UPDATE recordings SET state = :st WHERE id = :id"),
             {"st": state, "id": rid},
         )
         s.commit()
@@ -80,7 +78,9 @@ def test_purge_unknown_tag_404(client: TestClient, monkeypatch: pytest.MonkeyPat
     assert "no done recordings" in r.json()["detail"]
 
 
-def test_purge_tag_with_only_uploading_404(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_purge_tag_with_only_uploading_404(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """_tag_recordings is done-only: an uploading recording is not a
     purge target either — the tag has no memory to wipe."""
     _enable_graph(client, monkeypatch)
@@ -89,7 +89,9 @@ def test_purge_tag_with_only_uploading_404(client: TestClient, monkeypatch: pyte
     assert r.status_code == 404
 
 
-def test_purge_processing_recording_409(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_purge_processing_recording_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _enable_graph(client, monkeypatch)
     _seed_done(client, state="processing")
     r = client.delete("/tags/quest/memory")
@@ -97,7 +99,9 @@ def test_purge_processing_recording_409(client: TestClient, monkeypatch: pytest.
     assert "still processing" in r.json()["detail"]
 
 
-def test_rebuild_processing_recording_409(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rebuild_processing_recording_409(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _enable_graph(client, monkeypatch)
     _seed_done(client, state="processing")
     r = client.post("/tags/quest/rebuild")
@@ -124,7 +128,9 @@ def test_purge_202_starts_workflow(client: TestClient, monkeypatch: pytest.Monke
     body = r.json()
     assert body["workflow_id"] == "rebuild-tag-memory-quest"
     assert body["done_recordings"] == 1
-    temporal_client.start_rebuild_tag_memory.assert_awaited_once_with("quest", False)
+    temporal_client.start_rebuild_tag_memory.assert_awaited_once_with(
+        "quest", False, start_stage="summarize"
+    )
 
 
 def test_rebuild_202_starts_workflow(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,7 +141,39 @@ def test_rebuild_202_starts_workflow(client: TestClient, monkeypatch: pytest.Mon
     temporal_client.start_rebuild_tag_memory.reset_mock()
     r = client.post("/tags/quest/rebuild")
     assert r.status_code == 202
-    temporal_client.start_rebuild_tag_memory.assert_awaited_once_with("quest", True)
+    # Empty body = the summarize default (full memory rebuild).
+    temporal_client.start_rebuild_tag_memory.assert_awaited_once_with(
+        "quest", True, start_stage="summarize"
+    )
+
+
+def test_rebuild_enrich_stage_passed_through(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Explicit enrich start: the "graph broken, summaries fine" path."""
+    from app import temporal_client
+
+    _enable_graph(client, monkeypatch)
+    _seed_done(client)
+    temporal_client.start_rebuild_tag_memory.reset_mock()
+    r = client.post("/tags/quest/rebuild", json={"start_stage": "enrich"})
+    assert r.status_code == 202
+    temporal_client.start_rebuild_tag_memory.assert_awaited_once_with(
+        "quest", True, start_stage="enrich"
+    )
+
+
+def test_rebuild_rejects_unknown_stage(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rebuild never reprocesses audio: only summarize|enrich pass,
+    anything else is 422 BEFORE any workflow starts."""
+    from app import temporal_client
+
+    _enable_graph(client, monkeypatch)
+    _seed_done(client)
+    temporal_client.start_rebuild_tag_memory.reset_mock()
+    r = client.post("/tags/quest/rebuild", json={"start_stage": "chunk"})
+    assert r.status_code == 422
+    temporal_client.start_rebuild_tag_memory.assert_not_awaited()
 
 
 def test_already_running_409(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,9 +196,7 @@ def test_temporal_down_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
 
     from app import temporal_client
 
-    temporal_client.start_rebuild_tag_memory = AsyncMock(
-        side_effect=ConnectionError("refused")
-    )
+    temporal_client.start_rebuild_tag_memory = AsyncMock(side_effect=ConnectionError("refused"))
     r = client.post("/tags/quest/rebuild")
     assert r.status_code == 503
 
@@ -168,7 +204,9 @@ def test_temporal_down_503(client: TestClient, monkeypatch: pytest.MonkeyPatch) 
 # ---------- status poll ----------
 
 
-def test_status_rejects_foreign_workflow_id(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_rejects_foreign_workflow_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _enable_graph(client, monkeypatch)
     r = client.get("/tags/quest/memory/graph-fix-apply-123")
     assert r.status_code == 400

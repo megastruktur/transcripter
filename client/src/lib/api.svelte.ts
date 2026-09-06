@@ -335,11 +335,24 @@ export type MemoryWorkflowStatus = {
 };
 
 /** Admin: wipe the tag's memory (graph namespace, edits, digest,
- * semantic index) — recordings stay. 202 + workflow; poll with
- * fetchMemoryStatus. Throws with .status 404 (no done recordings),
- * 409 (graph off | recording processing | already running), 503. */
-export async function purgeTagMemory(cfg: ApiConfig, tag: string, rebuild: boolean): Promise<{ workflow_id: string }> {
-	const resp = await req(cfg, rebuild ? `/tags/${encodeURIComponent(tag)}/rebuild` : `/tags/${encodeURIComponent(tag)}/memory`, { method: rebuild ? 'POST' : 'DELETE' });
+ * semantic index) — recordings stay. `rebuild` also re-runs the LLM
+ * stages per recording (oldest first); `startStage` picks where the
+ * children restart: 'summarize' (default — prompts/tag context changed,
+ * summaries rebuild too) or 'enrich' (graph only). 202 + workflow; poll
+ * with fetchMemoryStatus. Throws with .status 404 (no done recordings),
+ * 409 (graph off | recording processing | already running), 422 (bad
+ * stage), 503. */
+export async function purgeTagMemory(
+	cfg: ApiConfig,
+	tag: string,
+	rebuild: boolean,
+	startStage: 'summarize' | 'enrich' = 'summarize'
+): Promise<{ workflow_id: string }> {
+	const resp = await req(
+		cfg,
+		rebuild ? `/tags/${encodeURIComponent(tag)}/rebuild` : `/tags/${encodeURIComponent(tag)}/memory`,
+		rebuild ? { method: 'POST', body: JSON.stringify({ start_stage: startStage }) } : { method: 'DELETE' }
+	);
 	if (!resp.ok) {
 		const detail = await resp.json().catch(() => ({ detail: resp.status }));
 		throw Object.assign(new Error(detail.detail ?? `memory ${resp.status}`), { status: resp.status });

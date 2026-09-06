@@ -28,7 +28,7 @@ import logging
 import re
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, text
@@ -65,7 +65,6 @@ class DigestRequest(BaseModel):
     JSON body keeps the same validation as before."""
 
     last_n: int | None = Field(default=None, ge=1, le=50)
-
 
 
 def _normalize_tag(raw: str) -> str:
@@ -139,9 +138,7 @@ def get_search(
     status = index_status(cfg.vault.path, norm)
     if status is None or status["segments"] == 0:
         if not _tag_exists(norm):
-            raise HTTPException(
-                status_code=404, detail=f"no recordings for tag {norm}"
-            )
+            raise HTTPException(status_code=404, detail=f"no recordings for tag {norm}")
         raise HTTPException(
             status_code=503,
             detail={
@@ -233,9 +230,7 @@ async def post_digest(
         # Temporal being unreachable should not look like a 500 to the
         # client: same shape as PATCH rename uses (log + 503).
         _LOG.exception("start_digest failed for tag=%s", norm)
-        raise HTTPException(
-            status_code=503, detail="temporal unavailable; try again later"
-        )
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
     return {"workflow_id": workflow_id, "tag": norm, "last_n": last_n}
 
 
@@ -252,9 +247,7 @@ def get_digest(tag: Annotated[str, Path()], request: Request) -> FileResponse:
     _validate_tag(norm)
     md = find_digest(request.app.state.config, norm)
     if md is None:
-        raise HTTPException(
-            status_code=404, detail=f"digest not generated yet for tag {norm}"
-        )
+        raise HTTPException(status_code=404, detail=f"digest not generated yet for tag {norm}")
     return FileResponse(md, media_type="text/markdown")
 
 
@@ -314,18 +307,12 @@ async def patch_entity(
         raise HTTPException(status_code=404, detail=f"no recordings for tag {norm}")
     slugs = {row["slug"] for row in payload["entities"]}
     if slug not in slugs:
-        raise HTTPException(
-            status_code=404, detail=f"entity {slug} not found in tag {norm}"
-        )
+        raise HTTPException(status_code=404, detail=f"entity {slug} not found in tag {norm}")
     try:
-        workflow_id = await temporal_client.start_rename_entity(
-            norm, slug, label, body.type
-        )
+        workflow_id = await temporal_client.start_rename_entity(norm, slug, label, body.type)
     except Exception:  # noqa: BLE001 — same blind-catch shape as post_digest
         _LOG.exception("start_rename_entity failed for %s/%s", norm, slug)
-        raise HTTPException(
-            status_code=503, detail="temporal unavailable; try again later"
-        )
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
     return {"workflow_id": workflow_id, "tag": norm, "slug": slug, "label": label}
 
 
@@ -450,9 +437,7 @@ async def patch_event(
         if found:
             break
     if found is None:
-        raise HTTPException(
-            status_code=404, detail=f"event {event_key} not found in tag {norm}"
-        )
+        raise HTTPException(status_code=404, detail=f"event {event_key} not found in tag {norm}")
     sess_, ev = found
     after: dict = {}
     for field in ("ts", "kind", "summary", "mentions"):
@@ -502,9 +487,7 @@ async def delete_event(
         if found:
             break
     if found is None:
-        raise HTTPException(
-            status_code=404, detail=f"event {event_key} not found in tag {norm}"
-        )
+        raise HTTPException(status_code=404, detail=f"event {event_key} not found in tag {norm}")
     sess_, ev = found
     edit_id = _start_edit_workflow(
         session,
@@ -605,9 +588,7 @@ async def delete_entity(
     payload = _timeline_or_404(cfg, session, norm)
     slugs = {row["slug"] for row in payload["entities"]}
     if slug not in slugs:
-        raise HTTPException(
-            status_code=404, detail=f"entity {slug} not found in tag {norm}"
-        )
+        raise HTTPException(status_code=404, detail=f"entity {slug} not found in tag {norm}")
     edit_id = _start_edit_workflow(
         session,
         tag=norm,
@@ -843,9 +824,7 @@ def _preview_gate(app_state: Any, tag: str) -> None:
     now = time.monotonic()
     wf_id, until = gate.get(tag, (None, 0.0))
     if wf_id is not None:
-        raise HTTPException(
-            status_code=409, detail="a preview for this tag is already running"
-        )
+        raise HTTPException(status_code=409, detail="a preview for this tag is already running")
     if now < until:
         raise HTTPException(
             status_code=429,
@@ -955,18 +934,16 @@ async def post_fix_apply(
     if not isinstance(ops, list) or not ops:
         raise HTTPException(status_code=400, detail="proposal.ops must be a non-empty list")
     try:
-        workflow_id = await temporal_client.start_fix_apply(
-            norm, body.proposal, body.feedback_text
-        )
+        workflow_id = await temporal_client.start_fix_apply(norm, body.proposal, body.feedback_text)
     except Exception:  # noqa: BLE001
         _LOG.exception("fix-apply start failed for tag=%s", norm)
         raise HTTPException(status_code=503, detail="temporal unavailable")
     return {"workflow_id": workflow_id, "tag": norm}
 
 
-async def _start_memory_or_503(tag: str, rebuild: bool) -> str:
+async def _start_memory_or_503(tag: str, rebuild: bool, start_stage: str = "summarize") -> str:
     try:
-        return await temporal_client.start_rebuild_tag_memory(tag, rebuild)
+        return await temporal_client.start_rebuild_tag_memory(tag, rebuild, start_stage=start_stage)
     except Exception as e:
         if "already started" in str(e).lower():
             raise HTTPException(
@@ -974,9 +951,7 @@ async def _start_memory_or_503(tag: str, rebuild: bool) -> str:
                 detail="a purge/rebuild is already running for this tag",
             ) from e
         _LOG.exception("memory purge/rebuild start failed for tag=%s", tag)
-        raise HTTPException(
-            status_code=503, detail="temporal unavailable; try again later"
-        )
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
 
 
 def _require_done_recordings(tag: str, session: Session) -> int:
@@ -984,9 +959,7 @@ def _require_done_recordings(tag: str, session: Session) -> int:
     rebuild); returns the done count for the response."""
     count = len(_tag_recordings(session, tag))
     if count == 0:
-        raise HTTPException(
-            status_code=404, detail=f"no done recordings carry tag {tag}"
-        )
+        raise HTTPException(status_code=404, detail=f"no done recordings carry tag {tag}")
     return count
 
 
@@ -1003,8 +976,7 @@ def _require_not_processing(tag: str, session: Session) -> None:
         dialect = s.get_bind().dialect.name
         if dialect == "postgresql":
             stmt = _text(
-                "SELECT count(*) FROM recordings WHERE :tag = ANY(tags) "
-                "AND state = 'processing'"
+                "SELECT count(*) FROM recordings WHERE :tag = ANY(tags) AND state = 'processing'"
             )
         else:
             stmt = _text(
@@ -1053,12 +1025,20 @@ async def purge_memory(
 async def rebuild_memory(
     request: Request,
     tag: Annotated[str, Path()],
+    payload: dict | None = Body(default=None),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Admin: purge the tag's memory, then re-run enrich per done
-    recording (oldest first, sequential). Destructive like purge — the
-    confirm belongs in the UI. 202 + workflow id (deterministic per
-    tag: a live rebuild 409s)."""
+    """Admin: purge the tag's memory, then re-run the LLM stages per
+    done recording (oldest first, sequential). Destructive like purge —
+    the confirm belongs in the UI. 202 + workflow id (deterministic per
+    tag: a live rebuild 409s).
+
+    Body ``{"start_stage": "summarize" | "enrich"}`` (both optional —
+    empty body = summarize). Default "summarize": the rebuild's purpose
+    is "prompts/tag context changed", and the context feeds BOTH the
+    summary and the extraction; "enrich" covers the "graph broken,
+    summaries fine" case. Any other stage is 422 — a rebuild never
+    reprocesses audio."""
     norm = _normalize_tag(tag)
     _validate_tag(norm)
     cfg: ServerConfig = request.app.state.config
@@ -1066,7 +1046,13 @@ async def rebuild_memory(
     # Same guard order as purge: processing → done-records → start.
     _require_not_processing(norm, session)
     done = _require_done_recordings(norm, session)
-    workflow_id = await _start_memory_or_503(norm, rebuild=True)
+    start_stage = (payload or {}).get("start_stage", "summarize")
+    if start_stage not in ("summarize", "enrich"):
+        raise HTTPException(
+            status_code=422,
+            detail="start_stage must be 'summarize' or 'enrich'",
+        )
+    workflow_id = await _start_memory_or_503(norm, rebuild=True, start_stage=start_stage)
     return {"workflow_id": workflow_id, "tag": norm, "done_recordings": done}
 
 
@@ -1154,9 +1140,7 @@ async def _start_or_503(edit_id: int) -> str:
         return await temporal_client.start_apply_graph_edit(edit_id)
     except Exception:  # noqa: BLE001 — same blind-catch shape as post_digest
         _LOG.exception("start_apply_graph_edit failed for edit=%s", edit_id)
-        raise HTTPException(
-            status_code=503, detail="temporal unavailable; try again later"
-        )
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
 
 
 class TagCount(BaseModel):
@@ -1166,6 +1150,7 @@ class TagCount(BaseModel):
     # Tags page before any capture) still lists the tag.
     registered: bool = False
     vocabulary_count: int = 0
+
 
 class TagListResponse(BaseModel):
     items: list[TagCount]
@@ -1231,9 +1216,7 @@ def _recording_count(session: Session, tag: str) -> int:
         from sqlalchemy import select as sa_select
 
         n = session.execute(
-            sa_select(func.count())
-            .select_from(Recording)
-            .where(Recording.tags.contains([tag]))
+            sa_select(func.count()).select_from(Recording).where(Recording.tags.contains([tag]))
         ).scalar_one()
     else:
         rows = session.execute(
@@ -1285,9 +1268,7 @@ def get_tag(tag: str, session: Session = Depends(get_session)) -> dict:
 
 
 @router.patch("/{tag}")
-def update_tag(
-    body: TagUpdateRequest, tag: str, session: Session = Depends(get_session)
-) -> dict:
+def update_tag(body: TagUpdateRequest, tag: str, session: Session = Depends(get_session)) -> dict:
     """Replace the vocabulary (full-list semantics, like PATCH recording
     tags) and/or the context (full-text semantics). Absent fields are
     left unchanged. Upsert: a tag that only exists on recordings (no
@@ -1375,8 +1356,7 @@ def list_tags(request: Request, session: Session = Depends(get_session)) -> dict
     # Registry overlay: all tag_defs rows not already in the derived set
     # append with count 0; those in both keep the derived count.
     defs = {
-        d.name: (len(d.vocabulary or []))
-        for d in session.execute(select(TagDef)).scalars().all()
+        d.name: (len(d.vocabulary or [])) for d in session.execute(select(TagDef)).scalars().all()
     }
     items: list[dict] = []
     for entry in derived:
@@ -1390,7 +1370,5 @@ def list_tags(request: Request, session: Session = Depends(get_session)) -> dict
         )
     for name, vcount in sorted(defs.items()):
         if name not in {e["tag"] for e in derived}:
-            items.append(
-                {"tag": name, "count": 0, "registered": True, "vocabulary_count": vcount}
-            )
+            items.append({"tag": name, "count": 0, "registered": True, "vocabulary_count": vcount})
     return {"items": items}

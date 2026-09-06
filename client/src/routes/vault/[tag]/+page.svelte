@@ -472,8 +472,8 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 						</div>
 					{:else if memoryConfirm === 'rebuild'}
 						<div class="memory-confirm">
-							<span>Wipe and rebuild from every session?</span>
-							<small>Runs enrich per recording — takes a while.</small>
+							<span>Wipe and rebuild everything — summaries and graph?</span>
+							<small>Re-summarizes and re-extracts every session, oldest first. Takes a while.</small>
 							<div class="memory-confirm-actions">
 								<button class="memory-confirm-yes" type="button" disabled={memoryBusy} onclick={() => void startMemoryAction(true)}>Confirm rebuild</button>
 								<button type="button" onclick={() => (memoryConfirm = null)}>Cancel</button>
@@ -481,7 +481,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 						</div>
 					{:else}
 						<button type="button" role="menuitem" class="memory-item memory-danger" onclick={() => (memoryConfirm = 'purge')}>Purge memory…</button>
-						<button type="button" role="menuitem" class="memory-item" onclick={() => (memoryConfirm = 'rebuild')}>Rebuild memory</button>
+						<button type="button" role="menuitem" class="memory-item" onclick={() => (memoryConfirm = 'rebuild')}>Rebuild memory fully</button>
 					{/if}
 				</div>
 			{/if}

@@ -18,11 +18,25 @@
 	function typeAccent(type: string): string {
 		const key = (type ?? '').trim().toLowerCase();
 		const explicit: Record<string, string> = {
+			// Legacy fallback-ontology types kept for older namespaces.
 			person: 'var(--brass)',
 			org: 'var(--red)',
 			project: '#e9dfcf',
 			place: '#9e9183',
-			thing: 'var(--cyan)'
+			thing: 'var(--cyan)',
+			// TTRPG ontology (ttrpg-session-log v1.1.0). Palette-families:
+			// brass = protagonists (party, its characters), bone = humans
+			// and inert objects, ash = the named world, red family =
+			// hostiles (mobs, their factions), cyan = open threads.
+			player: 'var(--bone)',
+			character: 'var(--brass)',
+			npc: 'var(--ash)',
+			mob: 'var(--red)',
+			party: 'var(--brass)',
+			item: 'var(--bone)',
+			location: 'var(--ash)',
+			faction: 'var(--red-dark)',
+			quest: 'var(--cyan)'
 		};
 		if (key && explicit[key] !== undefined) return explicit[key];
 		if (!key) return 'var(--brass)';

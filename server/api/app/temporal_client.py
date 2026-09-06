@@ -52,6 +52,7 @@ async def regenerate_stage(rec_id: str, stage: str, duration_sec: float | None =
     )
     return handle.id
 
+
 async def start_export(rec_id: str, rename_only: bool = False) -> str:
     """Re-export the recording's vault folder. rename_only=True (the title-only PATCH
     rename path) only renames the folder — files inside are NOT rewritten,
@@ -124,14 +125,13 @@ async def start_apply_graph_edit(edit_id: int) -> str:
     )
     return handle.id
 
+
 GRAPH_FIX_PREVIEW_WORKFLOW_NAME = "GraphFixPreview"
 GRAPH_FIX_APPLY_WORKFLOW_NAME = "GraphFixApply"
 GRAPH_FIX_ID_PREFIX = "graph-fix-"
 
 
-async def start_fix_preview(
-    tag: str, instruction: str, recording_id: str | None
-) -> str:
+async def start_fix_preview(tag: str, instruction: str, recording_id: str | None) -> str:
     """Phase C: ONE LLM call → proposal (no apply). Unique id per
     request; the API's rate limiter (not the workflow id) guards
     against parallel preview fan-out."""
@@ -145,9 +145,7 @@ async def start_fix_preview(
     return handle.id
 
 
-async def start_fix_apply(
-    tag: str, proposal: dict, feedback_text: str | None
-) -> str:
+async def start_fix_apply(tag: str, proposal: dict, feedback_text: str | None) -> str:
     """Phase C: apply a confirmed proposal all-or-nothing (no LLM)."""
     client = await get_client()
     handle = await client.start_workflow(
@@ -163,17 +161,21 @@ REBUILD_TAG_MEMORY_WORKFLOW_NAME = "RebuildTagMemory"
 REBUILD_TAG_MEMORY_ID_PREFIX = "rebuild-tag-memory-"
 
 
-async def start_rebuild_tag_memory(tag: str, rebuild: bool) -> str:
+async def start_rebuild_tag_memory(tag: str, rebuild: bool, start_stage: str = "summarize") -> str:
     """Admin: purge (± rebuild) one tag's memory.
 
+    ``start_stage``: which ProcessRecording stage the rebuild's children
+    restart from — "summarize" (default; prompts/tag context changed) or
+    "enrich" (graph broken, summaries fine). Validated by the route.
+
     Deterministic id per tag: while a rebuild for the tag is live, a
-    second start raises WorkflowAlreadyStarted → the API surfaces it as
-    a 409 ("already running"), the same guard shape the per-recording
+    second start raises WorkflowAlreadyStarted → the API surfaces it as a
+    409 ("already running"), the same guard shape the per-recording
     regenerate uses."""
     client = await get_client()
     handle = await client.start_workflow(
         REBUILD_TAG_MEMORY_WORKFLOW_NAME,
-        {"tag": tag, "rebuild": rebuild},
+        {"tag": tag, "rebuild": rebuild, "start_stage": start_stage},
         id=f"{REBUILD_TAG_MEMORY_ID_PREFIX}{tag}",
         task_queue=TASK_QUEUE,
     )

@@ -433,10 +433,11 @@ class GraphFixApply:
 class RebuildTagMemory:
     """Admin: purge one tag's memory, optionally rebuild it.
 
-    ``args = {"tag": str, "rebuild": bool}``. Purge = the
-    ``purge_tag_memory`` activity (graph namespace + edits + digest +
+    ``args = {"tag": str, "rebuild": bool, "start_stage": str}`` where
+    ``start_stage`` is ``"summarize"`` (default) or ``"enrich"``. Purge =
+    the ``purge_tag_memory`` activity (graph namespace + edits + digest +
     index; see worker/purge.py). Rebuild = SEQUENTIAL child
-    ``ProcessRecording`` runs starting at ``enrich`` for every done
+    ``ProcessRecording`` runs starting at ``start_stage`` for every done
     recording of the tag — sequential on purpose: a parallel mass-enrich
     is exactly the 2026-08-29 LiteLLM FIFO starvation pattern
     (extraction starving the small Y/N dedup calls), and each child
@@ -471,6 +472,11 @@ class RebuildTagMemory:
     async def run(self, args: dict) -> dict:
         tag: str = args["tag"]
         rebuild: bool = args.get("rebuild", False)
+        # Default "summarize": the rebuild's purpose is "prompts/tag
+        # context changed — rebuild the memory from scratch", and the
+        # context feeds BOTH the summary and the extraction. "enrich"
+        # stays available for the "graph broken, summaries fine" case.
+        start_stage: str = args.get("start_stage", "summarize")
         purge = await workflow.execute_activity(
             "purge_tag_memory",
             tag,
@@ -499,18 +505,21 @@ class RebuildTagMemory:
             try:
                 await workflow.execute_child_workflow(
                     "ProcessRecording",
-                    {"recording_id": rec_id, "start_stage": "enrich"},
+                    {"recording_id": rec_id, "start_stage": start_stage},
                     id=f"process-recording-{rec_id}",
                     # Each recording keeps the deterministic
                     # process-recording-<id> name: a rebuild is a
                     # regenerate by another door, and the API's
                     # "already running" guard stays meaningful.
-                    execution_timeout=timedelta(seconds=3600),
+                    # 5400s: a summarize-start child runs TWO LLM stages
+                    # (summarize 2400s + enrich 2400s worst case); the
+                    # old 3600s pin only covered a single enrich.
+                    execution_timeout=timedelta(seconds=5400),
                 )
                 self._finished.append(rec_id)
             except ChildWorkflowError:
                 workflow.logger.warning(
-                    "rebuild %s: enrich child failed for %s; continuing",
+                    "rebuild %s: child failed for %s; continuing",
                     tag,
                     rec_id,
                 )
