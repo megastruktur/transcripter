@@ -146,18 +146,6 @@
 					<li class="vocab-empty">No words yet — add names and terms that come up in this tag's sessions.</li>
 				{/each}
 			</ul>
-
-			<div class="vocab-actions">
-				<button class="vocab-save" type="button" disabled={saving} onclick={() => void save()}>
-					{saving ? 'Saving…' : 'Save tag'}
-				</button>
-				{#if savedAt}
-					<span class="vocab-saved">Saved {savedAt}</span>
-				{/if}
-				{#if saveError}
-					<span class="vocab-error" role="alert">{saveError}</span>
-				{/if}
-			</div>
 		</div>
 
 		<div class="vocab-section">
@@ -171,6 +159,18 @@
 				placeholder="Setting, who is who, standing instructions…"
 				bind:value={contextText}
 			></textarea>
+		</div>
+
+		<div class="vocab-actions">
+			<button class="vocab-save" type="button" disabled={saving} onclick={() => void save()}>
+				{saving ? 'Saving…' : 'Save tag'}
+			</button>
+			{#if savedAt}
+				<span class="vocab-saved">Saved {savedAt}</span>
+			{/if}
+			{#if saveError}
+				<span class="vocab-error" role="alert">{saveError}</span>
+			{/if}
 		</div>
 
 		<div class="danger-section">

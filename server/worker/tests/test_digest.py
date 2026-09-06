@@ -29,7 +29,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import activities
-from worker.db import Base, Recording, RecordingState, Stage, session
+from worker.db import Base, Recording, RecordingState, Stage, TagDef, session
 from worker.digest import (
     DigestGraphSlice,
     DigestInput,
@@ -644,6 +644,52 @@ def test_run_digest_invalid_tag_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         asyncio.run(
             asyncio.to_thread(run_digest, "bad$tag", 2, cfg, cfg.vault.path)
         )
+
+
+def test_run_digest_reads_tag_context_from_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_digest's registry read (TagDef.context → prompt) is part of
+    the feature — a row's context must reach the LLM prompt, stripped."""
+    _seed_recordings()
+    _patch_graph(monkeypatch, _make_graph_slice())
+    captured = _mock_llm_post(monkeypatch, "# digest body")
+    with session() as s:
+        s.add(TagDef(name="pathfinder", context="  Партия: Абсалом (жрец).  "))
+        s.commit()
+
+    cfg = activities._cfg
+    result = run_digest("pathfinder", 2, cfg, cfg.vault.path)
+    assert result["written"] is True
+    prompt = captured["json"]["messages"][1]["content"]
+    assert "Operator context for this series" in prompt
+    # stripped at read (same contract as activities._context_block)
+    assert "Партия: Абсалом (жрец)." in prompt
+    assert "  Партия" not in prompt
+
+
+def test_run_digest_without_registry_row_renders_old_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No tag_defs row → tag_context reads as '' (not None, no error), so
+    the section collapses — the prompt renders the pre-context shape."""
+    _seed_recordings()
+    _patch_graph(monkeypatch, _make_graph_slice())
+    captured = _mock_llm_post(monkeypatch, "# digest body")
+    real_render = _render_prompt
+    ctx_arg: dict[str, str] = {}
+
+    def _spy(tag, last_n, rows, graph, tag_context=""):
+        ctx_arg["value"] = tag_context
+        return real_render(tag, last_n, rows, graph, tag_context)
+
+    monkeypatch.setattr("worker.digest._render_prompt", _spy)
+
+    cfg = activities._cfg
+    result = run_digest("pathfinder", 2, cfg, cfg.vault.path)
+    assert result["written"] is True
+    assert ctx_arg["value"] == ""
+    assert "Operator context" not in captured["json"]["messages"][1]["content"]
 
 
 # ---------- activity wiring ----------------------------------------------------
