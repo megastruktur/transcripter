@@ -22,3 +22,6 @@ design-shots/
 *.bak*
 local:
 storage-dev/
+
+# npm lockfile — this project uses pnpm (pnpm-lock.yaml)
+client/package-lock.json
