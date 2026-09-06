@@ -47,9 +47,10 @@ def _enrich_retry() -> RetryPolicy:
     of the transcribe kind (enrich is idempotent: DETACH DELETE by
     origin_recording_id). Intentional skips are excluded server-side:
     the activity raises ApplicationError(non_retryable=True) for them,
-    which Temporal never retries regardless of this policy. Workflow
-    ceiling is unlimited (no execution_timeout set), so 3×(2400+300)
-    fits."""
+    which Temporal never retries regardless of this policy. A standalone
+    ProcessRecording has NO execution_timeout, so 3×(2400+300) fits; as
+    a RebuildTagMemory child it runs under the rebuild's per-child cap
+    (11400s, sized to include this budget) — see RebuildTagMemory."""
     return RetryPolicy(
         maximum_attempts=3,
         initial_interval=timedelta(seconds=300),
@@ -511,10 +512,13 @@ class RebuildTagMemory:
                     # process-recording-<id> name: a rebuild is a
                     # regenerate by another door, and the API's
                     # "already running" guard stays meaningful.
-                    # 5400s: a summarize-start child runs TWO LLM stages
-                    # (summarize 2400s + enrich 2400s worst case); the
-                    # old 3600s pin only covered a single enrich.
-                    execution_timeout=timedelta(seconds=5400),
+                    # 11400s covers the true worst case of a
+                    # summarize-start child: summarize 2400 (no retry)
+                    # + enrich 3×2400 + 2×300 backoff (the _enrich_retry
+                    # incident budget) + finalize/export retries — the
+                    # enrich retries alone are 7800s, so the old 3600s
+                    # pin killed legitimate retry loops mid-flight.
+                    execution_timeout=timedelta(seconds=11400),
                 )
                 self._finished.append(rec_id)
             except ChildWorkflowError:
