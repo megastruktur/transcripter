@@ -145,6 +145,17 @@ def test_patch_context_only_keeps_vocabulary(client: TestClient) -> None:
     assert body["vocabulary"] == ["a"]  # absent field untouched
 
 
+def test_patch_context_only_upserts_legacy_tag(client: TestClient) -> None:
+    """Context-only PATCH against a recording-only tag upserts the row;
+    the absent vocabulary keeps its column default ([])."""
+    client.post("/recordings", json={"title": "t", "tags": ["legacy"]})
+    r = client.patch("/tags/legacy", json={"context": "x"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["context"] == "x"
+    assert body["vocabulary"] == []
+
+
 def test_patch_vocabulary_only_keeps_context(client: TestClient) -> None:
     """The pre-context client shape (bare {vocabulary}) must not clear
     the context."""

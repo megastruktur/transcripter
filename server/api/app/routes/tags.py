@@ -1198,6 +1198,7 @@ def _normalize_context(raw: str) -> str:
     text the operator writes for their own LLM."""
     return raw.strip()
 
+
 def _normalize_vocabulary(raw: list[str]) -> list[str]:
     """Trim, drop blanks, dedupe CASE-INSENSITIVELY (first spelling wins —
     ``Foo``/``foo`` are the same hot word, and both in a prompt is noise),

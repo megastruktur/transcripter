@@ -24,7 +24,7 @@ Feature: tags as first-class entities with hot-word vocabularies that bias ASR a
 - Rail item `Tags` (icon 'tags', between Library and Vault); `/tags` manifest page; `/tags/[tag]` editor (vocabulary add/remove + context textarea, one Save PATCHes BOTH, delete with confirm). api.svelte.ts: createTag/fetchTagDef/updateTag/deleteTagDef + TagCount{registered?, vocabulary_count?}; TagDef now carries `context: string`.
 
 ## Tests
-- api: tests/test_tag_registry.py (17) + phase0 GET /tags contract updated (registered/vocabulary_count fields).
+- api: tests/test_tag_registry.py (25) + phase0 GET /tags contract updated (registered/vocabulary_count fields).
 - worker: tests/test_tag_vocab.py (9); test_chunked_stages suspect test updated to new prompt contract.
 
 Note: deploy needs api+worker image rebuild (both sides changed); tag_defs table auto-creates on API startup.
