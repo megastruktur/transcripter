@@ -173,7 +173,6 @@
 			></textarea>
 		</div>
 
-
 		<div class="danger-section">
 			{#if !confirmingDelete}
 				<button class="danger-toggle" type="button" onclick={() => (confirmingDelete = true)} disabled={def.recordings > 0}>

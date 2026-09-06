@@ -155,8 +155,8 @@ def _backfill_tag_defs() -> None:
         with engine().begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO tag_defs (name, vocabulary, created_at, updated_at) "
-                    "SELECT DISTINCT t, '{}'::text[], now(), now() "
+                    "INSERT INTO tag_defs (name, vocabulary, context, created_at, updated_at) "
+                    "SELECT DISTINCT t, '{}'::text[], '', now(), now() "
                     "FROM recordings, unnest(recordings.tags) AS t "
                     "WHERE t <> '' ON CONFLICT (name) DO NOTHING"
                 )

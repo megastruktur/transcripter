@@ -183,7 +183,9 @@ class TagDef(Base):
     # an ASR hot-word source — that is vocabulary's job (the ASR
     # initial_prompt is ~900 chars and treats text as prior speech).
     # No length cap by design (2026-09-05 decision: add one when it hurts).
-    context: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    context: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
