@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from temporalio.service import RPCError
@@ -65,6 +65,17 @@ class DigestRequest(BaseModel):
     JSON body keeps the same validation as before."""
 
     last_n: int | None = Field(default=None, ge=1, le=50)
+
+
+class RebuildRequest(BaseModel):
+    """POST /rebuild body. Optional like DigestRequest (a bare POST —
+    curl-style — defaults to the full summarize rebuild). Literal + the
+    model_validator 422 catch BOTH bad values and misspelled keys
+    (extra='forbid'): a typo'd ``stage`` must not silently fall back to
+    the more expensive default on a destructive endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+    start_stage: Literal["summarize", "enrich"] = "summarize"
 
 
 def _normalize_tag(raw: str) -> str:
@@ -1025,7 +1036,7 @@ async def purge_memory(
 async def rebuild_memory(
     request: Request,
     tag: Annotated[str, Path()],
-    payload: dict | None = Body(default=None),
+    payload: RebuildRequest | None = Body(default=None),
     session: Session = Depends(get_session),
 ) -> dict:
     """Admin: purge the tag's memory, then re-run the LLM stages per
@@ -1033,12 +1044,12 @@ async def rebuild_memory(
     the confirm belongs in the UI. 202 + workflow id (deterministic per
     tag: a live rebuild 409s).
 
-    Body ``{"start_stage": "summarize" | "enrich"}`` (both optional —
-    empty body = summarize). Default "summarize": the rebuild's purpose
-    is "prompts/tag context changed", and the context feeds BOTH the
-    summary and the extraction; "enrich" covers the "graph broken,
-    summaries fine" case. Any other stage is 422 — a rebuild never
-    reprocesses audio."""
+    Body ``{"start_stage": "summarize" | "enrich"}`` (empty body =
+    summarize; unknown keys 422 via ``extra='forbid'``). Default
+    "summarize": the rebuild's purpose is "prompts/tag context changed",
+    and the context feeds BOTH the summary and the extraction; "enrich"
+    covers the "graph broken, summaries fine" case. Any other stage is
+    422 — a rebuild never reprocesses audio."""
     norm = _normalize_tag(tag)
     _validate_tag(norm)
     cfg: ServerConfig = request.app.state.config
@@ -1046,12 +1057,7 @@ async def rebuild_memory(
     # Same guard order as purge: processing → done-records → start.
     _require_not_processing(norm, session)
     done = _require_done_recordings(norm, session)
-    start_stage = (payload or {}).get("start_stage", "summarize")
-    if start_stage not in ("summarize", "enrich"):
-        raise HTTPException(
-            status_code=422,
-            detail="start_stage must be 'summarize' or 'enrich'",
-        )
+    start_stage = payload.start_stage if payload is not None else "summarize"
     workflow_id = await _start_memory_or_503(norm, rebuild=True, start_stage=start_stage)
     return {"workflow_id": workflow_id, "tag": norm, "done_recordings": done}
 

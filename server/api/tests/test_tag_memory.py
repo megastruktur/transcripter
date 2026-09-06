@@ -176,6 +176,21 @@ def test_rebuild_rejects_unknown_stage(client: TestClient, monkeypatch: pytest.M
     temporal_client.start_rebuild_tag_memory.assert_not_awaited()
 
 
+def test_rebuild_rejects_misspelled_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """extra='forbid': {"stage": "enrich"} must 422, not silently fall
+    back to the MORE expensive summarize default after the purge."""
+    from app import temporal_client
+
+    _enable_graph(client, monkeypatch)
+    _seed_done(client)
+    temporal_client.start_rebuild_tag_memory.reset_mock()
+    r = client.post("/tags/quest/rebuild", json={"stage": "enrich"})
+    assert r.status_code == 422
+    temporal_client.start_rebuild_tag_memory.assert_not_awaited()
+
+
 def test_already_running_409(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     _enable_graph(client, monkeypatch)
     _seed_done(client)
