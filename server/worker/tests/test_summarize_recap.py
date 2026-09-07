@@ -443,7 +443,7 @@ class TestSummarizeActivityRecap:
 
 class TestDigestPromptEntityUpdates:
     def test_entity_updates_section_present(self) -> None:
-        assert "4. Entity updates" in _DIGEST_PROMPT_HEADER
+        assert "4. Notable changes" in _DIGEST_PROMPT_HEADER
         assert "state_change" in _DIGEST_PROMPT_HEADER
 
     def test_open_threads_renumbered_to_5(self) -> None:
@@ -465,6 +465,43 @@ class TestDigestPromptEntityUpdates:
         assert "Sessions: T1 (2026-08-01)" in prompt
         assert "Relations (from — rel — to):" in prompt
         assert "(none)" in prompt
+
+    def test_entities_feed_reaches_prompt(self) -> None:
+        """2026-09-07 regression: {entities} was dropped from the header
+        in phase1 while the renderer kept building the feed — the LLM got
+        an entity-less prompt and invented the recurring-names section
+        from thin air. The feed MUST be in the prompt again."""
+        graph = DigestGraphSlice(
+            entities=[
+                {
+                    "label": "Аугрейль",
+                    "type": "npc",
+                    "sessions": ["r1", "r2"],
+                    "session_count": 2,
+                    "description": "Мерфолк-гуль, сторожит подземелье",
+                }
+            ],
+            events=[],
+            relations=[],
+        )
+        prompt = _render_prompt(
+            "pathfinder",
+            2,
+            [DigestRow("r1", "T1", datetime_utc(2026, 8, 1), datetime_utc(2026, 8, 1))],
+            graph,
+        )
+        assert "Recurring entries" in prompt
+        assert "Аугрейль (npc) — 2 session(s) — Мерфолк-гуль" in prompt
+
+    def test_timecode_ban_present(self) -> None:
+        """The digest shares the summarize profiles' no-timecode rule
+        (2026-09-04) — the feed carries raw ts values the model copied
+        verbatim into bullet lists."""
+        assert "Do not use timestamps or timecodes" in _DIGEST_PROMPT_HEADER
+        assert "[hh:mm:ss]" in _DIGEST_PROMPT_HEADER
+
+    def test_returning_names_no_technical_label(self) -> None:
+        assert "never a technical label like 'entities'" in _DIGEST_PROMPT_HEADER
 
 # ---------- recap retrieval (semantic tail) --------------------------------------
 
