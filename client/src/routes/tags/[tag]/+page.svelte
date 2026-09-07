@@ -17,29 +17,51 @@
 	let def = $state<TagDef | null>(null);
 	let error = $state('');
 	let loading = $state(true);
-	// Vocabulary editor state: local list while editing, PATCHed as a whole
-	// list on save (full-list semantics, same as recording tags PATCH).
+	// Auto-save editors (2026-09-07): every mutation PATCHes immediately —
+	// the old explicit "Save tag" button was a UX trap (words lived only in
+	// local state; a missed click silently lost them on navigation).
+	// Vocabulary edits and context blur both flush the CURRENT state as one
+	// atomic PATCH (full-list semantics, same as recording tags PATCH).
 	let words = $state<string[]>([]);
 	let newWord = $state('');
-	// Context editor state: local text while editing, PATCHed on save.
-	// One Save commits BOTH editors (single PATCH, single toast slot).
 	let contextText = $state('');
+	let contextSaved = $state('');
 	let saving = $state(false);
 	let saveError = $state('');
 	let savedAt = $state('');
+	let pendingFlush = $state(false);
 	let confirmingDelete = $state(false);
 	let deleteError = $state('');
 
-	async function refresh(): Promise<void> {
+	async function flush(): Promise<void> {
+		if (saving) {
+			// A PATCH is in flight; remember to re-send the CURRENT state
+			// when it lands (the in-flight body may already be stale).
+			pendingFlush = true;
+			return;
+		}
+		saving = true;
+		saveError = '';
 		try {
-			def = await fetchTagDef(loadApiConfig(), tag);
+			const contextSent = contextText;
+			def = await updateTag(loadApiConfig(), tag, {
+				vocabulary: words,
+				context: contextSent
+			});
 			words = [...def.vocabulary];
-			contextText = def.context;
-			error = '';
+			// Sync context ONLY when untouched since the request — never
+			// clobber typing that happened while the PATCH was in flight.
+			if (contextText === contextSent) contextText = def.context;
+			contextSaved = def.context;
+			savedAt = new Date().toLocaleTimeString();
 		} catch (caught) {
-			error = String(caught);
+			saveError = String(caught);
 		} finally {
-			loading = false;
+			saving = false;
+			if (pendingFlush) {
+				pendingFlush = false;
+				void flush();
+			}
 		}
 	}
 
@@ -53,28 +75,29 @@
 		}
 		words = [...words, w.slice(0, 64)];
 		newWord = '';
+		void flush();
 	}
 
 	function removeWord(index: number): void {
 		words = words.filter((_, i) => i !== index);
+		void flush();
 	}
 
-	async function save(): Promise<void> {
-		if (saving) return;
-		saving = true;
-		saveError = '';
+	function contextChanged(): boolean {
+		return contextText !== contextSaved;
+	}
+
+	async function refresh(): Promise<void> {
 		try {
-			def = await updateTag(loadApiConfig(), tag, {
-				vocabulary: words,
-				context: contextText
-			});
+			def = await fetchTagDef(loadApiConfig(), tag);
 			words = [...def.vocabulary];
 			contextText = def.context;
-			savedAt = new Date().toLocaleTimeString();
+			contextSaved = def.context;
+			error = '';
 		} catch (caught) {
-			saveError = String(caught);
+			error = String(caught);
 		} finally {
-			saving = false;
+			loading = false;
 		}
 	}
 
@@ -158,18 +181,16 @@
 				rows="6"
 				placeholder="Setting, who is who, standing instructions…"
 				bind:value={contextText}
+				onblur={() => { if (contextChanged()) void flush(); }}
 			></textarea>
 		</div>
-
 		<div class="vocab-actions">
-			<button class="vocab-save" type="button" disabled={saving} onclick={() => void save()}>
-				{saving ? 'Saving…' : 'Save tag'}
-			</button>
-			{#if savedAt}
-				<span class="vocab-saved">Saved {savedAt}</span>
-			{/if}
 			{#if saveError}
 				<span class="vocab-error" role="alert">{saveError}</span>
+			{:else if saving}
+				<span class="vocab-saving">Saving…</span>
+			{:else if savedAt}
+				<span class="vocab-saved">Saved {savedAt}</span>
 			{/if}
 		</div>
 
@@ -224,16 +245,13 @@
 	.vocab-empty { padding: 10px 2px; color: #746d64; font-size: 11px; border-bottom: 1px solid var(--line); }
 
 	.vocab-actions { display: flex; gap: 10px; align-items: center; }
-	.vocab-save { min-height: 42px; }
 	.vocab-saved { color: var(--brass); font-size: 10px; font-weight: 650; }
+	.vocab-saving { color: #8b8278; font-size: 10px; font-weight: 650; }
 	.vocab-error { color: var(--red); font-size: 11px; }
 
 	.vocab-add button { border: 1px solid var(--brass); background: rgba(215, 167, 71, 0.12); color: var(--brass); border-radius: 3px; padding: 0 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
 	.vocab-add button:hover:not(:disabled) { color: var(--bone); border-color: var(--bone); }
 	.vocab-add button:disabled { cursor: not-allowed; }
-	.vocab-save { border: 1px solid var(--brass); background: rgba(215, 167, 71, 0.12); color: var(--brass); border-radius: 3px; padding: 0 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
-	.vocab-save:hover:not(:disabled) { color: var(--bone); border-color: var(--bone); }
-	.vocab-save:disabled { cursor: not-allowed; }
 	.danger-section { display: flex; gap: 10px; align-items: center; border-top: 1px solid var(--line); padding-top: 12px; }
 	.danger-toggle { color: #8b8278; background: none; border: 1px solid var(--line); border-radius: 3px; min-height: 34px; padding: 0 12px; cursor: pointer; font-size: 11px; }
 	.danger-toggle:hover:not(:disabled) { color: var(--red); border-color: rgba(213,45,36,.5); }
