@@ -12,6 +12,7 @@
 	import Skeleton from '$lib/Skeleton.svelte';
 	import LatticeTab from '$lib/lattice/LatticeTab.svelte';
 	import CorrectionsTab from '$lib/vault/CorrectionsTab.svelte';
+	import TagDefinitionTab from '$lib/vault/TagDefinitionTab.svelte';
 	import EventCard from '$lib/vault/EventCard.svelte';
 	import {
 		fetchTimeline,
@@ -36,17 +37,19 @@
 
 	const tag = decodeURIComponent(page.params.tag ?? '');
 
-	type TabKey = 'timeline' | 'entities' | 'lattice' | 'digest' | 'corrections';
-	const TABS: { key: TabKey; label: string; icon: 'timeline' | 'speakers' | 'enrich' | 'summary' | 'shield' }[] = [
+	type TabKey = 'definition' | 'timeline' | 'entities' | 'lattice' | 'digest' | 'corrections';
+
+	const TABS: { key: TabKey; label: string; icon: 'tags' | 'timeline' | 'speakers' | 'enrich' | 'summary' | 'shield' }[] = [
+		{ key: 'definition', label: 'Definition', icon: 'tags' },
 		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
 		{ key: 'entities', label: 'Entities', icon: 'speakers' },
 		{ key: 'lattice', label: 'Lattice', icon: 'enrich' },
 		{ key: 'digest', label: 'Digest', icon: 'summary' },
 		{ key: 'corrections', label: 'Corrections', icon: 'shield' }
 	];
-	let tab = $state<TabKey>('timeline');
 	let data = $state<TimelineResponse | null>(null);
 	let loading = $state(true);
+	let tab = $state<TabKey>('digest');
 	let error = $state('');
 	let notFound = $state(false);
 	let fetchSeq = 0;
@@ -401,6 +404,11 @@ async function runSearch(): Promise<void> {
 		}
 	}
 
+	/** Definition tab's "Open sessions →" link: jump to the timeline. */
+	function gotoTimeline(): void {
+		switchTab('timeline');
+	}
+
 
 	function toggleSession(id: string): void {
 		openSession = openSession === id ? null : id;
@@ -554,6 +562,12 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 
 	onMount(() => {
 		refresh();
+		// Digest is the DEFAULT entry (2026-09-07): switchTab runs the
+		// lazy-load, but nothing calls it on mount — fire the same init
+		// here so the panel arrives without a tab round-trip.
+		digestLoaded = true;
+		void loadDigest();
+		void refreshDigestStatus();
 		return stopDigestPoll;
 	});
 </script>
@@ -618,11 +632,19 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	{#if loading}
 		<Skeleton variant="panel-tag" />
 	{:else if notFound}
-		<NoticePanel title="No sessions carry this tag" hint="The tag may have been removed from every recording, or the address is wrong." backHref="/vault" backLabel="Back to vault" />
+		<!-- Empty tag (registry-only): the timeline 404s, but the tag page
+		     must stay reachable — Definition is the only meaningful view,
+		     and the tab row keeps it discoverable for non-empty tags. -->
+		<ViewTabs tabs={TABS} active={tab} ariaLabel="Tag views" onchange={(key) => switchTab(key as TabKey)} />
+		{#if tab === 'definition'}
+			<TagDefinitionTab {tag} ontimeline={gotoTimeline} ondeleted={() => void goto('/vault')} />
+		{:else}
+			<NoticePanel title="No sessions carry this tag" hint="The tag may have been removed from every recording, or the address is wrong." backHref="/vault" backLabel="Back to vault" />
+		{/if}
 	{:else if data}
 		<ViewTabs tabs={TABS} active={tab} ariaLabel="Tag views" onchange={(key) => switchTab(key as TabKey)} />
 
-		{#if tab !== 'lattice'}
+		{#if tab !== 'lattice' && tab !== 'definition'}
 			<SearchRecess
 				ariaLabel={`Semantic search · ${tag}`}
 				placeholder="Search this tag's sessions…"
@@ -637,7 +659,9 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 			/>
 		{/if}
 
-		{#if tab === 'timeline'}
+		{#if tab === 'definition'}
+			<TagDefinitionTab {tag} ontimeline={gotoTimeline} ondeleted={() => void goto('/vault')} />
+		{:else if tab === 'timeline'}
 			<div class="session-list">
 				{#each data.sessions as session (session.recording_id)}
 					<div class="session-card">

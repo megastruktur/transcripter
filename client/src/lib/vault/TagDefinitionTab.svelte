@@ -1,7 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { page } from '$app/state';
-	import BackButton from '$lib/BackButton.svelte';
 	import EmptyState from '$lib/EmptyState.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import {
@@ -12,7 +10,7 @@
 		type TagDef
 	} from '$lib/api.svelte';
 
-	const tag = $derived(decodeURIComponent(page.params.tag ?? ''));
+	let { tag, ondeleted = () => {}, ontimeline = () => {} }: { tag: string; ondeleted?: () => void; ontimeline?: () => void } = $props();
 
 	let def = $state<TagDef | null>(null);
 	let error = $state('');
@@ -104,7 +102,7 @@
 	async function remove(): Promise<void> {
 		try {
 			await deleteTagDef(loadApiConfig(), tag);
-			history.back();
+			ondeleted();
 		} catch (caught) {
 			const status = (caught as { status?: number }).status;
 			deleteError =
@@ -118,111 +116,102 @@
 	onMount(refresh);
 </script>
 
-<svelte:head><title>{tag} · Transcriptor Maximus</title></svelte:head>
-
-<section class="page tagdef-page">
-	<BackButton href="/tags" label="Tags" />
-
-	{#if loading}
-		<div class="tagdef-loading">Loading…</div>
-	{:else if error}
-		<EmptyState icon="tags" title="Tag not found" hint={error} />
-	{:else if def}
-		<header class="tagdef-head">
-			<h2>{def.name}</h2>
-			<div class="tagdef-meta">
-				<span>{def.recordings} recordings</span>
-				{#if def.recordings > 0}
-					<a href="/vault/{encodeURIComponent(def.name)}">Open in Vault →</a>
-				{/if}
-			</div>
-		</header>
-
-		<div class="vocab-section">
-			<div class="vocab-heading">
-				<strong>Vocabulary</strong>
-				<span class="vocab-hint">Hot words bias recognition and summaries — applied on the next transcription or summary run.</span>
-			</div>
-
-			<form class="vocab-add" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
-				<label>
-					<span class="sr-only">New word or phrase</span>
-					<input
-						type="text"
-						placeholder="Name, term, phrase…"
-						maxlength="64"
-						bind:value={newWord}
-					/>
-				</label>
-				<button type="submit" disabled={!newWord.trim()}>Add</button>
-			</form>
-
-			<ul class="vocab-list" aria-live="polite">
-				{#each words as word, i (word)}
-					<li class="vocab-row">
-						<span class="vocab-word">{word}</span>
-						<button class="vocab-remove" type="button" onclick={() => removeWord(i)} aria-label="Remove {word}">
-							<Icon name="trash" size={13} />
-						</button>
-					</li>
-				{:else}
-					<li class="vocab-empty">No words yet — add names and terms that come up in this tag's sessions.</li>
-				{/each}
-			</ul>
-		</div>
-
-		<div class="vocab-section">
-			<div class="vocab-heading">
-				<strong>Context</strong>
-				<span class="vocab-hint">What the LLM should know about this series — players, characters, projects, tone. Applied to summaries, extraction and digests on the next run.</span>
-			</div>
-			<textarea
-				class="context-input"
-				rows="6"
-				placeholder="Setting, who is who, standing instructions…"
-				bind:value={contextText}
-				onblur={() => { if (contextChanged()) void flush(); }}
-			></textarea>
-		</div>
-		<div class="vocab-actions">
-			{#if saveError}
-				<span class="vocab-error" role="alert">{saveError}</span>
-			{:else if saving}
-				<span class="vocab-saving">Saving…</span>
-			{:else if savedAt}
-				<span class="vocab-saved">Saved {savedAt}</span>
+{#if loading}
+	<div class="tagdef-loading">Loading…</div>
+{:else if error}
+	<EmptyState icon="tags" title="Tag not found" hint={error} />
+{:else if def}
+	<header class="tagdef-head">
+		<div class="tagdef-meta">
+			<span>{def.recordings} recordings</span>
+			{#if def.recordings > 0}
+				<a href="#timeline" onclick={(e) => { e.preventDefault(); ontimeline(); }}>Open sessions →</a>
 			{/if}
 		</div>
+	</header>
 
-		<div class="danger-section">
-			{#if !confirmingDelete}
-				<button class="danger-toggle" type="button" onclick={() => (confirmingDelete = true)} disabled={def.recordings > 0}>
-					Delete tag
-				</button>
-				{#if def.recordings > 0}
-					<span class="danger-note">Recordings carry this tag — detach them first.</span>
-				{/if}
+	<div class="vocab-section">
+		<div class="vocab-heading">
+			<strong>Vocabulary</strong>
+			<span class="vocab-hint">Hot words bias recognition and summaries — applied on the next transcription or summary run.</span>
+		</div>
+
+		<form class="vocab-add" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
+			<label>
+				<span class="sr-only">New word or phrase</span>
+				<input
+					type="text"
+					placeholder="Name, term, phrase…"
+					maxlength="64"
+					bind:value={newWord}
+				/>
+			</label>
+			<button type="submit" disabled={!newWord.trim()}>Add</button>
+		</form>
+
+		<ul class="vocab-list" aria-live="polite">
+			{#each words as word, i (word)}
+				<li class="vocab-row">
+					<span class="vocab-word">{word}</span>
+					<button class="vocab-remove" type="button" onclick={() => removeWord(i)} aria-label="Remove {word}">
+						<Icon name="trash" size={13} />
+					</button>
+				</li>
 			{:else}
-				<div class="danger-confirm">
-					<span>Delete the registry entry? The vocabulary is lost; recordings and tag memory stay.</span>
-					<button class="danger-yes" type="button" onclick={() => void remove()}>Delete</button>
-					<button class="danger-no" type="button" onclick={() => (confirmingDelete = false)}>Keep</button>
-				</div>
-			{/if}
-			{#if deleteError}
-				<div class="vocab-error" role="alert">{deleteError}</div>
-			{/if}
+				<li class="vocab-empty">No words yet — add names and terms that come up in this tag's sessions.</li>
+			{/each}
+		</ul>
+	</div>
+
+	<div class="vocab-section">
+		<div class="vocab-heading">
+			<strong>Context</strong>
+			<span class="vocab-hint">What the LLM should know about this series — players, characters, projects, tone. Applied to summaries, extraction and digests on the next run.</span>
 		</div>
-	{/if}
-</section>
+		<textarea
+			class="context-input"
+			rows="6"
+			placeholder="Setting, who is who, standing instructions…"
+			bind:value={contextText}
+			onblur={() => { if (contextChanged()) void flush(); }}
+		></textarea>
+	</div>
+	<div class="vocab-actions">
+		{#if saveError}
+			<span class="vocab-error" role="alert">{saveError}</span>
+		{:else if saving}
+			<span class="vocab-saving">Saving…</span>
+		{:else if savedAt}
+			<span class="vocab-saved">Saved {savedAt}</span>
+		{/if}
+	</div>
+
+	<div class="danger-section">
+		{#if !confirmingDelete}
+			<button class="danger-toggle" type="button" onclick={() => (confirmingDelete = true)} disabled={def.recordings > 0}>
+				Delete tag
+			</button>
+			{#if def.recordings > 0}
+				<span class="danger-note">Recordings carry this tag — detach them first.</span>
+			{/if}
+		{:else}
+			<div class="danger-confirm">
+				<span>Delete the registry entry? The vocabulary is lost; recordings and tag memory stay.</span>
+				<button class="danger-yes" type="button" onclick={() => void remove()}>Delete</button>
+				<button class="danger-no" type="button" onclick={() => (confirmingDelete = false)}>Keep</button>
+			</div>
+		{/if}
+		{#if deleteError}
+			<div class="vocab-error" role="alert">{deleteError}</div>
+		{/if}
+	</div>
+{/if}
 
 <style>
-	.tagdef-page { display: flex; flex-direction: column; gap: 16px; }
 	.tagdef-loading { color: #8b8278; font-size: 12px; }
 	.tagdef-head { display: grid; gap: 6px; }
-	.tagdef-head h2 { margin: 0; color: var(--bone); font-size: 16px; font-weight: 700; letter-spacing: 0.02em; overflow-wrap: anywhere; }
 	.tagdef-meta { display: flex; gap: 12px; align-items: baseline; font-size: 11px; color: #8b8278; }
-	.tagdef-meta a { color: var(--brass); font-weight: 650; text-decoration: none; }
+	.tagdef-meta a { color: var(--brass); font-weight: 650; text-decoration: none; cursor: pointer; }
 	.tagdef-meta a:hover { color: var(--bone); }
 
 	.vocab-section { display: flex; flex-direction: column; gap: 10px; }

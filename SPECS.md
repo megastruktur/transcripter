@@ -24,7 +24,12 @@
   `upload_ttl_hours` (default 24) without row activity — `uploading` never
   wedges forever; `failed` rows are deletable from the client.
 - Regenerate: `POST /recordings/{id}/regenerate {stage}` — downstream stages
-  always re-run.
+  always re-run. The API resets the target stage and every downstream one to
+  `pending` (errors cleared) in the same commit that backfills stage rows,
+  BEFORE the workflow starts — the client's stage icons show the honest
+  pipeline, never stale `done` for stages about to be recomputed. The PATCH
+  auto-regen path (tags/type change on a done recording) applies the same
+  reset.
 - Archive list: `GET /recordings` is paginated and filtered server-side —
   `?limit=&offset=&q=&state=` returns `{items, total, limit, offset}`; the
   client library pages at 20 rows and sends its search box / state filter
@@ -115,9 +120,15 @@
   appends it as a glossary block in the system message (same rail as the
   recap block). Applies on the next transcribe/summarize run — no
   retroactive regeneration.
-- Client: `Tags` rail item (between Library and Vault) → `/tags` manifest
-  (ruled rows: name, recordings, vocabulary count) + `/tags/[tag]`
-  vocabulary editor with save/delete.
+- Client (merged 2026-09-07): the Tags rail item and `/tags` pages are GONE —
+  the Vault is the single tag surface. `/vault` carries the register form and
+  one ruled row per tag (sessions, entities, vocabulary count; registry-only
+  tags show "registered · no sessions yet"), and `GET /vault` unions
+  `tag_defs` rows in as 0-session items with `vocabulary_count`. The tag
+  page's first tab is **Definition** (vocabulary editor with immediate-PATCH
+  autosave, context textarea, delete-registry-entry danger zone — the retired
+  `/tags/[tag]` page verbatim); the page opens on **Digest** by default and
+  renders the tab row even when the timeline 404s (registry-only tag).
 
 ## Entity dossiers (2026-09-07)
 

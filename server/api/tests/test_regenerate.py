@@ -84,6 +84,50 @@ def test_regenerate_backfills_missing_stage_rows(client: TestClient) -> None:
         gen.close()
 
 
+def test_regenerate_resets_downstream_stage_statuses(client: TestClient) -> None:
+    """Regenerate recomputes the target stage AND everything downstream:
+    their old rows (done/failed, stale errors) must flip to pending in
+    the same commit that backfills rows — before the workflow starts, so
+    no set_stage can race it and the client's first poll already shows
+    the honest icon row instead of stale `done`."""
+    rid = _make_recording(client)
+    _force_state(rid, "done")
+    from app.db import Stage, StageStatus, get_session
+
+    gen = get_session()
+    s = next(gen)
+    try:
+        for st in s.query(Stage).filter_by(recording_id=rid):
+            st.status = StageStatus.done
+        enrich = s.query(Stage).filter_by(recording_id=rid, kind="enrich").one()
+        enrich.status = StageStatus.failed
+        enrich.last_error = "boom"
+        s.commit()
+    finally:
+        gen.close()
+
+    with patch("app.temporal_client.regenerate_stage", new_callable=AsyncMock) as m:
+        m.return_value = "wf-sum"
+        r = client.post(f"/recordings/{rid}/regenerate", json={"stage": "summarize"})
+    assert r.status_code == 200
+
+    gen = get_session()
+    s = next(gen)
+    try:
+        rows = {st.kind: st for st in s.query(Stage).filter_by(recording_id=rid)}
+        # Upstream of the target keeps its status…
+        assert rows["chunk"].status == StageStatus.done
+        assert rows["transcribe"].status == StageStatus.done
+        assert rows["diarize"].status == StageStatus.done
+        assert rows["merge_speakers"].status == StageStatus.done
+        # …target + downstream reset to pending, error cleared.
+        assert rows["summarize"].status == StageStatus.pending
+        assert rows["enrich"].status == StageStatus.pending
+        assert rows["enrich"].last_error is None
+    finally:
+        gen.close()
+
+
 def test_regenerate_starts_workflow(client: TestClient) -> None:
     rid = _make_recording(client)
     _force_state(rid, "done")

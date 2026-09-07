@@ -131,7 +131,7 @@ def test_vault_item_shape_and_counts(client: TestClient) -> None:
     assert items["quest"]["digest"] == "none"
     assert items["dnd"]["sessions"] == 1
     assert items["dnd"]["entities"] == 1  # mention-only strahd
-    assert set(items["quest"]) == {"tag", "sessions", "entities", "last_activity", "digest"}
+    assert set(items["quest"]) == {"tag", "sessions", "entities", "last_activity", "digest", "vocabulary_count"}
 
 
 def test_vault_uploading_state_counts(client: TestClient) -> None:

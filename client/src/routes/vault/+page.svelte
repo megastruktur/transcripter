@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import Icon from '$lib/Icon.svelte';
 	import {
+		createTag,
 		fetchVault,
 		fetchGlobalSearch,
 		loadApiConfig,
@@ -17,6 +18,13 @@
 	let items = $state<VaultItem[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+	// Register form (moved from the retired Tags manifest, 2026-09-07):
+	// one-field manifest header — vocabulary edits live on the tag page's
+	// Definition tab.
+	let newName = $state('');
+	let creating = $state(false);
+	let createError = $state('');
+
 	// Monotonic request id: a stale response racing an unmount must not
 	// overwrite newer state.
 	let fetchSeq = 0;
@@ -89,7 +97,25 @@
 		} finally {
 			if (seq === fetchSeq) loading = false;
 		}
+}
+
+async function submit(): Promise<void> {
+	const name = newName.trim();
+	if (!name || creating) return;
+	creating = true;
+	createError = '';
+	try {
+		await createTag(loadApiConfig(), name);
+		newName = '';
+		await refresh();
+	} catch (caught) {
+		const status = (caught as { status?: number }).status;
+		createError =
+			status === 409 ? 'Tag already exists' : status === 400 ? 'Invalid tag name' : String(caught);
+	} finally {
+		creating = false;
 	}
+}
 
 	onMount(() => {
 		refresh();
@@ -99,6 +125,23 @@
 <svelte:head><title>Vault · Transcriptor Maximus</title></svelte:head>
 
 <section class="page vault-page">
+	<form class="tag-create" onsubmit={(e) => { e.preventDefault(); void submit(); }}>
+		<label>
+			<span class="sr-only">New tag name</span>
+			<input
+				type="text"
+				placeholder="New tag name"
+				maxlength="64"
+				bind:value={newName}
+				disabled={creating}
+			/>
+		</label>
+		<button type="submit" disabled={!newName.trim() || creating}>Register tag</button>
+	</form>
+	{#if createError}
+		<div class="vault-error" role="alert">{createError}</div>
+	{/if}
+
 	<SearchRecess
 		ariaLabel="Semantic search · all tags"
 		placeholder="Search all sessions…"
@@ -127,10 +170,10 @@
 						<span class={`digest-lamp ${DIGEST_LAMP[item.digest]}`} aria-hidden="true"></span>
 						<span class="tag-name">
 							<strong>{item.tag}</strong>
-							<small>{item.sessions} session{item.sessions === 1 ? '' : 's'} · {item.entities} entit{item.entities === 1 ? 'y' : 'ies'}</small>
+							<small>{item.sessions === 0 ? 'registered · no sessions yet' : `${item.sessions} session${item.sessions === 1 ? '' : 's'} · ${item.entities} entit${item.entities === 1 ? 'y' : 'ies'}`}{item.vocabulary_count > 0 ? ` · ${item.vocabulary_count} word${item.vocabulary_count === 1 ? '' : 's'}` : ''}</small>
 						</span>
 						<span class="tag-side">
-							<small class="tag-last">{dateLabel(item.last_activity)}</small>
+							<small class="tag-last">{item.last_activity ? dateLabel(item.last_activity) : ''}</small>
 							<span class={`digest-text ${item.digest}`}>{item.digest === 'ready' ? 'digest ready' : item.digest === 'stale' ? 'digest stale' : 'no digest'}</span>
 						</span>
 						<span class="tag-chevron"><Icon name="collapse" size={14} /></span>
@@ -147,7 +190,11 @@
 	.vault-page { display: flex; flex-direction: column; gap: 14px; }
 	.vault-error { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--red); background: rgba(213,45,36,.08); font-size: 12px; }
 	.vault-error strong { color: var(--red); font-size: 10px; font-weight: 700; }
-	.vault-error span { color: #c6baaa; }
+	.tag-create { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: stretch; }
+	.tag-create input { min-height: 42px; }
+	.tag-create button { min-height: 42px; border: 1px solid var(--brass); background: rgba(215, 167, 71, 0.12); color: var(--brass); border-radius: 3px; padding: 0 14px; font-size: 12px; font-weight: 700; cursor: pointer; }
+	.tag-create button:hover:not(:disabled) { color: var(--bone); border-color: var(--bone); }
+	.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 	.tag-list { display: grid; }
 	.tag-card { transition: background 120ms ease; }
 	.tag-card:not(:last-child) { border-bottom: 1px solid var(--line); }

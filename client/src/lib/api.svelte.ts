@@ -267,8 +267,11 @@ export type VaultItem = {
 	entities: number;
 	last_activity: string;
 	/** ready = digest note present; stale = note older than the newest
-	 * session; none = no note. */
+	 * session; none = no note. Registry-only tags (0 sessions) send an
+	 * empty last_activity and digest "none". */
 	digest: 'ready' | 'stale' | 'none';
+	/** Words in the tag's registry vocabulary (0 = no registry row). */
+	vocabulary_count: number;
 };
 
 export type VaultResponse = {

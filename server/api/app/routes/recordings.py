@@ -49,6 +49,7 @@ from app.db import (
     Recording,
     RecordingState,
     Stage,
+    StageStatus,
     get_session,
 )
 from app.db_helpers import register_tag_defs
@@ -642,8 +643,21 @@ async def update_recording(
             # workflow then cascades enrich + export itself, so one
             # start at `summarize` covers both. A tags-only change starts
             # at `enrich` (profile routing is by type — tags can't change
-            # the summarize profile any more).
             start_stage = "summarize" if type_changed else "enrich"
+            # Same honesty rule as POST /regenerate: the re-run stage and
+            # everything downstream flip to pending BEFORE the workflow
+            # starts, so the client's stage icons never show stale done
+            # for stages that are about to be recomputed.
+            downstream = [
+                k
+                for k in PIPELINE_STAGE_KINDS
+                if STAGE_ORDER[k] >= STAGE_ORDER[start_stage]
+            ]
+            for st in rec.stages:
+                if st.kind in downstream:
+                    st.status = StageStatus.pending
+                    st.last_error = None
+            session.commit()
             await temporal_client.regenerate_stage(rec.id, start_stage, rec.duration_sec)
             # The regenerate workflow's finally-block exports the note
             # folder, so no separate start_export is needed on this path.

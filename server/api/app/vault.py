@@ -28,7 +28,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import ServerConfig
-from app.db import Recording, RecordingState
+from app.db import Recording, RecordingState, TagDef
 
 _LOG = logging.getLogger("transcripter.api.vault")
 
@@ -413,7 +413,13 @@ def scan_vault(cfg: ServerConfig, session: Session) -> list[dict]:
     Recordings with no tags are skipped (vault = free tags only); a tag
     counts recordings in ANY state. Digest staleness compares the note's
     mtime to the tag's newest recording date. Ordering: last_activity
-    DESC, tag ASC."""
+    DESC, tag ASC.
+
+    Registry union (2026-09-07): tag_defs rows merge in as items with 0
+    sessions — a registered-but-unused tag stays reachable now that the
+    vault page is the only tag surface (the Tags manifest is gone).
+    Registered-only tags get no recordings and digest "none"; the
+    vocabulary count rides along for the row's vocab hint."""
     rows = session.execute(
         select(
             Recording.id,
@@ -434,6 +440,9 @@ def scan_vault(cfg: ServerConfig, session: Session) -> list[dict]:
             entry["recs"].append((date, _read_events_json(cfg, rid)))
             entry["last_activity"] = max(entry["last_activity"], date)
     items = []
+    vocab_counts = {
+        d.name: len(d.vocabulary or []) for d in session.scalars(select(TagDef)).all()
+    }
     for tag, entry in per_tag.items():
         # Newest-first so entity labels come from the freshest file.
         entry["recs"].sort(key=lambda row: row[0], reverse=True)
@@ -444,6 +453,19 @@ def scan_vault(cfg: ServerConfig, session: Session) -> list[dict]:
                 "entities": len(_aggregate_entities(entry["recs"])),
                 "last_activity": entry["last_activity"].isoformat(),
                 "digest": _digest_state(cfg, tag, entry["last_activity"]),
+                "vocabulary_count": vocab_counts.pop(tag, 0),
+            }
+        )
+    # Registry-only tags: zero recordings, no digest, alphabetical tail.
+    for tag in sorted(vocab_counts):
+        items.append(
+            {
+                "tag": tag,
+                "sessions": 0,
+                "entities": 0,
+                "last_activity": "",
+                "digest": "none",
+                "vocabulary_count": vocab_counts[tag],
             }
         )
     items.sort(key=lambda it: it["tag"])

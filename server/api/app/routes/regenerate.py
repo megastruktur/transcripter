@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import ServerConfig
-from app.db import PIPELINE_STAGE_KINDS, Stage, get_session
+from app.db import PIPELINE_STAGE_KINDS, STAGE_ORDER, Stage, StageStatus, get_session
 from app.routes.recordings import _get
 
 router = APIRouter(prefix="/recordings")
@@ -64,6 +64,21 @@ async def regenerate(
     for kind in PIPELINE_STAGE_KINDS:
         if kind not in existing:
             session.add(Stage(recording_id=rec.id, kind=kind))
+    # Regenerate semantics = "current + everything downstream recomputes"
+    # (downstream stages reuse upstream artifacts). The old stage rows
+    # keep their previous status until each activity rewrites it, so
+    # without this reset the client's stage icons show stale `done` for
+    # stages that are about to be rebuilt. Reset the target stage and
+    # every downstream one to pending in the SAME commit as the backfill,
+    # BEFORE the workflow starts — no worker set_stage can race it, and
+    # the first client poll already renders the honest row.
+    downstream = [
+        k for k in PIPELINE_STAGE_KINDS if STAGE_ORDER[k] >= STAGE_ORDER[body.stage]
+    ]
+    for st in rec.stages:
+        if st.kind in downstream:
+            st.status = StageStatus.pending
+            st.last_error = None
     session.commit()
 
     import logging
