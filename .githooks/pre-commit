@@ -1,0 +1,16 @@
+#!/bin/sh
+# ruff gate mirroring CI: pinned per-project ruff via uv (0.16.4 in uv.lock).
+# Runs only on staged .py files of the touched project(s). No autofix — fix
+# deliberately, then re-stage. Agents must not use --no-verify.
+set -eu
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+api=$(printf '%s\n' $staged | grep '^server/api/.*\.py$' || true)
+worker=$(printf '%s\n' $staged | grep '^server/worker/.*\.py$' || true)
+rc=0
+if [ -n "$api" ]; then
+    (cd server/api && uv run ruff check $(printf '%s\n' $api | sed 's|^server/api/||')) || rc=1
+fi
+if [ -n "$worker" ]; then
+    (cd server/worker && uv run ruff check $(printf '%s\n' $worker | sed 's|^server/worker/||')) || rc=1
+fi
+exit $rc
