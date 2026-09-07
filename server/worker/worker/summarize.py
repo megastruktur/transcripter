@@ -227,6 +227,7 @@ def summarize_transcript(
     recap_block: str | None = None,
     vocabulary_block: str | None = None,
     context_block: str | None = None,
+    dossier_block: str | None = None,
 ) -> str:
     transcript = (meta / "transcript.md").read_text(encoding="utf-8")
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
@@ -266,6 +267,18 @@ def summarize_transcript(
             + "\n\nКонтекст серии от оператора (учитывай при саммаризации;\n"
             "это справочная информация, а не часть транскрипта):\n\n"
             + context_block
+        )
+    # Entity dossiers (2026-09-07): the tag's recurring entities with
+    # their WHO/WHAT cards, between the operator context and the
+    # glossary — after context (user instructions outrank model
+    # output), before the glossary (terminology stays LAST).
+    if dossier_block:
+        system = (
+            system
+            + "\n\nEntity dossiers from this series' knowledge base "
+            + "(who is who / what is what in earlier sessions; reference "
+            + "information, not session content):\n\n"
+            + dossier_block
         )
     # Vocabulary rides the same single-system-message rail as the recap
     # (same llama-server template constraint — see above). Appended

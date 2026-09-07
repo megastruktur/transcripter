@@ -321,6 +321,24 @@ class RenameEntity:
 
 
 @workflow.defn
+class SetEntityDescription:
+    """Manual dossier edit/refresh (2026-09-07). Thin single-activity
+    wrapper, same shape as RenameEntity. Longer budget than a rename:
+    the refresh mode carries ONE dossier LLM call (json_object, ×2
+    attempts inside) on top of the Neo4j read/write — 10 minutes still
+    bounds a hung llama-server far under any workflow-level concern."""
+
+    @workflow.run
+    async def run(self, args: dict) -> dict:
+        return await workflow.execute_activity(
+            "set_entity_description",
+            args,
+            start_to_close_timeout=timedelta(seconds=600),
+            retry_policy=RetryPolicy(maximum_attempts=2),
+        )
+
+
+@workflow.defn
 class GraphMaintenance:
     """Phase A: debounced digest renewal for ONE tag after graph edits.
 

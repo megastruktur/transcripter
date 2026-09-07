@@ -297,6 +297,11 @@ def _aggregate_entities(rows: list[tuple[datetime, dict | None]]) -> list[dict]:
     sessions_count: dict[str, int] = {}
     last_seen: dict[str, datetime] = {}
     labels: dict[str, tuple[str, str]] = {}
+    # Dossier (2026-09-07): freshest-wins like label/type — the text as
+    # of the entity's LAST session appearance (the graph may be newer
+    # after a wave/refresh; the timeline read-model catches up at the
+    # entity's next appearance or a manual PATCH propagation).
+    descriptions: dict[str, str] = {}
     for date, doc in rows:
         if doc is None:
             continue
@@ -317,6 +322,17 @@ def _aggregate_entities(rows: list[tuple[datetime, dict | None]]) -> list[dict]:
                         label if isinstance(label, str) else slug,
                         etype if isinstance(etype, str) else "",
                     )
+                # Dossier: FIRST NON-EMPTY text wins, deliberately NOT
+                # gated on the labels-first-seen rule — a regenerate
+                # with a failed describe batch rewrites events.json
+                # without descriptions, and the newest file must not
+                # blank a dossier an older appearance carries (roborev
+                # 2105). The graph still holds the truth; this is the
+                # read-model's last-known-good.
+                if slug not in descriptions:
+                    desc = ent.get("description")
+                    if isinstance(desc, str) and desc:
+                        descriptions[slug] = desc
         events = doc.get("events")
         if isinstance(events, list):
             for ev in events:
@@ -339,6 +355,7 @@ def _aggregate_entities(rows: list[tuple[datetime, dict | None]]) -> list[dict]:
             "type": labels.get(slug, (slug, ""))[1],
             "sessions": sessions_count[slug],
             "last_seen": last_seen[slug].isoformat(),
+            **({"description": descriptions[slug]} if slug in descriptions else {}),
         }
         for slug in out[:_ENTITY_CAP]
     ]

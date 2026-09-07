@@ -81,6 +81,94 @@ _MULTI_DASH = re.compile(r"-{2,}")
 # the first "N" counts.
 _DEDUP_AFFIRMATIVE = {"y", "yes", "true", "same", "да", "是的"}
 _DEDUP_NEGATIVE = {"n", "no", "false", "different", "нет", "不"}
+# ---------------------------------------------------------------------------
+# Entity dossiers (2026-09-07): a dedicated best-effort LLM pass that
+# writes a short human-readable ``description`` onto entity nodes — the
+# expandable "who/what is this" card for the vault UI. Deliberately a
+# SEPARATE call from the extraction: the extraction prompt already sits
+# at the edge of reliable JSON output, and narrative payload there
+# measurably increases breakage. Failure semantics: an error in this
+# pass leaves descriptions untouched — it NEVER fails enrich.
+# ---------------------------------------------------------------------------
+
+_DESCRIBE_MAX_ATTEMPTS = 2
+# Identity card, not a history: the timeline already says what happened;
+# the dossier says who/what the entity IS.
+_DESC_MAX_CHARS = 600
+# Per-line cap when descriptions ride prompt blocks (known-entities,
+# summarize dossier): the block must stay bounded for top-25 rows.
+_DESC_PROMPT_CHARS = 160
+# Wave (depth-1 eager refresh): at most this many untouched neighbors
+# re-described per recording — bounded fan-out.
+_DESCRIBE_WAVE_CAP = 12
+
+# English by policy (2026-09-07): every prompt WE author is English;
+# only the OUTPUT language follows the material via an explicit
+# directive (the digest lesson — a soft "same language" line gets
+# ignored). Placeholders substitute via literal .replace, same as the
+# profile prompts: single braces below are safe, never str.format.
+_DESCRIBE_PROMPT = """\
+You write identity dossiers for the entities of a recorded session ("{title}")
+in a recurring series. For every entity listed below write WHO or WHAT it is
+in the story: its role, standing, and how it connects to what happened.
+Ground every statement ONLY in the material below; never invent facts.
+1-3 sentences. When an existing description is given, revise it in light of
+the new events — keep what still holds, drop what it supersedes; do not
+simply append. Write the descriptions in {language_name}.
+
+Return JSON only:
+{"descriptions": [{"slug": "...", "description": "..."}]}
+
+Entities (slug — label (type); existing description or [new]):
+{entities}
+
+Events of this session ([kind @ ts] summary):
+{events}
+
+Relations between these entities (from — type — to):
+{relations}
+"""
+
+_WAVE_PROMPT = """\
+In a recurring session series, the latest session changed some entity
+dossiers (listed first). Below are RELATED entities whose dossiers may now be
+stale. For each related entity, rewrite its dossier so it stays consistent
+with what changed. Same rules: ground every statement ONLY in the material
+below, never invent facts, 1-3 sentences, write in {language_name}. Omit an
+entity from the result when the changes do not affect it at all.
+
+Return JSON only:
+{"descriptions": [{"slug": "...", "description": "..."}]}
+
+Changed entities (slug — label; new dossier):
+{changed}
+
+Related entities (slug — label (type); current dossier):
+{neighbors}
+
+Relations between them (from — type — to):
+{relations}
+"""
+
+_REFRESH_PROMPT = """\
+Rebuild the identity dossier of ONE entity of a recurring session series:
+WHO or WHAT it is in the story — role, standing, how it connects to what
+happened. Ground every statement ONLY in the material below; never invent
+facts. 1-3 sentences. Incorporate the current dossier when it still holds.
+Write the dossier in {language_name}.
+
+Return JSON only:
+{"descriptions": [{"slug": "{slug}", "description": "..."}]}
+
+Entity: {slug} — {label} ({type}); current dossier:
+{current}
+
+All events across the series that mention it (date — [kind @ ts] summary):
+{events}
+
+Related entities (slug — label (type); their dossiers):
+{neighbors}
+"""
 
 # Phase 2: built-in fallback extraction prompt. Used by the enrich
 # activity ONLY when no profile matches the recording's type AND
@@ -814,8 +902,15 @@ def write_to_graph(
                 # origin-authored by the ONE recording) loses the user's
                 # label edit on every regenerate — the exact regression
                 # phase 4 exists to prevent.
+                # Dossiers (2026-09-07, roborev 2101): the same survival
+                # contract for a user-edited description — the flag
+                # guards the WRITE path, but the node dies here first
+                # and the MERGE below never restores description or the
+                # flag, so a regenerate would silently trade the user's
+                # text for a fresh batch-generated one.
                 "MATCH (n {origin_recording_id: $rec}) "
                 "WHERE coalesce(n.user_corrected, false) = false "
+                "AND coalesce(n.description_edited, false) = false "
                 "DETACH DELETE n",
             )
             if purge_origin:
@@ -968,6 +1063,44 @@ def rename_entity_in_graph(
         driver.close()
 
 
+def set_entity_description_in_graph(
+    tag: str,
+    slug: str,
+    description: str,
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+) -> dict[str, Any]:
+    """Manual dossier write: set ``description`` and arm
+    ``description_edited: true`` on the ONE node ``(tag, slug)``.
+
+    The flag is the same contract as ``user_corrected`` for labels: a
+    user-edited dossier is authoritative — the describe batch, the
+    wave, and refresh_entity_description all refuse to overwrite it
+    (the guarded _WRITE_DESC_CYPHER skips flagged nodes; refresh
+    refuses up front). Unlike a label, the SLUG never moves so there
+    is no re-embedding concern.
+
+    Returns ``{"ok": bool}`` — False when the (tag, slug) pair matches
+    nothing (the API already 404'd on the events.json aggregation, but
+    the graph can still disagree — a non-retryable activity error).
+    """
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            summary = session.run(
+                "MATCH (e {tag: $tag, slug: $slug}) "
+                "SET e.description = $desc, e.description_edited = true",
+                tag=tag,
+                slug=slug,
+                desc=description,
+            ).consume()
+        return {"ok": bool(summary.counters.properties_set)}
+    finally:
+        driver.close()
+
+
 def _embed_one(text: str, cfg: Any) -> list[float] | None:
     """Embed ONE label via the shared client; None when the backend is
     off/unavailable (the caller then leaves the node vectorless)."""
@@ -1013,6 +1146,7 @@ def write_events_json(
     namespaces: list[str],
     resolved: ExtractedGraph,
     corrected_labels: dict[str, tuple[str, str]] | None = None,
+    descriptions: dict[str, str] | None = None,
 ) -> None:
     """Write the recording's timeline artifact ``meta/events.json``.
 
@@ -1023,7 +1157,7 @@ def write_events_json(
     ``{recording_id, recording_date (ISO-8601 UTC),
     recording_title, profile_id, namespaces,
     events: [{event_key, ts, kind, summary, mentions}],
-    entities: [{slug, label, type}],
+    entities: [{slug, label, type, description?}],
     relations: [{from, to, type}]}``
 
     ``mentions`` per event: slugs whose label the summary references —
@@ -1034,8 +1168,12 @@ def write_events_json(
     user-corrected graph nodes — the artifact must display the user's
     label ("Валли"), not the fresh extraction's ASR guess, so the
     timeline stays in sync with the graph after a rename.
+    ``descriptions`` (2026-09-07): slug → dossier text from the
+    describe batch; a non-empty entry adds an additive ``description``
+    field (absent key = no dossier yet — old files stay valid).
     """
     corrected = corrected_labels or {}
+    descs = descriptions or {}
     event_keys = compute_event_keys(recording_id, resolved.events)
     payload = {
         "recording_id": recording_id,
@@ -1058,6 +1196,11 @@ def write_events_json(
                 "slug": e.slug,
                 "label": corrected.get(e.slug, (e.label, ""))[0],
                 "type": corrected.get(e.slug, ("", e.type))[1],
+                **(
+                    {"description": descs[e.slug]}
+                    if descs.get(e.slug)
+                    else {}
+                ),
             }
             for e in resolved.entities
         ],
@@ -1072,6 +1215,558 @@ def write_events_json(
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+# ---------------------------------------------------------------------------
+# Entity dossiers: language, coercion, the describe batch, the depth-1
+# wave, and the single-entity refresh. All prompts are OURS (English by
+# policy); only the OUTPUT language follows the material.
+# ---------------------------------------------------------------------------
+
+# STT code → English name for the output directive. MOVED here from
+# digest.py (2026-09-07): the dossier pass needs the same map and
+# digest already imports from this module — one home, no twin.
+_LANGUAGE_NAMES = {
+    "ru": "Russian",
+    "en": "English",
+    "uk": "Ukrainian",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "pl": "Polish",
+    "kk": "Kazakh",
+    "be": "Belarusian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ar": "Arabic",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "tr": "Turkish",
+}
+
+_LANGUAGE_DIRECTIVE_FALLBACK = (
+    "Write in the same language as the session material. "
+)
+
+
+def language_name(code: str | None) -> str:
+    """STT code → directive text ('Russian'), soft fallback when None."""
+    if not code:
+        return _LANGUAGE_DIRECTIVE_FALLBACK
+    return _LANGUAGE_NAMES.get(code, code)
+
+
+def _coerce_descriptions(payload: Any, allowed: set[str]) -> dict[str, str]:
+    """``{"descriptions": [{"slug", "description"}]}`` → slug → text.
+
+    Slugs are slugified (models mix slugs and labels), dropped when not
+    in ``allowed`` (the pass only speaks about entities it was given),
+    deduped last-wins, stripped and capped at ``_DESC_MAX_CHARS``;
+    empty texts are dropped — "no description" beats a placeholder.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    raw = payload.get("descriptions")
+    if not isinstance(raw, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        slug = slugify(str(item.get("slug", "")))
+        desc = str(item.get("description", "")).strip()
+        if slug and slug in allowed and desc:
+            out[slug] = desc[:_DESC_MAX_CHARS]
+    return out
+
+
+
+
+def describe_entities(
+    resolved: ExtractedGraph,
+    rec_id: str,
+    title: str,
+    language: str | None,
+    existing: dict[str, str],
+    cfg: Any,
+) -> tuple[dict[str, str], dict[str, str | None]]:
+    """The dossier batch: ONE LLM call describing every entity of this
+    recording's resolved extraction.
+
+    Returns ``(descriptions, changed)``: final texts keyed by FINAL slug,
+    and the subset whose content actually moved (old text or None for a
+    new entity) — the wave trigger. Best-effort by contract: ANY failure
+    logs and returns ``({}, {})`` — descriptions stay as they were and
+    enrich never fails here.
+
+    ``existing`` is the pre-write snapshot of live descriptions for
+    these slugs (``fetch_existing_descriptions`` — same exclusion rule
+    as the dedup lookup: a regenerate must not read the nodes it is
+    about to delete). The ``description_edited`` guard lives in the
+    WRITE path, not here: the model may propose, the write decides.
+    """
+    if not resolved.entities:
+        return {}, {}
+    slug_of = {e.slug for e in resolved.entities}
+    ents_lines = []
+    for e in resolved.entities:
+        old = existing.get(e.slug)
+        ents_lines.append(
+            f"- {e.slug} — {e.label} ({e.type}); "
+            + (old if old else "[new]")
+        )
+    ev_lines = []
+    for ev in resolved.events:
+        ev_lines.append(f"- [{ev.kind} @ {ev.ts}] {ev.summary}")
+    rel_lines = [
+        f"- {r.from_slug} — {r.type} — {r.to_slug}"
+        for r in resolved.relations
+        if r.from_slug in slug_of and r.to_slug in slug_of
+    ]
+    prompt = (
+        _DESCRIBE_PROMPT.replace("{title}", title or rec_id)
+        .replace("{language_name}", language_name(language))
+        .replace("{entities}", "\n".join(ents_lines))
+        .replace("{events}", "\n".join(ev_lines) or "- (none)")
+        .replace("{relations}", "\n".join(rel_lines) or "- (none)")
+    )
+    try:
+        payload = _dossier_call(prompt, cfg)
+    except Exception:
+        log.exception("enrich: describe batch failed for %s; keeping old descriptions", rec_id)
+        return {}, {}
+    descs = _coerce_descriptions(payload, slug_of)
+    changed: dict[str, str | None] = {}
+    for slug, desc in descs.items():
+        if desc != existing.get(slug):
+            changed[slug] = existing.get(slug)
+    return descs, changed
+
+
+def _dossier_call(prompt: str, cfg: Any) -> Any:
+    """One chat call, json_object, ``_DESCRIBE_MAX_ATTEMPTS`` retries on
+    transport/parse errors — the same wire shape as extraction. Raises
+    after the last attempt; every caller treats this as best-effort."""
+    api_key = os.environ.get(cfg.summarize.api_key_env, "")
+    headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+    messages = system_first_messages(
+        [
+            {"role": "system", "content": "Follow the user's instructions."},
+            {"role": "user", "content": prompt},
+        ]
+    )
+    last_err: Exception | None = None
+    for attempt in range(_DESCRIBE_MAX_ATTEMPTS):
+        try:
+            r = httpx.post(
+                cfg.summarize.base_url.rstrip("/") + "/chat/completions",
+                headers=headers,
+                json={
+                    "model": cfg.summarize.model,
+                    "messages": messages,
+                    "response_format": {"type": "json_object"},
+                },
+                timeout=_HTTP_TIMEOUT_SEC,
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+            return _loads_lenient(_json_payload(content))
+        except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            last_err = exc
+            log.warning(
+                "enrich: dossier LLM attempt %d/%d failed: %s",
+                attempt + 1,
+                _DESCRIBE_MAX_ATTEMPTS,
+                exc,
+            )
+            continue
+    assert last_err is not None
+    raise last_err
+
+
+def fetch_existing_descriptions(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    slugs: list[str],
+    exclude_rec: str = "",
+) -> dict[str, str]:
+    """Live descriptions for ``slugs`` in namespace ``tag`` — the
+    describe-batch input snapshot. Same exclusion rule as the dedup
+    lookup (``exclude_rec``): a regenerate must not be steered by the
+    very nodes it is about to delete."""
+    if not slugs:
+        return {}
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            rows = session.run(
+                "MATCH (e {tag: $tag}) WHERE e.slug IN $slugs "
+                "AND ($rec = '' OR coalesce(e.origin_recording_id, '') <> $rec) "
+                "RETURN e.slug AS slug, e.description AS description",
+                tag=tag,
+                slugs=slugs,
+                rec=exclude_rec,
+            )
+            return {
+                r["slug"]: r["description"]
+                for r in rows
+                if r["description"] is not None
+            }
+    finally:
+        driver.close()
+
+
+def user_edited_descriptions(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+) -> dict[str, str]:
+    """slug → description of ``description_edited`` nodes in the
+    namespace — the dossier overlay for ``write_events_json``: the
+    batch's revision of a user-edited dossier was refused by the
+    guarded write, so the artifact must carry the graph's authoritative
+    text (same spirit as the ``user_corrected_labels`` overlay). Empty
+    dict on any graph failure — best-effort, never fails enrich."""
+    try:
+        driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+        try:
+            with driver.session(database=graph_database) as session:
+                rows = session.run(
+                    "MATCH (e {tag: $tag}) "
+                    "WHERE coalesce(e.description_edited, false) "
+                    "RETURN e.slug AS slug, e.description AS description",
+                    tag=tag,
+                ).data()
+        finally:
+            driver.close()
+    except Exception:
+        log.exception("enrich: edited-dossier overlay lookup failed; skipping")
+        return {}
+    return {r["slug"]: r["description"] for r in rows if r["description"]}
+
+
+_WRITE_DESC_CYPHER = (
+    # Guarded write shared by the batch/wave/refresh paths: a
+    # user-edited description (description_edited) is authoritative and
+    # never stomped by generated text; provenance accumulates.
+    "MATCH (e {tag: $tag, slug: $slug}) "
+    "WHERE coalesce(e.description_edited, false) = false "
+    "SET e.description = $desc, "
+    "e.desc_built_from = CASE WHEN $rec IN coalesce(e.desc_built_from, []) "
+    "THEN e.desc_built_from ELSE coalesce(e.desc_built_from, []) + $rec END"
+)
+
+
+def write_descriptions(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    rec_id: str,
+    descriptions: dict[str, str],
+) -> dict[str, Any]:
+    """Persist generated descriptions onto namespace nodes (guarded by
+    ``description_edited``). A missing node — or a USER-EDITED one — is
+    skipped (the batch races nothing, but a wave candidate can vanish
+    mid-run and an edited node refuses generation). Returns the slugs
+    that actually LANDED plus counters: the events.json artifact must
+    only carry texts the graph accepted, never a generated revision of
+    a user-edited dossier (roborev 2104)."""
+    if not descriptions:
+        return {"written": 0, "skipped": 0, "landed": []}
+    written = skipped = 0
+    landed: list[str] = []
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            for slug, desc in descriptions.items():
+                summary = session.run(
+                    _WRITE_DESC_CYPHER,
+                    tag=tag,
+                    slug=slug,
+                    desc=desc,
+                    rec=rec_id,
+                ).consume()
+                if summary.counters.properties_set:
+                    written += 1
+                    landed.append(slug)
+                else:
+                    skipped += 1
+    finally:
+        driver.close()
+    return {"written": written, "skipped": skipped, "landed": landed}
+
+
+def wave_candidates(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    touched_slugs: list[str],
+    extracted_slugs: list[str],
+) -> list[dict[str, Any]]:
+    """Depth-1 neighbors of this run's touched entities that were NOT
+    part of the extraction (their dossiers may reference what changed)
+    and are not user-edited. REL-adjacent only — MENTIONS is event
+    provenance, not entity coupling. Capped at ``_DESCRIBE_WAVE_CAP``,
+    most-connected first."""
+    if not touched_slugs:
+        return []
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            rows = session.run(
+                "MATCH (a {tag: $tag})-[r:REL]-(b {tag: $tag}) "
+                "WHERE a.slug IN $touched AND b.slug IS NOT NULL "
+                "AND NOT b.slug IN $extracted "
+                "AND coalesce(b.description_edited, false) = false "
+                "RETURN DISTINCT b.slug AS slug, b.label AS label, "
+                "b.type AS type, b.description AS description "
+                "ORDER BY b.slug LIMIT $cap",
+                tag=tag,
+                touched=touched_slugs,
+                extracted=extracted_slugs,
+                cap=_DESCRIBE_WAVE_CAP,
+            )
+            return [dict(r) for r in rows]
+    finally:
+        driver.close()
+
+
+def run_description_wave(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    rec_id: str,
+    changed: dict[str, str | None],
+    descs: dict[str, str],
+    extracted_slugs: list[str],
+    language: str | None,
+    cfg: Any,
+) -> dict[str, int]:
+    """Depth-1 eager refresh: when the batch moved descriptions, ONE
+    more call re-describes untouched REL-neighbors whose dossiers may
+    now be stale. The model may omit entities — only what it returns is
+    written. Best-effort: any failure logs and returns zero counts."""
+    try:
+        candidates = wave_candidates(
+            graph_uri, graph_user, graph_password, graph_database,
+            tag, list(changed.keys()), extracted_slugs,
+        )
+        if not candidates:
+            return {"candidates": 0, "written": 0}
+        changed_lines = [
+            f"- {slug} — {descs[slug]}; (was: {old if old else 'new'})"
+            for slug, old in changed.items()
+            if slug in descs
+        ]
+        neighbor_lines = [
+            "- {} — {} ({}); {}".format(
+                c["slug"], c["label"], c["type"] or "unknown",
+                c["description"] if c["description"] else "[none]",
+            )
+            for c in candidates
+        ]
+        prompt = (
+            _WAVE_PROMPT.replace("{language_name}", language_name(language))
+            .replace("{changed}", "\n".join(changed_lines))
+            .replace("{neighbors}", "\n".join(neighbor_lines))
+            .replace(
+                "{relations}",
+                _relations_between(
+                    graph_uri, graph_user, graph_password, graph_database,
+                    tag, list(changed.keys()) + [c["slug"] for c in candidates],
+                ),
+            )
+        )
+        payload = _dossier_call(prompt, cfg)
+        allowed = {c["slug"] for c in candidates}
+        wave_descs = _coerce_descriptions(payload, allowed)
+        counts = write_descriptions(
+            graph_uri, graph_user, graph_password, graph_database,
+            tag, rec_id, wave_descs,
+        )
+        counts["candidates"] = len(candidates)
+        return counts
+    except Exception:
+        log.exception("enrich: description wave failed for %s/%s; neighbors keep old dossiers", tag, rec_id)
+        return {"candidates": 0, "written": 0}
+
+
+def _relations_between(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    slugs: list[str],
+) -> str:
+    """Live REL lines among ``slugs`` (for the wave/refresh prompts —
+    the wave's coupling is the LIVE graph, not this run's extraction)."""
+    if not slugs:
+        return "- (none)"
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            rows = session.run(
+                "MATCH (a {tag: $tag})-[r:REL]->(b {tag: $tag}) "
+                "WHERE a.slug IN $slugs AND b.slug IN $slugs "
+                "RETURN a.slug AS f, type(r) AS t, b.slug AS to "
+                "ORDER BY a.slug, b.slug LIMIT 80",
+                tag=tag,
+                slugs=slugs,
+            )
+            lines = [f"- {r['f']} — {r['t']} — {r['to']}" for r in rows]
+            return "\n".join(lines) if lines else "- (none)"
+    finally:
+        driver.close()
+
+
+def read_entity_dossier(
+    graph_uri: str,
+    graph_user: str,
+    graph_password: str,
+    graph_database: str,
+    tag: str,
+    slug: str,
+) -> dict[str, Any] | None:
+    """Full single-entity read for the manual refresh: the node, every
+    event that mentions it (chronological), and its REL-neighbors with
+    their dossiers. None when the node is missing from the namespace."""
+    driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
+    try:
+        with driver.session(database=graph_database) as session:
+            rows = session.run(
+                "MATCH (e {tag: $tag, slug: $slug}) "
+                "OPTIONAL MATCH (ev {tag: $tag})-[:MENTIONS]->(e) "
+                "OPTIONAL MATCH (e)-[r:REL]-(n {tag: $tag}) "
+                "WHERE n.slug IS NOT NULL "
+                "RETURN e.label AS label, e.type AS type, "
+                "e.description AS description, "
+                "coalesce(e.description_edited, false) AS edited, "
+                "ev.recording_date AS ev_date, ev.recording_title AS ev_title, "
+                "ev.kind AS ev_kind, ev.ts AS ev_ts, ev.summary AS ev_summary, "
+                "ev.origin_recording_id AS ev_rec, "
+                "n.slug AS n_slug, n.label AS n_label, n.type AS n_type, "
+                "n.description AS n_desc, type(r) AS rel_type",
+                tag=tag,
+                slug=slug,
+            ).data()
+    finally:
+        driver.close()
+    if not rows:
+        return None
+    first = rows[0]
+    events: dict[tuple, dict[str, Any]] = {}
+    neighbors: dict[str, dict[str, Any]] = {}
+    rels: set[tuple[str, str, str]] = set()
+    for row in rows:
+        if row["ev_summary"] is not None:
+            key = (
+                row["ev_rec"] or "",
+                row["ev_date"] or "",
+                row["ev_ts"] or "",
+                row["ev_summary"],
+            )
+            events[key] = {
+                "rec": row["ev_rec"],
+                "date": row["ev_date"],
+                "title": row["ev_title"],
+                "kind": row["ev_kind"],
+                "ts": row["ev_ts"],
+                "summary": row["ev_summary"],
+            }
+        if row["n_slug"] is not None:
+            neighbors[row["n_slug"]] = {
+                "slug": row["n_slug"],
+                "label": row["n_label"],
+                "type": row["n_type"],
+                "description": row["n_desc"],
+            }
+            rels.add((slug, row["rel_type"], row["n_slug"]))
+    ordered = sorted(
+        events.values(), key=lambda e: (e["date"] or "", e["ts"] or "")
+    )
+    return {
+        "label": first["label"],
+        "type": first["type"],
+        "description": first["description"],
+        "edited": bool(first["edited"]),
+        "events": ordered,
+        "neighbors": sorted(neighbors.values(), key=lambda n: n["slug"]),
+        "relations": sorted(rels),
+    }
+
+
+def refresh_entity_description(
+    cfg: Any,
+    tag: str,
+    slug: str,
+    language: str | None,
+) -> dict[str, Any]:
+    """Manual per-entity refresh: rebuild the dossier from the FULL
+    material (every mentioning event across the series + neighbors) and
+    persist it. Respects ``description_edited`` — the user's text wins
+    until they clear the flag; returns ``{"ok": False, "reason":
+    "description_edited"}`` in that case. Raises nothing graph-fatal:
+    a missing node returns ``{"ok": False, "reason": "missing"}``, an
+    LLM failure returns ``{"ok": False, "reason": "llm"}``."""
+    c = cfg
+    creds = (
+        c.graph.uri, c.graph.user,
+        os.environ.get(c.graph.password_env, ""), c.graph.database,
+    )
+    dossier = read_entity_dossier(*creds, tag, slug)
+    if dossier is None:
+        return {"ok": False, "reason": "missing"}
+    if dossier["edited"]:
+        return {"ok": False, "reason": "description_edited"}
+    ev_lines = [
+        "- {} — [{} @ {}] {}".format(
+            (e["date"] or "")[:10], e["kind"] or "?", e["ts"] or "?", e["summary"]
+        )
+        for e in dossier["events"]
+    ] or ["- (none)"]
+    n_lines = [
+        "- {} — {} ({}); {}".format(
+            n["slug"], n["label"], n["type"] or "unknown",
+            n["description"] if n["description"] else "[none]",
+        )
+        for n in dossier["neighbors"]
+    ] or ["- (none)"]
+    prompt = (
+        _REFRESH_PROMPT.replace("{slug}", slug)
+        .replace("{label}", str(dossier["label"]))
+        .replace("{type}", str(dossier["type"] or "unknown"))
+        .replace(
+            "{current}",
+            dossier["description"] if dossier["description"] else "[none]",
+        )
+        .replace("{language_name}", language_name(language))
+        .replace("{events}", "\n".join(ev_lines))
+        .replace("{neighbors}", "\n".join(n_lines))
+    )
+    try:
+        payload = _dossier_call(prompt, cfg)
+    except Exception:
+        log.exception("enrich: dossier refresh LLM failed for %s/%s", tag, slug)
+        return {"ok": False, "reason": "llm"}
+    descs = _coerce_descriptions(payload, {slug})
+    if slug not in descs:
+        return {"ok": False, "reason": "empty"}
+    write_descriptions(*creds, tag, "manual", descs)
+    return {"ok": True, "description": descs[slug]}
 
 
 def resolve_slugs(
@@ -1361,16 +2056,26 @@ def user_corrected_labels(
 def render_known_entities(rows: list[dict[str, str]]) -> str:
     """Render the ``{known_entities}`` prompt block.
 
-    One ``- slug — label (type)`` line per row; an empty snapshot
+    One ``- slug — label (type) — dossier`` line per row (the dossier
+    appended since 2026-09-07, truncated at ``_DESC_PROMPT_CHARS`` so
+    the block stays bounded for top-25 rows); an empty snapshot
     renders an EMPTY string (2026-08-30: the former literal ``(none)``
     made qwen3.6-35b deterministically emit broken JSON — a doubled
     ``{`` right after the events array — on the daily-blob regenerate;
     the same prompt with an empty block parses 3/3. Empty input must
     read exactly like a disabled lookup). ``rows`` comes from
     ``list_known_entities`` (the pre-extraction snapshot of the target
-    namespace).
+    namespace); rows without a description render exactly as before
+    (legacy rows, pre-dossier graph).
     """
-    return "\n".join(f"- {row['slug']} — {row['label']} ({row['type']})" for row in rows)
+    lines = []
+    for row in rows:
+        line = f"- {row['slug']} — {row['label']} ({row['type']})"
+        desc = row.get("description") or ""
+        if desc:
+            line += f" — {desc[:_DESC_PROMPT_CHARS]}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def render_corrections(items: list[str]) -> str:
@@ -1445,10 +2150,10 @@ def list_known_entities(
     exclude_rec: str = "",
     limit: int = 25,
 ) -> list[dict[str, str]]:
-    """Top-``limit`` (slug, label, type) rows already present in
-    namespace ``tag`` — the pre-extraction snapshot that feeds the
-    ``{known_entities}`` prompt block so the model reuses established
-    slugs instead of minting near-duplicates.
+    """Top-``limit`` (slug, label, type, description) rows already
+    present in namespace ``tag`` — the pre-extraction snapshot that
+    feeds the ``{known_entities}`` prompt block so the model reuses
+    established slugs instead of minting near-duplicates.
 
     Same exclusion rule as the dedup lookup: nodes authored by
     ``exclude_rec`` are invisible (a regenerate must not be steered by
@@ -1457,7 +2162,9 @@ def list_known_entities(
     are the ones other recordings already reference. Event nodes carry
     no ``slug`` and are excluded by the ``IS NOT NULL`` guard
     (selection stays property-based: node labels are
-    profile-overridable).
+    profile-overridable). ``description`` (2026-09-07): the dossier
+    rides along — render_known_entities appends it so future
+    extractions see WHO the established entities are, not just names.
     """
     driver = GraphDatabase.driver(graph_uri, auth=(graph_user, graph_password))
     try:
@@ -1466,13 +2173,22 @@ def list_known_entities(
                 "MATCH (e {tag: $tag}) "
                 "WHERE e.slug IS NOT NULL "
                 "AND ($rec = '' OR coalesce(e.origin_recording_id, '') <> $rec) "
-                "RETURN e.slug AS slug, e.label AS label, e.type AS type "
+                "RETURN e.slug AS slug, e.label AS label, e.type AS type, "
+                "e.description AS description "
                 "ORDER BY size(coalesce(e.recording_ids, [])) DESC, e.slug "
                 "LIMIT $limit",
                 tag=tag,
                 rec=exclude_rec,
                 limit=limit,
             )
-            return [{"slug": r["slug"], "label": r["label"], "type": r["type"]} for r in rows]
+            return [
+                {
+                    "slug": r["slug"],
+                    "label": r["label"],
+                    "type": r["type"],
+                    "description": r["description"] or "",
+                }
+                for r in rows
+            ]
     finally:
         driver.close()

@@ -643,7 +643,7 @@ ON MATCH  SET e.label = CASE WHEN user_corrected THEN e.label ELSE $label END,
 {"recording_id", "recording_date", "recording_title", "profile_id",
  "namespaces": ["tag1", ...],
  "events": [{"ts","kind","summary","mentions": [slug,...]}],
- "entities": [{"slug","label","type"}],
+ "entities": [{"slug","label","type","description?"}],
  "relations": [{"from","to","type"}]}
 ```
 
@@ -652,7 +652,47 @@ ON MATCH  SET e.label = CASE WHEN user_corrected THEN e.label ELSE $label END,
 пользовательские, чтобы таймлайн не воскрешал ASR-угадайку после
 переименования.
 
-### 9.5 Авто-дайджест (Phase 2)
+### 9.5 Досье сущностей (entity dossiers, 2026-09-07)
+
+Отдельный best-effort LLM-проход (+1 вызов на запись) пишет на узлы
+`description` — карточку «кто/что это в истории» для UI (Entities-таб
+группирует по type, строка раскрывается в досье; Lattice-drawer
+показывает текст). Промпты — НАШИ, английские; язык ВЫВОДА — явная
+директива по STT-коду записи (`language_name`; карта языков живёт в
+enrich.py, digest её импортирует).
+
+1. **Батч** (`describe_entities`): ПОСЛЕ dedup (финальные слуги), ДО
+   записи графа. Один вызов на запись, первый namespace (копии). Вход:
+   label/type + старое описание узла (`fetch_existing_descriptions`,
+   exclude_rec — как у dedup) + события сессии + внутрибатчевые связи.
+   Выход `{"descriptions": [{slug, description}]}`; коэрсинг
+   (`_coerce_descriptions`): неизвестные слуги/пустые тексты — мимо,
+   кап 600 символов. Любой фейл → `({}, {})`, описания не трогаются.
+2. **Guarded write** (`write_descriptions`): `description_edited:
+   true` (ручная правка через PATCH) = авторитет; сгенерированный
+   текст такие узлы не перезаписывает. Провенанс копится в
+   `desc_built_from`.
+3. **events.json**: аддитивное `description` у затронутых entity.
+   Таймлайн-агрегация (`_aggregate_entities`) — freshest-wins, как
+   label: текст «по состоянию на последнее появление в записи».
+4. **Волна глубины 1** (`run_description_wave`): после overlay, если
+   батч сдвинул описания — ОДИН доп. вызов для нетронутых
+   REL-соседей (cap 12, не user-edited), чьи досье могут протухнуть
+   («B служит A», а A изменился). Пишет только в граф (у соседа нет
+   entries в events.json этой записи). Модель может пропускать
+   сущности — пишется только то, что вернула.
+5. **Инъекция в промпты** (петля): `{known_entities}` теперь несёт
+   `- slug — label (type) — описание (кап 160)`; summarize получает
+   dossier-блок (после context, до glossary, top-15 с описаниями);
+   digest-промпт показывает описания в строках сущностей.
+6. **Ручное управление**: `PATCH /tags/{tag}/entities/{slug}/description`
+   (текст → флаг + propagate в events.json) и `POST .../refresh-description`
+   (полный ребилд: все MENTIONS-события + соседи; уважает флаг).
+   Workflow `SetEntityDescription`, activity `set_entity_description`.
+   Merge/fold: текст source конкатенируется в target (у user-edited
+   target текст пользователя не трогаем), кап 600.
+
+### 9.6 Авто-дайджест (Phase 2)
 
 После **успешного** enrich: для каждого тега, если `digests/{tag}.md`
 старше `graph.auto_digest_window_sec` (3600 с) или отсутствует —
@@ -721,7 +761,7 @@ inline `run_digest(tag, last_n=5)` (не сигнал — так дайджес�
    frontmatter `tag:`, даже если файл зовётся `slug-2.md` — суффикс от
    старой коллизии имён теперь часть идентичности тега). Новый тег с
    занятым slug-именем получает `-2`, `-3`…
-5. Авто-режим — см. §9.5; свежесть в vault: `ready` (mtime ≥ даты
+5. Авто-режим — см. §9.6; свежесть в vault: `ready` (mtime ≥ даты
    новейшей записи тега) / `stale` / `none`.
 
 Обратная связь: дайджест — это и есть тот recap, который summarize

@@ -518,6 +518,23 @@ def apply_entity_merge(
             t=target_slug,
         )
         # 3. recording_ids union onto the target, then drop the source.
+        # Dossier (2026-09-07): fold the source's description into the
+        # target BEFORE the delete — the source dossier is evidence the
+        # target's card should mention. The target's user-edited text
+        # (description_edited) wins untouched; a generated target
+        # dossier keeps its text with the source's appended, both capped.
+        session.run(
+            "MATCH (src {tag: $tag, slug: $s}), (tgt {tag: $tag, slug: $t}) "
+            "WHERE src.description IS NOT NULL "
+            "AND coalesce(tgt.description_edited, false) = false "
+            "SET tgt.description = "
+            "CASE WHEN tgt.description IS NULL OR tgt.description = '' "
+            "THEN left(src.description, 600) "
+            "ELSE left(tgt.description + ' ' + src.description, 600) END",
+            tag=tag,
+            s=source_slug,
+            t=target_slug,
+        )
         session.run(
             "MATCH (src {tag: $tag, slug: $s}), (tgt {tag: $tag, slug: $t}) "
             "SET tgt.recording_ids = [x IN coalesce(tgt.recording_ids, []) "
@@ -549,6 +566,33 @@ def apply_entity_merge(
                 e for e in ents if not (isinstance(e, dict) and e.get("slug") == source_slug)
             ]
             changed = True
+        # Dossier: when the source carried a description in this file,
+        # graft it onto the target's entity row (the source row is
+        # dropped below anyway) — the graph did the same fold.
+        if src_present and tgt_present:
+            src_desc = next(
+                (
+                    e.get("description")
+                    for e in ents
+                    if isinstance(e, dict) and e.get("slug") == source_slug
+                ),
+                None,
+            )
+            tgt_row = next(
+                (
+                    e
+                    for e in doc.get("entities", [])
+                    if isinstance(e, dict) and e.get("slug") == target_slug
+                ),
+                None,
+            )
+            if src_desc and tgt_row is not None:
+                merged = (
+                    f"{tgt_row.get('description', '')} {src_desc}".strip()
+                    if tgt_row.get("description")
+                    else str(src_desc)
+                )
+                tgt_row["description"] = merged[:600]
         for ev in doc.get("events", []):
             if not isinstance(ev, dict):
                 continue

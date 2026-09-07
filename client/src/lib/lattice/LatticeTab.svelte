@@ -274,6 +274,11 @@
 			</button>
 		</header>
 
+		{#if entity.description}
+			<p class="lattice-dossier">{entity.description}</p>
+		{/if}
+
+
 		{#if mergeOpen}
 			<form
 				class="lattice-act-form"
@@ -417,6 +422,7 @@
 		box-shadow: 0 14px 34px rgba(0, 0, 0, 0.55);
 	}
 	.lattice-drawer-head { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: center; }
+	.lattice-dossier { margin: 8px 0 0; font-size: 11.5px; line-height: 1.5; color: #cfc4b4; }
 	.lattice-drawer-head strong { font-size: 12px; color: var(--bone); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.lattice-drawer-head small { grid-column: 1; font-size: 9px; color: #8b8278; }
 	.lattice-drawer-close { grid-column: 2; grid-row: 1 / span 2; display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--ash); cursor: pointer; }

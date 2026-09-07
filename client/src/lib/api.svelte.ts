@@ -246,6 +246,10 @@ export type TagEntity = {
 	sessions: number;
 	/** ISO-8601 UTC — newest session mentioning the entity. */
 	last_seen: string;
+	/** Entity dossier (who/what it is in the story) as of its last
+	 * session appearance; absent when the describe pass never ran or
+	 * returned nothing for this entity. */
+	description?: string;
 };
 
 export type TimelineResponse = {
@@ -392,6 +396,54 @@ export async function patchEntity(
 	return resp.json();
 }
 
+/** Manual dossier edit: write the user's text onto the entity node
+ * (arms description_edited — generated passes never stomp it) and
+ * propagate into the tag's events.json copies. 202 + Temporal, same
+ * shape as patchEntity. */
+export async function setEntityDescription(
+	cfg: ApiConfig,
+	tag: string,
+	slug: string,
+	description: string
+): Promise<{ workflow_id: string }> {
+	const resp = await req(
+		cfg,
+		`/tags/${encodeURIComponent(tag)}/entities/${encodeURIComponent(slug)}/description`,
+		{ method: 'PATCH', body: JSON.stringify({ description }) }
+	);
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `dossier set ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
+/** Manual dossier REFRESH: rebuild the card from the full material
+ * (every mentioning event + neighbors) via one worker LLM call.
+ * Refused with 409 when the dossier is user-edited (description_edited). */
+export async function refreshEntityDescription(
+	cfg: ApiConfig,
+	tag: string,
+	slug: string
+): Promise<{ workflow_id: string }> {
+	const resp = await req(
+		cfg,
+		`/tags/${encodeURIComponent(tag)}/entities/${encodeURIComponent(slug)}/refresh-description`,
+		{ method: 'POST' }
+	);
+	if (!resp.ok) {
+		const detail = (await resp.json().catch(() => null))?.detail;
+		throw Object.assign(
+			new Error(typeof detail === 'string' ? detail : `dossier refresh ${resp.status}`),
+			{ status: resp.status }
+		);
+	}
+	return resp.json();
+}
+
 // ---------------------------------------------------------------------------
 // Phase A/D: knowledge-graph editing + the Lattice tab's read model.
 // ---------------------------------------------------------------------------
@@ -401,6 +453,8 @@ export type GraphEntity = {
 	label: string;
 	type: string;
 	sessions: number;
+	/** Dossier from the tag's events.json copies ('' when none). */
+	description?: string;
 };
 
 export type GraphRelation = {

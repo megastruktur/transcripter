@@ -118,3 +118,32 @@
 - Client: `Tags` rail item (between Library and Vault) → `/tags` manifest
   (ruled rows: name, recordings, vocabulary count) + `/tags/[tag]`
   vocabulary editor with save/delete.
+
+## Entity dossiers (2026-09-07)
+
+- Every entity carries a dossier — a short generated "who/what is this in
+  the story" card (1–3 sentences, output language follows the STT language
+  of the recording). Written by a DEDICATED best-effort LLM pass inside
+  enrich (+1 call per recording, never fails the stage), AFTER dedup and
+  BEFORE the graph write; stored as the `description` property on the
+  Neo4j node (dies with purge, rebuilds with rebuild, folds on merge) and
+  additively in `meta/events.json` `entities[]`.
+- Auto-refresh: every enrich re-describes the session's entities (input
+  includes the old text); a depth-1 wave (+1 capped call, 12 neighbors)
+  re-describes UNTOUCHED related entities whose dossiers may have gone
+  stale. Untouched entities keep their last known state by design.
+- Injection loop: `{known_entities}` (enrich) renders the dossier after
+  each entity line (160-char cap); summarize gets a dossier block (top-15
+  described entities, between the tag context and the glossary); the
+  digest prompt shows dossiers on entity lines.
+- Manual control: `PATCH /tags/{tag}/entities/{slug}/description` (user
+  text; arms `description_edited` — generated passes never stomp it;
+  propagates into the tag's events.json copies) and `POST
+  /tags/{tag}/entities/{slug}/refresh-description` (full rebuild from
+  every mentioning event + neighbors; refuses user-edited dossiers).
+  Both go through the `SetEntityDescription` Temporal workflow.
+- UI: the Vault tag page's Entities tab groups entities by type (group
+  order = group size) and expands a row into the dossier card — text,
+  Refresh/Edit actions, and "Mentioned in" links deep-linking to the
+  recording player at the event's timecode; the Lattice drawer shows the
+  dossier under the entity header.

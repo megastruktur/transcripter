@@ -795,11 +795,45 @@ async def summarize(rec_id: str) -> dict:
     # like the recap: never fails the stage.
     vocabulary_block: str | None = None
     context_block: str | None = None
+    dossier_block: str | None = None
     with session() as s:
         rec = s.get(Recording, rec_id)
         _tags = list(rec.tags) if rec is not None and rec.tags else []
         vocabulary_block = _glossary_block(s, _tags)
         context_block = _context_block(s, _tags)
+    # Entity dossiers (2026-09-07): recurring entities of the first
+    # tag with their cards — the summarize LLM then knows who is who.
+    # Best-effort like the recap: never fails the stage. The block is
+    # built ONLY when at least one entity carries a description (an
+    # all-empty dossier block adds prompt noise for zero value).
+    if c.graph.enabled and _tags:
+        try:
+            from .enrich import list_known_entities
+
+            _rows = await asyncio.to_thread(
+                list_known_entities,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+                _tags[0],
+                exclude_rec=rec_id,
+                limit=15,
+            )
+            _lines = [
+                f"- {r['label']} ({r['type']}): {r['description']}"
+                for r in _rows
+                if r.get("description")
+            ]
+            if _lines:
+                dossier_block = "\n".join(_lines)
+        except Exception:
+            log.exception(
+                "dossier block lookup failed for %s (tag %r) — continuing without",
+                rec_id,
+                _tags[0],
+            )
+            dossier_block = None
     try:
         from .summarize import summarize_transcript
 
@@ -813,6 +847,7 @@ async def summarize(rec_id: str) -> dict:
                 recap_block,
                 vocabulary_block,
                 context_block,
+                dossier_block,
             )
         )
         # Meta path is canonical (see §1 in wave-A impl plan): export.py
@@ -953,16 +988,19 @@ async def enrich(rec_id: str) -> dict:
         from .embeddings import _embedder, entity_vectors
         from .enrich import (
             _FALLBACK_ENRICH_PROMPT,
+            describe_entities,
             extract_from_transcript,
+            fetch_existing_descriptions,
             list_known_entities,
             pre_existing_lookup,
             render_known_entities,
             resolve_slugs,
+            run_description_wave,
             user_corrected_labels,
+            write_descriptions,
             write_events_json,
             write_to_graph,
         )
-
         # Phase 2: no profile matched + enrich_all → the built-in
         # fallback prompt (generic ontology). A matched profile without
         # an enrich section never reaches here (skipped above); the
@@ -1105,10 +1143,66 @@ async def enrich(rec_id: str) -> dict:
             # model is off/unavailable — write_to_graph then skips the
             # embedding property entirely).
             resolved_vecs[graph_tag] = entity_vectors(_embedder(c), resolved_by_tag[graph_tag])
+
+        # Entity dossiers (2026-09-07): ONE extra LLM call per recording
+        # describing the resolved entities. Best-effort — describe_entities
+        # swallows its own failures and returns ({}, {}) — descriptions
+        # then simply stay as they were and events.json carries none.
+        # Runs AFTER dedup (canonical final slugs) and BEFORE the graph
+        # write. ONE batch for the FIRST namespace only: namespaces are
+        # copies of the same extraction; per-namespace batches would
+        # multiply LLM cost N×.
+        stt_lang = None
+        from .db import Stage
+        with session() as s:
+            stage_row = (
+                s.query(Stage)
+                .filter(Stage.recording_id == rec_id, Stage.kind == "transcribe")
+                .first()
+            )
+            if stage_row is not None and isinstance(stage_row.details, dict):
+                lang_raw = stage_row.details.get("language")
+                if isinstance(lang_raw, str) and lang_raw.strip() and lang_raw.strip() != "unknown":
+                    stt_lang = lang_raw.strip()
+        first_resolved = resolved_by_tag[graph_tags[0]]
+        try:
+            _existing_descs = await _heartbeat_while(
+                asyncio.to_thread(
+                    fetch_existing_descriptions,
+                    c.graph.uri,
+                    c.graph.user,
+                    os.environ.get(c.graph.password_env, ""),
+                    c.graph.database,
+                    graph_tags[0],
+                    [e.slug for e in first_resolved.entities],
+                    exclude_rec=rec_id,
+                )
+            )
+        except Exception:
+            log.exception("enrich: description snapshot failed for %s; treating as new", rec_id)
+            _existing_descs = {}
+        _descs, _desc_changed = await _heartbeat_while(
+            asyncio.to_thread(
+                describe_entities,
+                first_resolved,
+                rec_id,
+                title,
+                stt_lang,
+                _existing_descs,
+                c,
+            )
+        )
         # Write to graph (sync neo4j driver via to_thread); heartbeat-
         # wrapped for the same reason as resolve_slugs above. The FIRST
         # namespace call purges this recording's stale nodes in every
         # namespace; the rest skip the redundant DELETE.
+        # ``_descs_for_artifact``: batch texts the graph ACCEPTED
+        # (populated after the first write; user-edited texts merged in
+        # before the artifact write — roborev 2104).
+        _descs_for_artifact: dict[str, str] = {}
+        # Landed slugs WITHOUT the edited overlay — the wave gate
+        # (roborev 2110).
+        _descs_landed: set[str] = set()
         _count = 0
         for idx, graph_tag in enumerate(graph_tags):
             _count += await _heartbeat_while(
@@ -1128,6 +1222,41 @@ async def enrich(rec_id: str) -> dict:
                     embeddings=resolved_vecs.get(graph_tag),
                 )
             )
+            if idx == 0 and _descs:
+                # Persist the dossier batch in the SAME namespace pass
+                # (guarded write: description_edited nodes are skipped).
+                # ``landed`` feeds the events.json artifact below: only
+                # texts the graph accepted may reach the read-model — a
+                # user-edited dossier must show the USER's text there,
+                # not the batch's generated revision of it (roborev 2104).
+                try:
+                    _write_result = await _heartbeat_while(
+                        asyncio.to_thread(
+                            write_descriptions,
+                            c.graph.uri,
+                            c.graph.user,
+                            os.environ.get(c.graph.password_env, ""),
+                            c.graph.database,
+                            graph_tag,
+                            rec_id,
+                            _descs,
+                        )
+                    )
+                    # Artifacts carry the ACCEPTED slugs plus the
+                    _descs_for_artifact = {
+                        s: _descs[s] for s in _write_result.get("landed", [])
+                    }
+                    # Landed BEFORE the edited-overlay merge: the wave
+                    # gate must key on texts the GRAPH accepted, not on
+                    # user-edited overlay entries (roborev 2110).
+                    _descs_landed = set(_write_result.get("landed", []))
+                except Exception:
+                    log.exception(
+                        "enrich: description write failed for %s (tag %r)",
+                        rec_id,
+                        graph_tag,
+                    )
+                    _descs_for_artifact = {}
         # Phase 1 timeline artifact: meta/events.json from the FIRST
         # namespace's resolved extraction (namespaces are copies;
         # identical content). Written after the graph loop so a graph
@@ -1146,6 +1275,25 @@ async def enrich(rec_id: str) -> dict:
                 graph_tags[0],
             )
         )
+        # User-edited dossiers ride the artifact with the GRAPH's text
+        # (the batch's revision was refused): same overlay spirit as
+        # ``_corrected`` labels (roborev 2104).
+        try:
+            from .enrich import user_edited_descriptions
+
+            _edited = await _heartbeat_while(
+                asyncio.to_thread(
+                    user_edited_descriptions,
+                    c.graph.uri,
+                    c.graph.user,
+                    os.environ.get(c.graph.password_env, ""),
+                    c.graph.database,
+                    graph_tags[0],
+                )
+            )
+            _descs_for_artifact = {**_descs_for_artifact, **_edited}
+        except Exception:
+            log.exception("enrich: edited-dossier overlay failed for %s", rec_id)
         await _heartbeat_while(
             asyncio.to_thread(
                 write_events_json,
@@ -1157,6 +1305,7 @@ async def enrich(rec_id: str) -> dict:
                 namespaces=graph_tags,
                 resolved=resolved_by_tag[graph_tags[0]],
                 corrected_labels=_corrected,
+                descriptions=_descs_for_artifact,
             )
         )
         # Phase 3.5 semantic index: index this recording's segments in
@@ -1194,6 +1343,11 @@ async def enrich(rec_id: str) -> dict:
             "profile_id": profile_id,
             "namespaces": graph_tags,
             "indexed_segments": indexed,
+            # Dossier observability (roborev 2106): part of the dict
+            # BEFORE set_stage — an in-place mutation after the commit
+            # never reaches the JSON column.
+            "descriptions": len(_descs),
+            "descriptions_changed": len(_desc_changed),
         }
         set_stage(rec_id, "enrich", StageStatus.done, details=details)
         # Phase A overlay: re-apply user edits the purge just wiped.
@@ -1221,6 +1375,48 @@ async def enrich(rec_id: str) -> dict:
                     rec_id,
                     graph_tag,
                 )
+
+        # Depth-1 dossier wave (2026-09-07): when the batch moved
+        # descriptions, re-describe UNTOUCHED REL-neighbors whose
+        # dossiers may now be stale ("B serves A" while A changed).
+        # Writes ONLY to the graph (neighbors have no events.json
+        # entries in this recording). Best-effort by construction —
+        # run_description_wave swallows its own failures.
+        _wave_changed = {
+            slug: old for slug, old in _desc_changed.items() if slug in _descs_landed
+        }
+        if _wave_changed:
+            for graph_tag in graph_tags:
+                try:
+                    wave_counts = await _heartbeat_while(
+                        asyncio.to_thread(
+                            run_description_wave,
+                            c.graph.uri,
+                            c.graph.user,
+                            os.environ.get(c.graph.password_env, ""),
+                            c.graph.database,
+                            graph_tag,
+                            rec_id,
+                            _wave_changed,
+                            _descs_for_artifact,
+                            [e.slug for e in resolved_by_tag[graph_tag].entities],
+                            stt_lang,
+                            c,
+                        )
+                    )
+                    if wave_counts.get("written"):
+                        log.info(
+                            "enrich: dossier wave for %s (tag %r): %s",
+                            rec_id,
+                            graph_tag,
+                            wave_counts,
+                        )
+                except Exception:
+                    log.exception(
+                        "enrich: dossier wave failed for %s (tag %r)",
+                        rec_id,
+                        graph_tag,
+                    )
         # Phase 2 auto-digest — ONLY on success (never after a skip or
         # failure). Best-effort per tag; see _auto_digest_tags.
         if c.graph.auto_digest:
@@ -1592,6 +1788,162 @@ async def rename_entity(args: dict) -> dict:
         label,
         result.get("re_embedded"),
     )
+    return result
+
+
+@activity.defn
+async def set_entity_description(args: dict) -> dict:
+    """Manual dossier edit/refresh (2026-09-07).
+
+    Two modes by payload:
+    - ``{"mode": "set", "description": str}`` — write the user's text,
+      arm ``description_edited: true`` (generated passes then never
+      stomp it), and propagate to the tag's events.json files so the
+      timeline read-model shows the same text.
+    - ``{"mode": "refresh"}`` — rebuild the dossier from the FULL
+      material via refresh_entity_description; respects
+      ``description_edited`` (the user's text wins until cleared).
+
+    Both best-effort wrappers around enrich helpers; a missing node is
+    non-retryable (same contract as rename_entity).
+    """
+    c = cfg()
+    if not c.graph.enabled:
+        raise RuntimeError("graph backend not configured (graph.uri empty)")
+    tag = args["tag"]
+    slug = args["slug"]
+    mode = args.get("mode", "set")
+    if mode == "refresh":
+        # STT language of the tag's newest recording drives the output
+        # language (best-effort: None → soft directive). Two fixes
+        # (roborev 2102/2103): (a) filter Stage.kind == 'transcribe' —
+        # only that stage's details carry 'language', an arbitrary
+        # stage row of the newest recording always misses it; (b)
+        # Recording.tags.contains compiles to '@>' on the SQLite
+        # variant (local dev) and dies at execution — dialect-split
+        # like digest._select_recordings.
+        language: str | None = None
+        from sqlalchemy import text as _sa_text
+
+        from .db import Stage, session
+
+        with session() as s:
+            if s.get_bind().dialect.name == "postgresql":
+                tag_filter = Recording.tags.contains([tag])
+            else:
+                tag_json = tag.replace("\\", "\\\\").replace('"', '\\"')
+                tag_filter = _sa_text(
+                    f"EXISTS (SELECT 1 FROM json_each(recordings.tags) "
+                    f"WHERE value = '{tag_json}')"
+                )
+            row = (
+                s.query(Stage)
+                .join(Recording, Stage.recording_id == Recording.id)
+                .filter(Stage.kind == "transcribe", tag_filter)
+                .order_by(Recording.created_at.desc(), Stage.id.desc())
+                .first()
+            )
+            if row is not None and isinstance(row.details, dict):
+                lang_raw = row.details.get("language")
+                if (
+                    isinstance(lang_raw, str)
+                    and lang_raw.strip()
+                    and lang_raw.strip() != "unknown"
+                ):
+                    language = lang_raw.strip()
+        from .enrich import refresh_entity_description
+
+        result = await _heartbeat_while(
+            asyncio.to_thread(refresh_entity_description, c, tag, slug, language)
+        )
+        if not result.get("ok"):
+            raise ApplicationError(
+                f"dossier refresh {tag}/{slug}: {result.get('reason')}",
+                non_retryable=True,
+            )
+        # Same events.json propagation as the set branch: the Lattice
+        # Entities list and the timeline read-model must show the new
+        # dossier text without waiting for the entity's next enrich.
+        # Best-effort — the graph node is already updated.
+        try:
+            from .graph_edit import rewrite_events_json, tag_recording_ids, vault_paths_for
+
+            fresh_desc = str(result.get("description") or "")
+
+            def _refresh_desc(doc: dict) -> bool:
+                changed = False
+                for ent in doc.get("entities", []):
+                    if isinstance(ent, dict) and ent.get("slug") == slug:
+                        if ent.get("description") != fresh_desc:
+                            ent["description"] = fresh_desc
+                            changed = True
+                return changed
+
+            touched = 0
+            for rec_id in tag_recording_ids(c, tag):
+                if rewrite_events_json(rec_id, vault_paths_for(c, rec_id), _refresh_desc):
+                    touched += 1
+            result["events_files_touched"] = touched
+        except Exception:
+            log.exception(
+                "set_entity_description: events.json propagation failed for %s/%s "
+                "(graph node is refreshed; timeline dossier lags until next enrich)",
+                tag,
+                slug,
+            )
+        return result
+    # "set": user text → graph + events.json propagation.
+    description = str(args.get("description", "")).strip()
+    if not description:
+        raise ApplicationError("description must not be empty", non_retryable=True)
+    try:
+        from .enrich import set_entity_description_in_graph
+
+        result = await _heartbeat_while(
+            asyncio.to_thread(
+                set_entity_description_in_graph,
+                tag,
+                slug,
+                description,
+                c.graph.uri,
+                c.graph.user,
+                os.environ.get(c.graph.password_env, ""),
+                c.graph.database,
+            )
+        )
+    except Exception:
+        log.exception("set_entity_description failed for %s/%s", tag, slug)
+        raise
+    if not result.get("ok"):
+        raise ApplicationError(
+            f"entity {tag}/{slug} not found in graph", non_retryable=True
+        )
+    # Propagate to the tag's events.json (same pattern as rename's
+    # relabel pass) so the timeline/UI reads the user's dossier.
+    try:
+        from .graph_edit import rewrite_events_json, tag_recording_ids, vault_paths_for
+
+        def _desc(doc: dict) -> bool:
+            changed = False
+            for ent in doc.get("entities", []):
+                if isinstance(ent, dict) and ent.get("slug") == slug:
+                    if ent.get("description") != description:
+                        ent["description"] = description
+                        changed = True
+            return changed
+
+        touched = 0
+        for rec_id in tag_recording_ids(c, tag):
+            if rewrite_events_json(rec_id, vault_paths_for(c, rec_id), _desc):
+                touched += 1
+        result["events_files_touched"] = touched
+    except Exception:
+        log.exception(
+            "set_entity_description: events.json propagation failed for %s/%s "
+            "(graph node is set; timeline dossier lags until next enrich)",
+            tag,
+            slug,
+        )
     return result
 
 

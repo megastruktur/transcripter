@@ -19,6 +19,8 @@ DIGEST_WORKFLOW_NAME = "TagDigest"
 DIGEST_WORKFLOW_ID_PREFIX = "digest-"
 RENAME_ENTITY_WORKFLOW_NAME = "RenameEntity"
 RENAME_ENTITY_ID_PREFIX = "rename-entity-"
+SET_ENTITY_DESCRIPTION_WORKFLOW_NAME = "SetEntityDescription"
+SET_ENTITY_DESCRIPTION_ID_PREFIX = "set-entity-description-"
 
 _client: Client | None = None
 
@@ -109,6 +111,22 @@ async def start_rename_entity(tag: str, slug: str, label: str, type_: str | None
 
 APPLY_GRAPH_EDIT_WORKFLOW_NAME = "ApplyGraphEdit"
 APPLY_GRAPH_EDIT_ID_PREFIX = "apply-graph-edit-"
+
+async def start_set_entity_description(
+    tag: str, slug: str, mode: str, description: str | None = None
+) -> str:
+    """Manual dossier set/refresh (2026-09-07). Same unique-id pattern
+    as start_rename_entity: concurrent dossier edits of the same
+    entity coexist (each is its own workflow; last write wins)."""
+    suffix = uuid.uuid4().hex[:8]
+    client = await get_client()
+    handle = await client.start_workflow(
+        SET_ENTITY_DESCRIPTION_WORKFLOW_NAME,
+        {"tag": tag, "slug": slug, "mode": mode, "description": description},
+        id=f"{SET_ENTITY_DESCRIPTION_ID_PREFIX}{tag}-{slug}-{suffix}",
+        task_queue=TASK_QUEUE,
+    )
+    return handle.id
 
 
 async def start_apply_graph_edit(edit_id: int) -> str:

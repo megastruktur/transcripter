@@ -40,7 +40,7 @@ from neo4j import GraphDatabase
 from sqlalchemy import or_, text
 
 from .db import Recording, RecordingState, Stage, TagDef, session
-from .enrich import slugify
+from .enrich import language_name, slugify
 from .llm_payload import system_first_messages
 
 log = logging.getLogger("transcripter.digest")
@@ -87,6 +87,7 @@ RETURN
   n.kind AS kind,
   n.ts AS ts,
   n.summary AS summary,
+  n.description AS description,
   type(r) AS rel_type,
   m.label AS rel_label,
   m.slug AS rel_slug
@@ -116,36 +117,13 @@ _DIGEST_PROMPT_HEADER = (
     "Relations (from — rel — to):\n{relations}\n"
 )
 
-# Language directive variants for _render_prompt. The STT-detected code
-# ('ru', 'en'…) maps to a BCP-47-ish name the model understands; the
-# dominant language of the selection wins (Counter over non-None rows —
-# 2026-09-04: the LLM ignored the soft "same language as the material"
-# line and wrote English digests over Russian sessions).
-_LANGUAGE_NAMES = {
-    "ru": "Russian",
-    "en": "English",
-    "uk": "Ukrainian",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "pt": "Portuguese",
-    "pl": "Polish",
-    "kk": "Kazakh",
-    "be": "Belarusian",
-    "zh": "Chinese",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "ar": "Arabic",
-    "he": "Hebrew",
-    "hi": "Hindi",
-    "tr": "Turkish",
-}
-
-# Soft fallback when no row carries a usable STT language code.
-_LANGUAGE_DIRECTIVE_FALLBACK = (
-    "Write in the same language as the session material. "
-)
+# Language directive for _render_prompt: the dominant STT code of the
+# selection maps through ``enrich.language_name`` (BCP-47-ish English
+# name the model understands; moved to enrich 2026-09-07 — the dossier
+# pass shares the map, one home, no twin). Soft fallback when no row
+# carries a usable code (2026-09-04: the LLM ignored a soft "same
+# language as the material" line and wrote English digests over
+# Russian sessions).
 
 
 # ---------- public dataclasses --------------------------------------------------
@@ -428,6 +406,10 @@ def _fetch_graph_slice(
                             "type": row["type"],
                             "slug": row["slug"],
                             "sessions": set(),
+                            # Dossier (2026-09-07): rides the entity
+                            # line so the digest writer knows WHO the
+                            # recurring entities are, not just names.
+                            "description": row["description"] or "",
                         },
                     )
                     # Sessions = this window's recordings that touched the
@@ -464,6 +446,7 @@ def _fetch_graph_slice(
                     "type": v["type"],
                     "sessions": sessions,
                     "session_count": len(sessions),
+                    "description": v.get("description", ""),
                 }
             )
         return DigestGraphSlice(
@@ -495,16 +478,16 @@ def _render_prompt(
     # Language directive: the DOMINANT non-None language of the selection.
     # A mixed-language set of sessions is still one digest — majority
     # wins; the code is rendered as its English name in the directive
-    # (see _LANGUAGE_NAMES) when known, else verbatim.
+    # via enrich.language_name when known, else verbatim.
     langs = [r.language for r in rows if r.language]
     if langs:
         dominant = Counter(langs).most_common(1)[0][0]
         directive = (
             f"Write the ENTIRE digest in "
-            f"{_LANGUAGE_NAMES.get(dominant, dominant)} ({dominant}). "
+            f"{language_name(dominant)} ({dominant}). "
         )
     else:
-        directive = _LANGUAGE_DIRECTIVE_FALLBACK
+        directive = language_name(None)
     # Tag context (2026-09-05): the registry row's operator-written
     # narrative for THIS tag (single-namespace digest — no union needed).
     # The whole section collapses to an empty string when unset so the
@@ -518,7 +501,10 @@ def _render_prompt(
         else ""
     )
     entities_text = "\n".join(
-        f"- {e['label']} ({e['type']}) — {e['session_count']} session(s)"
+        (
+            f"- {e['label']} ({e['type']}) — {e['session_count']} session(s)"
+            + (f" — {e['description']}" if e.get("description") else "")
+        )
         for e in graph.entities
     ) or "- (none)"
     events_text = "\n".join(

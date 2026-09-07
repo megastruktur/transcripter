@@ -327,6 +327,92 @@ async def patch_entity(
     return {"workflow_id": workflow_id, "tag": norm, "slug": slug, "label": label}
 
 
+class EntityDescriptionRequest(BaseModel):
+    """Manual dossier edit: 1..2000 chars after trim. Sets the
+    ``description_edited`` flag — generated passes never stomp it."""
+
+    description: str = Field(min_length=1, max_length=2000)
+
+
+@router.patch("/{tag}/entities/{slug}/description", status_code=202)
+async def patch_entity_description(
+    body: EntityDescriptionRequest,
+    request: Request,
+    tag: Annotated[str, Path()],
+    slug: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Manual dossier write (2026-09-07). Same shape as the rename
+    PATCH: existence checked against the SAME events.json aggregation
+    the timeline serves, write via Temporal (set_entity_description →
+    SetEntityDescription). Arms ``description_edited`` on the node and
+    propagates the text into the tag's events.json copies."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    if not cfg.graph.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "graph backend not configured (graph.uri empty) — start the "
+                "compose graph profile or set graph.uri in config.yaml"
+            ),
+        )
+    payload = scan_timeline(cfg, session, norm)
+    if not payload["sessions"]:
+        raise HTTPException(status_code=404, detail=f"no recordings for tag {norm}")
+    slugs = {row["slug"] for row in payload["entities"]}
+    if slug not in slugs:
+        raise HTTPException(status_code=404, detail=f"entity {slug} not found in tag {norm}")
+    try:
+        workflow_id = await temporal_client.start_set_entity_description(
+            norm, slug, "set", body.description.strip()
+        )
+    except Exception:  # noqa: BLE001 — same blind-catch shape as patch_entity
+        _LOG.exception("start_set_entity_description failed for %s/%s", norm, slug)
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
+    return {"workflow_id": workflow_id, "tag": norm, "slug": slug}
+
+
+@router.post("/{tag}/entities/{slug}/refresh-description", status_code=202)
+async def post_refresh_description(
+    request: Request,
+    tag: Annotated[str, Path()],
+    slug: Annotated[str, Path()],
+    session: Session = Depends(get_session),
+) -> dict:
+    """Manual dossier REFRESH (2026-09-07): rebuild the dossier from
+    the full material (every mentioning event + neighbors) via ONE LLM
+    call in the worker. Respects ``description_edited`` — a user-edited
+    dossier is refused with 409 (the flag must be cleared by a plain
+    PATCH first); a missing node fails non-retryable in the activity."""
+    norm = _normalize_tag(tag)
+    _validate_tag(norm)
+    cfg: ServerConfig = request.app.state.config
+    if not cfg.graph.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "graph backend not configured (graph.uri empty) — start the "
+                "compose graph profile or set graph.uri in config.yaml"
+            ),
+        )
+    payload = scan_timeline(cfg, session, norm)
+    if not payload["sessions"]:
+        raise HTTPException(status_code=404, detail=f"no recordings for tag {norm}")
+    slugs = {row["slug"] for row in payload["entities"]}
+    if slug not in slugs:
+        raise HTTPException(status_code=404, detail=f"entity {slug} not found in tag {norm}")
+    try:
+        workflow_id = await temporal_client.start_set_entity_description(
+            norm, slug, "refresh"
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.exception("start_set_entity_description(refresh) failed for %s/%s", norm, slug)
+        raise HTTPException(status_code=503, detail="temporal unavailable; try again later")
+    return {"workflow_id": workflow_id, "tag": norm, "slug": slug}
+
+
 # ------------------------- Phase A: graph editing -------------------------
 
 
@@ -741,7 +827,16 @@ def get_graph(
                         "slug": slug,
                         "label": ent.get("label") or slug,
                         "type": ent.get("type") or "",
+                        "description": ent.get("description") or "",
                     }
+                elif not entities[slug].get("description") and ent.get("description"):
+                    # Dossier: first NON-EMPTY wins (roborev 2108) —
+                    # sessions arrive newest-first and a regenerated
+                    # file whose describe batch failed carries no
+                    # description; the fresh empty string must not
+                    # blank a dossier an older file still has (same
+                    # rule as _aggregate_entities).
+                    entities[slug]["description"] = ent["description"]
         for rel in doc.get("relations", []) or []:
             if isinstance(rel, dict):
                 key = (rel.get("from", ""), rel.get("to", ""), rel.get("type", ""))

@@ -24,6 +24,8 @@
 		patchEntity,
 		patchGraphEvent,
 		deleteGraphEvent,
+		setEntityDescription,
+		refreshEntityDescription,
 		loadApiConfig,
 		type TimelineResponse,
 		type TimelineSession,
@@ -128,6 +130,120 @@
 		} finally {
 			editSaving = false;
 		}
+	}
+
+	// Entity dossiers (2026-09-07): one expanded row at a time
+	// (expandedSlug); the card shows the dossier text, mentioning
+	// events (client-side filter over the already-loaded timeline) and
+	// edit/refresh actions. Grouped by type (group order = group size).
+	let expandedSlug = $state<string | null>(null);
+	let dossierEditing = $state(false);
+	let dossierText = $state('');
+	let dossierSaving = $state(false);
+	let dossierRefreshing = $state(false);
+	let dossierError = $state('');
+	let dossierNote = $state('');
+
+	const entityGroups = $derived.by(() => {
+		if (!data) return [] as { type: string; rows: TimelineResponse['entities'] }[];
+		const groups = new Map<string, TimelineResponse['entities']>();
+		for (const entity of data.entities) {
+			const key = entity.type || 'other';
+			const bucket = groups.get(key);
+			if (bucket) bucket.push(entity);
+			else groups.set(key, [entity]);
+		}
+		return [...groups.entries()]
+			.sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+			.map(([type, rows]) => ({ type, rows }));
+	});
+
+	function mentioningSessions(
+		slug: string
+	): { recording_id: string; title: string; date: string; event: TimelineEvent }[] {
+		if (!data) return [];
+		const out: { recording_id: string; title: string; date: string; event: TimelineEvent }[] = [];
+		for (const session of data.sessions) {
+			for (const event of session.events) {
+				if (event.mentions?.includes(slug)) {
+					out.push({
+						recording_id: session.recording_id,
+						title: session.title,
+						date: session.date,
+						event
+					});
+				}
+			}
+		}
+		return out;
+	}
+
+	function toggleDossier(slug: string): void {
+		if (editingSlug) return; // rename editor takes precedence
+		expandedSlug = expandedSlug === slug ? null : slug;
+		dossierEditing = false;
+		dossierError = '';
+		dossierNote = '';
+	}
+
+	function startDossierEdit(current: string): void {
+		dossierEditing = true;
+		dossierText = current;
+		dossierError = '';
+		dossierNote = '';
+	}
+
+	async function saveDossier(slug: string): Promise<void> {
+		const text = dossierText.trim();
+		if (!text || dossierSaving) return;
+		dossierSaving = true;
+		dossierError = '';
+		try {
+			await setEntityDescription(loadApiConfig(), tag, slug, text);
+			if (data) {
+				const row = data.entities.find((e) => e.slug === slug);
+				if (row) row.description = text;
+			}
+			dossierEditing = false;
+			dossierNote = 'Dossier saved.';
+		} catch (caught) {
+			dossierError = `Save failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+		} finally {
+			dossierSaving = false;
+		}
+	}
+
+	async function refreshDossier(slug: string): Promise<void> {
+		if (dossierRefreshing) return;
+		dossierRefreshing = true;
+		dossierError = '';
+		dossierNote = 'Refreshing…';
+		try {
+			await refreshEntityDescription(loadApiConfig(), tag, slug);
+			dossierNote = 'Refresh queued — reload the page in a few seconds.';
+	} catch (caught) {
+		const status = (caught as { status?: number }).status;
+		const message = caught instanceof Error ? caught.message : String(caught);
+		dossierNote = '';
+		// The endpoint's 409 fires for BOTH "graph not configured" and
+		// (never, today) an edited refusal — the edited case is a
+		// workflow failure AFTER the 202. Distinguish by the server's
+		// detail text, not the bare status (roborev 2107).
+		dossierError =
+			status === 409 && /user-edited|edited/i.test(message)
+				? 'Dossier is user-edited — save a new text or leave it as is.'
+				: `Refresh failed: ${message}`;
+	} finally {
+			dossierRefreshing = false;
+		}
+	}
+
+	/** Event ts ("hh:mm:ss" | "mm:ss" | "ss") → seconds for the
+	 * detail-page deep link (?t= consumes a NUMBER). */
+	function tsToSeconds(ts: string): number {
+		const parts = ts.split(':').map((p) => Number(p));
+		if (parts.some((p) => !Number.isFinite(p))) return 0;
+		return parts.reduce((acc, p) => acc * 60 + p, 0);
 	}
 
 async function runSearch(): Promise<void> {
@@ -556,58 +672,164 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 			</div>
 		{:else if tab === 'entities'}
 			<div class="entity-list">
-				{#each data.entities as entity (entity.slug)}
-					{#if editingSlug === entity.slug}
-						<div class="entity-edit">
-							<form
-								class="entity-edit-form"
-								onsubmit={(event) => {
-									event.preventDefault();
-									void saveEdit(entity.slug);
-								}}
-							>
-								<input
-									class="entity-edit-input"
-									type="text"
-									aria-label={`Rename ${entity.label}`}
-									bind:value={editLabel}
-									disabled={editSaving}
-									maxlength="200"
-								/>
-								<input
-									class="entity-edit-type"
-									type="text"
-									aria-label="Entity type"
-									bind:value={editType}
-									disabled={editSaving}
-									maxlength="100"
-									placeholder="type"
-								/>
-								<button class="entity-edit-save" type="submit" disabled={editSaving || !editLabel.trim()}>
-									<Icon name="refresh" size={11} strokeWidth={1.6} />
-									{editSaving ? 'Saving…' : 'Save'}
-								</button>
-								<button class="entity-edit-cancel" type="button" disabled={editSaving} onclick={cancelEdit}>
-									<Icon name="close" size={11} strokeWidth={1.6} />
-									Cancel
-								</button>
-							</form>
-							{#if editError}
-								<p class="entity-edit-error" role="alert">{editError}</p>
+				{#each entityGroups as group (group.type)}
+					<div class="entity-group">
+						<h4 class="entity-group-title">
+							{group.type}
+							<small>{group.rows.length}</small>
+						</h4>
+						{#each group.rows as entity (entity.slug)}
+							{#if editingSlug === entity.slug}
+								<div class="entity-edit">
+									<form
+										class="entity-edit-form"
+										onsubmit={(event) => {
+											event.preventDefault();
+											void saveEdit(entity.slug);
+										}}
+									>
+										<input
+											class="entity-edit-input"
+											type="text"
+											aria-label={`Rename ${entity.label}`}
+											bind:value={editLabel}
+											disabled={editSaving}
+											maxlength="200"
+										/>
+										<input
+											class="entity-edit-type"
+											type="text"
+											aria-label="Entity type"
+											bind:value={editType}
+											disabled={editSaving}
+											maxlength="100"
+											placeholder="type"
+										/>
+										<button class="entity-edit-save" type="submit" disabled={editSaving || !editLabel.trim()}>
+											<Icon name="refresh" size={11} strokeWidth={1.6} />
+											{editSaving ? 'Saving…' : 'Save'}
+										</button>
+										<button class="entity-edit-cancel" type="button" disabled={editSaving} onclick={cancelEdit}>
+											<Icon name="close" size={11} strokeWidth={1.6} />
+											Cancel
+										</button>
+									</form>
+									{#if editError}
+										<p class="entity-edit-error" role="alert">{editError}</p>
+									{/if}
+								</div>
+							{:else}
+								<div class="entity-block">
+									<button
+										class="list-row entity-row"
+										type="button"
+										onclick={() => toggleDossier(entity.slug)}
+										aria-expanded={expandedSlug === entity.slug}
+										title={expandedSlug === entity.slug ? `Collapse ${entity.label}` : `Expand dossier for ${entity.label}`}
+									>
+										<span class="entity-name">
+											<strong>{entity.label}</strong>
+											<small>{entity.type}</small>
+										</span>
+										<span class="entity-meta">
+											<small>{entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
+											<small>{dateLabel(entity.last_seen)}</small>
+											<Icon name={expandedSlug === entity.slug ? 'close' : 'enrich'} size={11} strokeWidth={1.6} />
+										</span>
+									</button>
+									<button
+										class="entity-rename-btn"
+										type="button"
+										onclick={() => startEdit(entity.slug, entity.label, entity.type)}
+										title={`Rename ${entity.label}`}
+									>
+										<Icon name="pencil" size={11} strokeWidth={1.6} />
+									</button>
+									{#if expandedSlug === entity.slug}
+										<div class="entity-dossier">
+											{#if dossierEditing}
+												<form
+													class="dossier-form"
+													onsubmit={(event) => {
+														event.preventDefault();
+														void saveDossier(entity.slug);
+													}}
+												>
+													<textarea
+														class="dossier-textarea"
+														aria-label={`Dossier for ${entity.label}`}
+														bind:value={dossierText}
+														disabled={dossierSaving}
+														maxlength="2000"
+														rows="4"
+													></textarea>
+													<div class="dossier-actions">
+														<button class="dossier-btn" type="submit" disabled={dossierSaving || !dossierText.trim()}>
+															{dossierSaving ? 'Saving…' : 'Save dossier'}
+														</button>
+														<button
+															class="dossier-btn"
+															type="button"
+															disabled={dossierSaving}
+															onclick={() => (dossierEditing = false)}
+														>
+															Cancel
+														</button>
+													</div>
+												</form>
+											{:else}
+												{#if entity.description}
+													<p class="dossier-text">{entity.description}</p>
+												{:else}
+													<p class="dossier-empty">No dossier yet — run enrich on a session mentioning this entity, or refresh.</p>
+												{/if}
+												<div class="dossier-actions">
+													<button
+														class="dossier-btn"
+														type="button"
+														disabled={dossierRefreshing}
+														onclick={() => void refreshDossier(entity.slug)}
+													>
+														<Icon name="refresh" size={11} strokeWidth={1.6} />
+														{dossierRefreshing ? 'Refreshing…' : 'Refresh'}
+													</button>
+													<button
+														class="dossier-btn"
+														type="button"
+														onclick={() => startDossierEdit(entity.description ?? '')}
+													>
+														<Icon name="pencil" size={11} strokeWidth={1.6} />
+														Edit
+													</button>
+												</div>
+											{/if}
+											{#if dossierError}
+												<p class="entity-edit-error" role="alert">{dossierError}</p>
+											{/if}
+											{#if dossierNote}
+												<p class="dossier-note">{dossierNote}</p>
+											{/if}
+										{#if mentioningSessions(entity.slug).length > 0}
+											<div class="dossier-mentions">
+												<h5>Mentioned in</h5>
+												{#each mentioningSessions(entity.slug) as m, i (i)}
+													<button
+														class="dossier-mention"
+														type="button"
+														onclick={() => goto(`/recordings/${encodeURIComponent(m.recording_id)}?t=${tsToSeconds(m.event.ts)}`)}
+													>
+														<small>{m.title} · {dateLabel(m.date)}</small>
+														<span>{m.event.summary}</span>
+													</button>
+												{/each}
+											</div>
+										{/if}
+										</div>
+									{/if}
+								</div>
 							{/if}
-						</div>
-					{:else}
-						<button class="list-row entity-row" type="button" onclick={() => startEdit(entity.slug, entity.label, entity.type)} title={`Rename ${entity.label}`}>
-							<span class="entity-name">
-								<strong>{entity.label}</strong>
-								<small>{entity.type}</small>
-							</span>
-							<span class="entity-meta">
-								<small>{entity.sessions} session{entity.sessions === 1 ? '' : 's'}</small>
-								<small>{dateLabel(entity.last_seen)}</small>
-							</span>
-						</button>
-					{/if}
+						{/each}
+					</div>
 				{:else}
 					<EmptyState icon="speakers" title="No entities extracted yet" hint="Run the pipeline on tagged recordings to populate the roster." />
 				{/each}
@@ -615,7 +837,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 		{:else if tab === 'lattice'}
 			<LatticeTab
 				{tag}
-				entitiesSeed={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type, sessions: e.sessions }))}
+				entitiesSeed={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type, sessions: e.sessions, description: e.description ?? '' }))}
 				relationsSeed={[]}
 			/>
 		{:else if tab === 'corrections'}
@@ -682,6 +904,55 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	.entity-meta { display: grid; justify-items: end; gap: 2px; }
 	.entity-meta small { font-size: 10px; color: #8b8278; font-variant-numeric: tabular-nums; white-space: nowrap; }
 	.entity-row:hover .entity-name strong { color: var(--bone); }
+	.entity-group { margin-bottom: 10px; }
+	.entity-group-title {
+		display: flex; align-items: baseline; gap: 6px; margin: 10px 0 4px;
+		font-size: 10px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase;
+		color: var(--brass);
+	}
+	.entity-group-title small { color: var(--ash); font-size: 9px; letter-spacing: normal; }
+	.entity-block { position: relative; border-bottom: 1px solid var(--line); }
+	.entity-block .entity-row { width: 100%; border-bottom: none; }
+	.entity-rename-btn {
+		position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+		display: grid; place-items: center; width: 22px; height: 22px;
+		border: 1px solid transparent; border-radius: 3px; background: transparent;
+		color: var(--ash); cursor: pointer; opacity: 0; transition: opacity .12s ease, color .12s ease;
+	}
+	.entity-block:hover .entity-rename-btn { opacity: 1; }
+	.entity-rename-btn:hover { color: var(--brass); border-color: var(--brass); }
+	.entity-row[aria-expanded='true'] { padding-right: 40px; }
+	.entity-dossier { padding: 6px 4px 10px; background: rgba(0,0,0,.25); }
+	.dossier-text { margin: 0 0 8px; font-size: 11.5px; line-height: 1.5; color: #cfc4b4; }
+	.dossier-empty { margin: 0 0 8px; font-size: 11px; font-style: italic; color: var(--ash); }
+	.dossier-actions { display: flex; gap: 6px; }
+	.dossier-btn {
+		display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
+		border: 1px solid var(--brass); border-radius: 3px;
+		background: rgba(215,167,71,.12); color: var(--brass);
+		font-size: 10px; cursor: pointer;
+	}
+	.dossier-btn:disabled { opacity: .5; cursor: default; }
+	.dossier-form { display: grid; gap: 6px; }
+	.dossier-textarea {
+		width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 2px;
+		background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; line-height: 1.5;
+		resize: vertical; min-height: 64px;
+	}
+	.dossier-note { margin: 6px 0 0; font-size: 10px; color: var(--ash); }
+	.dossier-mentions { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+	.dossier-mentions h5 {
+		margin: 0 0 6px; font-size: 9px; font-weight: 600; letter-spacing: .12em;
+		text-transform: uppercase; color: var(--ash);
+	}
+	.dossier-mention {
+		display: grid; gap: 2px; width: 100%; padding: 5px 6px; margin-bottom: 4px;
+		border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.2);
+		text-align: left; cursor: pointer;
+	}
+	.dossier-mention:hover { border-color: var(--brass); }
+	.dossier-mention small { font-size: 9px; color: var(--ash); }
+	.dossier-mention span { font-size: 11px; color: #ded3c4; line-height: 1.4; }
 	.entity-edit { display: grid; gap: 5px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
 	.entity-edit-form { display: grid; grid-template-columns: 1fr 92px auto auto; align-items: stretch; gap: 6px; }
 	.entity-edit-input, .entity-edit-type { min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 2px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; }
