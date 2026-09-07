@@ -1873,10 +1873,13 @@ async def set_entity_description(args: dict) -> dict:
             def _refresh_desc(doc: dict) -> bool:
                 changed = False
                 for ent in doc.get("entities", []):
-                    if isinstance(ent, dict) and ent.get("slug") == slug:
-                        if ent.get("description") != fresh_desc:
-                            ent["description"] = fresh_desc
-                            changed = True
+                    if (
+                        isinstance(ent, dict)
+                        and ent.get("slug") == slug
+                        and ent.get("description") != fresh_desc
+                    ):
+                        ent["description"] = fresh_desc
+                        changed = True
                 return changed
 
             touched = 0
@@ -1926,10 +1929,13 @@ async def set_entity_description(args: dict) -> dict:
         def _desc(doc: dict) -> bool:
             changed = False
             for ent in doc.get("entities", []):
-                if isinstance(ent, dict) and ent.get("slug") == slug:
-                    if ent.get("description") != description:
-                        ent["description"] = description
-                        changed = True
+                if (
+                    isinstance(ent, dict)
+                    and ent.get("slug") == slug
+                    and ent.get("description") != description
+                ):
+                    ent["description"] = description
+                    changed = True
             return changed
 
         touched = 0
