@@ -192,6 +192,28 @@ def _rehydrate_if_vault(rec_id: str) -> None:
 _HOTWORD_PROMPT_CAP = 900  # whisper initial_prompt budget; characters
 
 
+def _vocab_terms(s, tags: list[str]) -> list[str]:
+    """Tag vocabularies → ordered case-preserved union (casefold dedup).
+
+    The one source of truth for vocabulary consumers: the whisper
+    initial_prompt (_hotword_prompt), the LLM glossary (_glossary_block),
+    and the soniox context terms (structured bias — no char cap there).
+    Empty when no registered tag carries words.
+    """
+    if not tags:
+        return []
+    words: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        row = s.get(TagDef, tag)
+        for w in row.vocabulary if row is not None and row.vocabulary else []:
+            key = w.casefold()
+            if key not in seen:
+                seen.add(key)
+                words.append(w)
+    return words
+
+
 def _hotword_prompt(s, tags: list[str]) -> str | None:
     """Tag vocabularies → one ASR bias prompt, or None when no tag has
     words (zero behavior change for unregistered tags).
@@ -203,18 +225,7 @@ def _hotword_prompt(s, tags: list[str]) -> str | None:
     comma list can bleed into the transcript as if spoken. Capped at
     _HOTWORD_PROMPT_CAP chars; the cap truncates whole words only.
     """
-    if not tags:
-        return None
-    words: list[str] = []
-    seen: set[str] = set()
-    for tag in tags:
-        row = s.get(TagDef, tag)
-        for w in row.vocabulary if row is not None and row.vocabulary else []:
-            key = w.casefold()
-            if key not in seen:
-                seen.add(key)
-                words.append(w)
-    if not words:
+    if not (words := _vocab_terms(s, tags)):
         return None
     prefix = "Термины и имена, которые могут прозвучать: "
     out = prefix + ", ".join(words)
@@ -225,6 +236,7 @@ def _hotword_prompt(s, tags: list[str]) -> str | None:
     cut = clipped.rfind(", ")
     return clipped[:cut] if cut > len(prefix) else clipped.rstrip()
 
+
 def _glossary_block(s, tags: list[str]) -> str | None:
     """Tag vocabularies → the summarize glossary block, or None.
 
@@ -233,18 +245,7 @@ def _glossary_block(s, tags: list[str]) -> str | None:
     Semicolon-joined for the LLM glossary (commas live inside phrases);
     capped at the same character budget.
     """
-    if not tags:
-        return None
-    words: list[str] = []
-    seen: set[str] = set()
-    for tag in tags:
-        row = s.get(TagDef, tag)
-        for w in row.vocabulary if row is not None and row.vocabulary else []:
-            key = w.casefold()
-            if key not in seen:
-                seen.add(key)
-                words.append(w)
-    if not words:
+    if not (words := _vocab_terms(s, tags)):
         return None
     out = "; ".join(words)
     if len(out) <= _HOTWORD_PROMPT_CAP:
@@ -319,6 +320,13 @@ async def chunk(rec_id: str) -> dict:
     regenerate, resetting every per-chunk status to pending.
     """
     c = cfg()
+    # Soniox backend: chunking exists to reset CPU-whisper decoder context
+    # (repetition-loop containment) and buys nothing on a cloud model that
+    # takes the whole file in one job — no manifest, which is exactly what
+    # sends transcribe/diarize down the whole-file path.
+    if c.transcribe.backend == "soniox":
+        set_stage(rec_id, "chunk", StageStatus.skipped, details={})
+        return {"skipped": "soniox backend", "chunks": 0}
     if not c.chunk.enabled:
         set_stage(rec_id, "chunk", StageStatus.skipped, details={})
         return {"skipped": "chunking disabled", "chunks": 0}
@@ -441,6 +449,46 @@ async def _transcribe_file(
     return await _heartbeat_while(asyncio.to_thread(local.transcribe, audio))
 
 
+async def _transcribe_soniox(
+    c: WorkerConfig,
+    audio: Path,
+    timeout_sec: float,
+    terms: list[str] | None = None,
+    channel: str | None = None,
+) -> tuple[TranscriptionResult, dict]:
+    """One file → one Soniox async job (STT + diarization together).
+
+    Returns the pipeline result plus the raw normalized token dict —
+    the diarize stage synthesizes diarization.json from it without a
+    second paid call. `terms` is the tag vocabulary (via _vocab_terms) —
+    Soniox structured context (`context.terms`, 8k-token budget) replaces
+    the whisper initial_prompt; no character cap needed. Soniox speaks
+    one channel per job: the stereo path calls this per channel FLAC
+    (speaker namespacing happens in diarize, as with the local backends).
+    """
+    from .soniox import to_transcription_result
+    from .soniox import transcribe_file as soniox_call
+
+    key = os.environ.get(c.transcribe.soniox_api_key_env, "")
+    if not key:
+        raise RuntimeError(
+            f"transcribe.backend=soniox requires ${c.transcribe.soniox_api_key_env} to be set"
+        )
+    tokens = await _heartbeat_while(
+        asyncio.to_thread(
+            soniox_call,
+            audio,
+            key,
+            model=c.transcribe.soniox_model,
+            language_hints=c.transcribe.soniox_language_hints or None,
+            context_terms=terms or None,
+            timeout_sec=timeout_sec,
+        )
+    )
+    result = to_transcription_result(tokens, channel=channel)
+    return result, tokens
+
+
 @activity.defn
 async def transcribe(rec_id: str) -> dict:
     _rehydrate_if_vault(rec_id)
@@ -450,6 +498,81 @@ async def transcribe(rec_id: str) -> dict:
         rec = s.get(Recording, rec_id)
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_transcribe(rec)
+
+    # Soniox backend: whole-file cloud job — no chunking, no manifest; the
+    # tag vocabulary rides as structured context terms. Stereo splits into
+    # two jobs (mic/system FLACs) exactly like the local diarize path.
+    if c.transcribe.backend == "soniox":
+        from .soniox import MAX_DURATION_SEC, TOKENS_NAME
+
+        if rec.duration_sec and rec.duration_sec > MAX_DURATION_SEC:
+            raise RuntimeError(
+                f"recording is {rec.duration_sec / 60:.0f} min; Soniox caps files at "
+                f"{MAX_DURATION_SEC // 60} min — use transcribe.backend=api"
+            )
+        meta = meta_dir(rec_id)
+        with session() as s:
+            terms = _vocab_terms(s, list(rec.tags or []))
+        try:
+            # channel_names keys on chunk manifests, which never exist in the
+            # soniox path (chunk stage skips itself) — split_channels is the
+            # layout source here: ffprobe-detected, idempotent, returns the
+            # per-channel FLACs this branch immediately needs.
+            pairs = split_channels(audio_file(rec_id), meta)
+            channels = [n for n, _ in pairs]
+            if channels:
+                segments: list[Segment] = []
+                words: list[Word] = []
+                language = "unknown"
+                for name in channels:
+                    ch_path = next(p for n, p in pairs if n == name)
+                    result, tokens = await _transcribe_soniox(
+                        c, ch_path, timeout_sec, terms=terms, channel=name
+                    )
+                    (channel_dir(meta, name) / TOKENS_NAME).parent.mkdir(
+                        parents=True, exist_ok=True
+                    )
+                    (channel_dir(meta, name) / TOKENS_NAME).write_text(
+                        json.dumps(tokens, ensure_ascii=False)
+                    )
+                    segments.extend(result.segments)
+                    words.extend(result.words)
+                    if language == "unknown" and result.language != "unknown":
+                        language = result.language
+                segments.sort(key=lambda s_: s_.start)
+                words.sort(key=lambda w_: w_.start)
+                merged = TranscriptionResult(language, segments, words)
+                merged.to_json(meta / "segments.json")
+                segments_to_markdown(merged, meta / "transcript.md")
+                details = {
+                    "language": language,
+                    "segments": len(segments),
+                    "channels": 2,
+                    "backend": "soniox",
+                }
+            else:
+                result, tokens = await _transcribe_soniox(
+                    c, audio_file(rec_id), timeout_sec, terms=terms
+                )
+                result.to_json(meta / "segments.json")
+                segments_to_markdown(result, meta / "transcript.md")
+                (meta / TOKENS_NAME).write_text(
+                    json.dumps(tokens, ensure_ascii=False)
+                )
+                details = {
+                    "language": result.language,
+                    "segments": len(result.segments),
+                    "backend": "soniox",
+                }
+            set_stage(rec_id, "transcribe", StageStatus.done, details=details)
+            return details
+        except asyncio.CancelledError:
+            set_stage(rec_id, "transcribe", StageStatus.failed, error="cancelled")
+            raise
+        except Exception as e:
+            log.exception("transcribe failed for %s", rec_id)
+            set_stage(rec_id, "transcribe", StageStatus.failed, error=str(e))
+            raise
 
     # Tag vocabularies (registry feature): hot words from every tag the
     # recording carries, biasing ASR via the initial_prompt. Loaded in
@@ -643,6 +766,54 @@ async def diarize(rec_id: str) -> dict:
         assert rec is not None, f"recording {rec_id} not found"
         timeout_sec = budget_diarize(rec)
     try:
+        # Soniox backend: diarization already came WITH the transcription
+        # (one paid job). Synthesize diarization.json from the saved token
+        # streams — no HTTP, no second call; stereo namespaces speakers
+        # per channel exactly like the DiariZen path below. channel_names
+        # keys on chunk manifests (absent here) — the per-channel token
+        # files themselves are the layout signal.
+        if c.transcribe.backend == "soniox":
+            from .soniox import TOKENS_NAME, to_diarization
+
+            channels = [
+                ch
+                for ch in ("mic", "system")
+                if (channel_dir(meta_dir(rec_id), ch) / TOKENS_NAME).is_file()
+            ]
+            if channels:
+                segments = []
+                speakers: set[str] = set()
+                for name in channels:
+                    p = channel_dir(meta_dir(rec_id), name) / TOKENS_NAME
+                    if not p.is_file():
+                        raise RuntimeError(
+                            f"{TOKENS_NAME} for channel {name!r} is missing — "
+                            "regenerate from stage 'transcribe'"
+                        )
+                    res = to_diarization(json.loads(p.read_text(encoding="utf-8")))
+                    prefix = f"{name}:"
+                    for seg in res.segments:
+                        seg.speaker = f"{prefix}{seg.speaker}"
+                    segments.extend(res.segments)
+                    speakers.update(seg.speaker for seg in res.segments)
+                from .diarize import DiarizationResult
+
+                result = DiarizationResult(speakers=sorted(speakers), segments=segments)
+                out.write_text(result.model_dump_json())
+                details = {"speakers": result.speakers, "channels": 2}
+                set_stage(rec_id, "diarize", StageStatus.done, details=details)
+                return details
+            p = meta_dir(rec_id) / TOKENS_NAME
+            if not p.is_file():
+                raise RuntimeError(
+                    f"{TOKENS_NAME} is missing — regenerate from stage 'transcribe'"
+                )
+            result = to_diarization(json.loads(p.read_text(encoding="utf-8")))
+            out.write_text(result.model_dump_json())
+            details = {"speakers": result.speakers}
+            set_stage(rec_id, "diarize", StageStatus.done, details=details)
+            return details
+
         # DiariZen (the primary engine) needs the WHOLE recording in one
         # request: its global VBx clustering is the only source of
         # consistent speakers (per-chunk runs fragment identities — the

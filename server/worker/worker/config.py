@@ -9,10 +9,26 @@ from pydantic import BaseModel, Field
 
 
 class TranscribeConfig(BaseModel):
+    """STT backend selection.
+
+    local: faster-whisper in-process. api: any OpenAI-compatible
+    /audio/transcriptions endpoint (Speaches). soniox: Soniox cloud
+    (api.soniox.com) — one async call returns transcription WITH speaker
+    diarization; the diarize stage then synthesizes diarization.json from
+    the saved tokens (no second paid call, no diarization service needed).
+    Chunking exists for the CPU whisper repetition loop and buys nothing
+    on soniox: the chunk stage skips itself when this backend is active.
+    """
+
     backend: str = "local"
     model: str = "small"
     base_url: str = ""
     api_key_env: str = ""
+    # soniox backend
+    soniox_model: str = "stt-async-v5"
+    soniox_api_key_env: str = "SONIOX_API_KEY"
+    # ISO codes biasing recognition (ru recordings: ["ru"]).
+    soniox_language_hints: list[str] = []
 
 
 class SummarizeConfig(BaseModel):
@@ -209,6 +225,27 @@ class WorkerConfig(BaseModel):
         return self.storage.path / "recordings"
 
 
+def _validate_stt_backend(t: TranscribeConfig) -> None:
+    """Backend must name an implementation, with its hard prerequisites.
+
+    api needs a base_url; soniox needs a non-empty API-key env NAME (the
+    key itself may still be absent in dev — the failure then happens at
+    call time with a clear 401, not at worker startup on a laptop).
+    """
+    if t.backend == "api":
+        if not t.base_url:
+            raise ValueError(
+                "transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)"
+            )
+    elif t.backend == "soniox":
+        if not t.soniox_api_key_env:
+            raise ValueError("transcribe.backend=soniox requires transcribe.soniox_api_key_env")
+    elif t.backend != "local":
+        raise ValueError(
+            f"transcribe.backend must be 'local', 'api' or 'soniox' (got {t.backend!r})"
+        )
+
+
 def load_config() -> WorkerConfig:
     path = os.environ.get("TRANSCRIPTER_CONFIG", "/etc/transcripter/config.yaml")
     with open(path) as f:
@@ -220,10 +257,7 @@ def load_config() -> WorkerConfig:
         merged.update(raw.get("vault") or {})
         raw["vault"] = merged
     cfg = WorkerConfig.model_validate(raw)
-    if cfg.transcribe.backend == "api" and not cfg.transcribe.base_url:
-        raise ValueError(
-            "transcribe.backend=api requires transcribe.base_url (OpenAI-compatible URL incl. /v1)"
-        )
+    _validate_stt_backend(cfg.transcribe)
     # Phase 3.5: backend must be one of the two implementations, and the
     # http one needs an endpoint (env overrides re-checked after they run).
     if cfg.graph.embed.backend not in ("local", "http"):
@@ -249,8 +283,14 @@ def load_config() -> WorkerConfig:
     # config.yaml; unset/empty keeps the yaml value effective.
     if env_model := os.environ.get("SUMMARIZE_MODEL"):
         cfg.summarize.model = env_model
+    # Soniox pilot: TRANSCRIBE_BACKEND switches the STT provider without
+    # touching the mounted config.yaml (the EMBED_BACKEND pattern).
+    if env_stt := os.environ.get("TRANSCRIBE_BACKEND"):
+        cfg.transcribe.backend = env_stt
+        _validate_stt_backend(cfg.transcribe)
     if env_profiles := os.environ.get("PROFILES_DIR"):
         cfg.profiles.path = Path(env_profiles)
+
     # Phase 3.5: same pattern as SUMMARIZE_MODEL — compose passes
     # EMBED_BACKEND/EMBED_BASE_URL/EMBED_MODEL from .env so switching the
     # embedding provider never touches the mounted config.yaml.

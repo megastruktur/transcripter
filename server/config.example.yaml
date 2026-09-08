@@ -26,7 +26,11 @@ vault:
   sentinel: ""
 
 transcribe:
-  # local = faster-whisper in worker container; api = OpenAI-compatible endpoint
+  # local = faster-whisper in worker container; api = OpenAI-compatible
+  # endpoint; soniox = Soniox cloud (STT + speaker diarization in ONE
+  # async job — the chunk stage skips itself and diarization comes from
+  # the job's tokens; no diarization container needed). Override without
+  # touching this file: TRANSCRIBE_BACKEND=soniox in .env.
   backend: local
   # faster-whisper model name (local) or model id (api).
   # For Speaches use the full HF id — plain names like "small" are NOT
@@ -38,6 +42,14 @@ transcribe:
   # Env var name holding the API key (never the key itself). Empty is fine
   # for a local unauthenticated Speaches.
   api_key_env: ""
+  # soniox backend (pilot): model id (stt-async-v5 = current async model),
+  # env var name holding the Soniox API key, and optional ISO language
+  # hints biasing recognition (e.g. ["ru"]). Tag vocabularies ride as
+  # structured context terms automatically. Soniox caps one file at
+  # 300 minutes (hard limit).
+  soniox_model: stt-async-v5
+  soniox_api_key_env: SONIOX_API_KEY
+  soniox_language_hints: []
 
 summarize:
   # Disabled unless model is set — recording pipeline succeeds with stage=skipped

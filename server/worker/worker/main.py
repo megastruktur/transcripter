@@ -101,7 +101,9 @@ async def amain() -> None:
     # diarize retry policy already absorbs LinTO's ~2min weight load, and a
     # polling loop here would only delay worker readiness) to warn loudly
     # instead of leaving misconfiguration to per-recording failures.
-    if cfg.diarization.enabled:
+    # Soniox backend: diarization comes from the cloud job's tokens; the
+    # local diarization container is not part of that path at all.
+    if cfg.diarization.enabled and cfg.transcribe.backend != "soniox":
         import httpx
 
         try:

@@ -77,6 +77,10 @@ services:
       EMBED_BACKEND: ${EMBED_BACKEND:-}
       EMBED_BASE_URL: ${EMBED_BASE_URL:-}
       EMBED_MODEL: ${EMBED_MODEL:-}
+      # Soniox pilot: cloud STT backend switch + API key (see config.yaml
+      # transcribe.soniox_*; TRANSCRIBE_BACKEND wins over the yaml backend).
+      TRANSCRIBE_BACKEND: ${TRANSCRIBE_BACKEND:-}
+      SONIOX_API_KEY: ${SONIOX_API_KEY:-}
       # Summarize model id override (wins over config.yaml summarize.model).
       SUMMARIZE_MODEL: ${SUMMARIZE_MODEL:-}
       # Neo4j password for the optional graph profile (graph.password_env
