@@ -1345,10 +1345,15 @@ def describe_entities(
     return descs, changed
 
 
-def _dossier_call(prompt: str, cfg: Any) -> Any:
+def _dossier_call(prompt: str, cfg: Any, *, no_cache: bool = False) -> Any:
     """One chat call, json_object, ``_DESCRIBE_MAX_ATTEMPTS`` retries on
     transport/parse errors — the same wire shape as extraction. Raises
-    after the last attempt; every caller treats this as best-effort."""
+    after the last attempt; every caller treats this as best-effort.
+
+    ``no_cache=True`` (the user-triggered refresh path) bypasses the
+    LiteLLM proxy's Redis exact-match cache — an unchanged prompt would
+    otherwise return the byte-identical cached description and the
+    refresh would look like a no-op (the 2026-09-08 digest bug)."""
     api_key = os.environ.get(cfg.summarize.api_key_env, "")
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
     messages = system_first_messages(
@@ -1357,17 +1362,20 @@ def _dossier_call(prompt: str, cfg: Any) -> Any:
             {"role": "user", "content": prompt},
         ]
     )
+    body: dict[str, Any] = {
+        "model": cfg.summarize.model,
+        "messages": messages,
+        "response_format": {"type": "json_object"},
+    }
+    if no_cache:
+        body["cache"] = {"no-cache": True}
     last_err: Exception | None = None
     for attempt in range(_DESCRIBE_MAX_ATTEMPTS):
         try:
             r = httpx.post(
                 cfg.summarize.base_url.rstrip("/") + "/chat/completions",
                 headers=headers,
-                json={
-                    "model": cfg.summarize.model,
-                    "messages": messages,
-                    "response_format": {"type": "json_object"},
-                },
+                json=body,
                 timeout=_HTTP_TIMEOUT_SEC,
             )
             r.raise_for_status()
@@ -1758,7 +1766,8 @@ def refresh_entity_description(
         .replace("{neighbors}", "\n".join(n_lines))
     )
     try:
-        payload = _dossier_call(prompt, cfg)
+        # Manual refresh: bypass the proxy response cache (see _dossier_call).
+        payload = _dossier_call(prompt, cfg, no_cache=True)
     except Exception:
         log.exception("enrich: dossier refresh LLM failed for %s/%s", tag, slug)
         return {"ok": False, "reason": "llm"}

@@ -557,6 +557,12 @@ def _call_llm(prompt: str, cfg: Any) -> str:
         headers=headers,
         json={
             "model": cfg.summarize.model,
+            # LiteLLM proxy runs a Redis exact-match response cache (1h TTL).
+            # The digest prompt is deterministic given unchanged inputs, so a
+            # manual "Regenerate" would return the byte-identical cached note
+            # instantly — indistinguishable from a broken button. no-cache
+            # forces a fresh call (and refreshes the stored entry).
+            "cache": {"no-cache": True},
             "messages": system_first_messages(
                 [
                     {"role": "system", "content": "Follow the user's instructions."},

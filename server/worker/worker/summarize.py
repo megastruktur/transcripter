@@ -301,6 +301,11 @@ def summarize_transcript(
         headers=headers,
         json={
             "model": cfg.summarize.model,
+            # Bypass the LiteLLM proxy's Redis exact-match cache: an
+            # unchanged transcript/vocabulary would otherwise return the
+            # byte-identical cached summary, and a manual regenerate
+            # would look like a no-op (same 2026-09-08 digest bug).
+            "cache": {"no-cache": True},
             "messages": messages,
         },
         # Must stay 30s UNDER the Temporal start_to_close (2400s) so
