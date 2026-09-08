@@ -405,19 +405,27 @@ def apply_relation_delete(
 def tag_recording_ids(cfg: Any, tag: str) -> list[str]:
     """DONE recordings carrying the tag (the events.json rewrite scope).
     Mirrors digest._select_recordings / vault._tag_recordings semantics
-    without a session dependency: reads the catalog directly."""
+    without a session dependency: reads the catalog directly.
+    Dialect split like vault._tag_recordings: Recording.tags.contains
+    compiles to '@>' and dies on SQLite (local dev / tests) — explode
+    the JSON array with json_each there."""
+    from sqlalchemy import text
+
     from .db import Recording, RecordingState, session
 
     with session() as s:
-        rows = (
-            s.query(Recording.id)
-            .filter(
-                Recording.state == RecordingState.done,
-                Recording.tags.contains([tag]),
+        q = s.query(Recording.id).filter(Recording.state == RecordingState.done)
+        if s.get_bind().dialect.name == "postgresql":
+            q = q.filter(Recording.tags.contains([tag]))
+        else:
+            tag_json = tag.replace("\\", "\\\\").replace('"', '\\"')
+            q = q.filter(
+                text(
+                    f"EXISTS (SELECT 1 FROM json_each(recordings.tags) "
+                    f"WHERE value = '{tag_json}')"
+                )
             )
-            .all()
-        )
-        return [r[0] for r in rows]
+        return [r[0] for r in q.all()]
 
 
 def apply_entity_delete(cfg: Any, paths: VaultPaths, tag: str, slug: str) -> dict[str, Any]:

@@ -665,18 +665,28 @@ export async function fetchDigestStatus(cfg: ApiConfig, tag: string): Promise<Di
 // ---------------------------------------------------------------------------
 
 export type FixOp = {
-	op: 'update_event' | 'delete_event' | 'update_entity' | 'delete_entity' | 'create_relation' | 'delete_relation';
+	op:
+		| 'event_update'
+		| 'event_delete'
+		| 'relation_create'
+		| 'relation_delete'
+		| 'entity_rename'
+		| 'entity_merge'
+		| 'entity_delete';
 	event_key?: string;
+	/** event_update only — changed fields (summary/kind/ts/mentions). */
+	after?: Record<string, unknown>;
 	slug?: string;
-	from_slug?: string;
-	to_slug?: string;
-	ts?: string;
-	kind?: string;
-	summary?: string;
-	mentions?: string[];
+	/** entity_rename only. */
 	label?: string;
+	/** entity_rename only (optional new type); relation ops (type of the edge). */
 	type?: string;
-	before?: Record<string, unknown>;
+	/** relation ops. */
+	from?: string;
+	to?: string;
+	/** entity_merge only. */
+	source?: string;
+	target?: string;
 	[key: string]: unknown;
 };
 
