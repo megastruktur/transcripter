@@ -18,12 +18,19 @@
 
 	let {
 		tag,
+		entities,
+		events,
 		onchanged
 	}: {
 		tag: string;
+		/** Tag-aggregated entities (TimelineResponse.entities) — resolves
+		 * slugs in proposals to readable labels. */
+		entities: { slug: string; label: string; type: string }[];
+		/** Flat events of the tag's sessions (TimelineResponse.sessions[].events)
+		 * — resolves event_keys to ts/kind/summary. */
+		events: { event_key: string; ts: string; kind: string; summary: string }[];
 		onchanged: () => void;
 	} = $props();
-
 	let edits = $state<GraphEditRow[]>([]);
 	let auditLoading = $state(true);
 	let auditError = $state('');
@@ -40,22 +47,52 @@
 	let applyError = $state('');
 	let applyingId = $state<string | null>(null);
 
+	/** slug → "Label (slug)" — falls back to the bare slug when the
+	 * entity is unknown to the timeline (deleted since, or invented). */
+	function _name(slug: string | undefined): string {
+		if (!slug) return '—';
+		const hit = entities.find((e) => e.slug === slug);
+		return hit ? `${hit.label} (${slug})` : slug;
+	}
+
+	function _eventDetail(key: string | undefined): string {
+		if (!key) return '—';
+		const hit = events.find((e) => e.event_key === key);
+		if (!hit) return key;
+		const head = hit.summary.length > 48 ? `${hit.summary.slice(0, 48)}…` : hit.summary;
+		return `${hit.ts} · ${hit.kind} · “${head}”`;
+	}
+
 	function _opDescription(op: FixOp): string {
 		switch (op.op) {
-			case 'update_event': return 'update event';
-			case 'delete_event': return 'delete event';
-			case 'update_entity': return 'update entity';
-			case 'delete_entity': return 'delete entity';
-			case 'create_relation': return 'create relation';
-			case 'delete_relation': return 'delete relation';
+			case 'event_update': return 'update event';
+			case 'event_delete': return 'delete event';
+			case 'relation_create': return 'create relation';
+			case 'relation_delete': return 'delete relation';
+			case 'entity_rename': return 'rename entity';
+			case 'entity_merge': return 'merge entity';
+			case 'entity_delete': return 'delete entity';
 			default: return String(op.op);
 		}
 	}
 
 	function _opDetail(op: FixOp): string {
-		if (op.op === 'update_event' || op.op === 'delete_event') return `${op.event_key ?? ''}`;
-		if (op.op === 'update_entity' || op.op === 'delete_entity') return `${op.slug ?? ''}`;
-		return `${op.from_slug ?? ''} → ${op.type ?? ''} → ${op.to_slug ?? ''}`;
+		switch (op.op) {
+			case 'event_update':
+			case 'event_delete':
+				return _eventDetail(op.event_key);
+			case 'relation_create':
+			case 'relation_delete':
+				return `${_name(op.from)} —${op.type ?? '?'}→ ${_name(op.to)}`;
+			case 'entity_rename':
+				return `${_name(op.slug)} → ${op.label ?? '?'}${op.type ? ` [${op.type}]` : ''}`;
+			case 'entity_merge':
+				return `${_name(op.source)} → ${_name(op.target)}`;
+			case 'entity_delete':
+				return _name(op.slug);
+			default:
+				return '';
+		}
 	}
 
 	async function refreshAudit(): Promise<void> {
@@ -194,30 +231,37 @@
 				disabled={previewing || !!proposal || instruction.trim().length < 3}
 			>
 				{#if previewing}
-					<Icon name="refresh" size={11} strokeWidth={1.6} /> Translating…
+					<Icon name="refresh" size={11} strokeWidth={1.6} /> Proposing…
 				{:else}
-					Translate
+					Propose fix
 				{/if}
-			</button>
-		</div>
-	</form>
-	{#if previewNote}
-		<p class="corr-note">{previewNote}</p>
-	{/if}
-	{#if previewError}
-		<p class="corr-error" role="alert">{previewError}</p>
-	{/if}
+		</button>
+	</div>
+</form>
+{#if previewNote}
+	<p class="corr-note">{previewNote}</p>
+{/if}
+{#if previewError}
+	<p class="corr-error" role="alert">{previewError}</p>
+{/if}
 	{#if proposal}
 		<div class="corr-proposal">
 			<strong class="corr-proposal-head">Proposal — confirm to apply</strong>
-			<ul class="corr-ops">
-				{#each proposal.ops as op, i (i)}
-					<li class="corr-op">
-						<strong>{_opDescription(op)}</strong>
-						<span class="corr-op-detail">{_opDetail(op)}</span>
-					</li>
-				{/each}
-			</ul>
+			{#if proposal.ops.length === 0}
+				<p class="corr-op">No changes proposed — the record already matches the instruction.</p>
+			{:else}
+				<ul class="corr-ops">
+					{#each proposal.ops as op, i (i)}
+						<li class="corr-op">
+							<strong>{_opDescription(op)}</strong>
+							<span class="corr-op-detail">{_opDetail(op)}</span>
+							{#if proposal.rationale?.[i]}
+								<span class="corr-op-why">{proposal.rationale[i]}</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 			<div class="corr-proposal-actions">
 				<button class="corr-apply" type="button" disabled={applying} onclick={() => void confirmApply()}>
 					{#if applying}
@@ -296,6 +340,7 @@
 	.corr-ops { margin: 0; padding-left: 12px; display: grid; gap: 4px; }
 	.corr-op { color: #ded3c4; font-size: 11px; line-height: 1.4; }
 	.corr-op-detail { color: var(--ash); font-size: 10px; }
+	.corr-op-why { display: block; color: #9a8f82; font-size: 10px; font-style: italic; overflow-wrap: anywhere; }
 	.corr-proposal-actions { display: flex; gap: 6px; margin-top: 6px; }
 	.corr-apply { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border: 1px solid var(--brass); border-radius: 2px; background: rgba(215,167,71,.12); color: var(--brass); font-size: 10px; font-weight: 700; cursor: pointer; }
 	.corr-apply:hover:not(:disabled) { background: rgba(215,167,71,.2); }

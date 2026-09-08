@@ -160,8 +160,15 @@ def _fix_prompt(
         ' {"op": "event_delete", "event_key": "..."}\n'
         ' {"op": "relation_create", "from": "slug", "to": "slug", "type": "..."}\n'
         ' {"op": "relation_delete", "from": "slug", "to": "slug", "type": "..."}\n'
+        ' {"op": "entity_rename", "slug": "...", "label": "new label", '
+        '"type": "optional new type"}\n'
         ' {"op": "entity_merge", "source": "slug", "target": "slug"}\n'
         ' {"op": "entity_delete", "slug": "..."}\n'
+        "Naming-rule of thumb: a WRONG name with no correct entity in "
+        "the graph yet → entity_rename (keeps the node, its relations "
+        "and history; re-embeds); the wrong one is a DUPLICATE of an "
+        "existing correct entity → entity_merge; the entity was "
+        "invented entirely → entity_delete.\n"
         "rationale: one short line per op, in the same order.\n"
         "If the instruction needs no graph change, return empty ops "
         '({"ops": [], "rationale": []}). Never invent event_keys or slugs '
@@ -173,6 +180,7 @@ _EVENT_OPS = {"event_update", "event_delete"}
 _KNOWN_OPS = _EVENT_OPS | {
     "relation_create",
     "relation_delete",
+    "entity_rename",
     "entity_merge",
     "entity_delete",
 }
@@ -213,6 +221,17 @@ def _parse_proposal(payload: Any) -> dict:
             if not all(isinstance(x, str) and x for x in (f, t, ty)):
                 raise ValueError(f"op #{i}: from/to/type required")
             ops.append({"op": kind, "from": f, "to": t, "type": ty})
+        elif kind == "entity_rename":
+            slug, label = op.get("slug"), op.get("label")
+            if not isinstance(slug, str) or not slug:
+                raise ValueError(f"op #{i}: slug required")
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(f"op #{i}: label required")
+            out: dict = {"op": kind, "slug": slug, "label": label.strip()}
+            type_ = op.get("type")
+            if isinstance(type_, str) and type_.strip():
+                out["type"] = type_.strip()
+            ops.append(out)
         elif kind == "entity_merge":
             src, tgt = op.get("source"), op.get("target")
             if not isinstance(src, str) or not isinstance(tgt, str) or not src or not tgt:

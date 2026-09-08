@@ -75,14 +75,36 @@ def test_parser_accepts_all_op_shapes() -> None:
                 {"op": "event_delete", "event_key": "k2"},
                 {"op": "relation_create", "from": "a", "to": "b", "type": "works_on"},
                 {"op": "relation_delete", "from": "a", "to": "b", "type": "works_on"},
+                {"op": "entity_rename", "slug": "artas", "label": "Виго Моркан"},
+                {
+                    "op": "entity_rename",
+                    "slug": "artas",
+                    "label": "Виго Моркан",
+                    "type": "person",
+                },
                 {"op": "entity_merge", "source": "x", "target": "y"},
                 {"op": "entity_delete", "slug": "z"},
             ],
-            ["a", "b", "c", "d", "e", "f"],
+            ["a", "b", "c", "d", "e", "f", "g", "h"],
         )
     )
-    assert len(out["ops"]) == 6
-    assert out["rationale"] == ["a", "b", "c", "d", "e", "f"]
+    assert len(out["ops"]) == 8
+    assert out["rationale"] == ["a", "b", "c", "d", "e", "f", "g", "h"]
+    rename = out["ops"][4]
+    assert rename == {"op": "entity_rename", "slug": "artas", "label": "Виго Моркан"}
+    typed = out["ops"][5]
+    assert typed["type"] == "person"
+
+
+def test_parser_rename_requires_slug_and_label() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="slug"):
+        _parse_proposal(_payload([{"op": "entity_rename", "label": "L"}]))
+    with pytest.raises(ValueError, match="label"):
+        _parse_proposal(_payload([{"op": "entity_rename", "slug": "s"}]))
+    with pytest.raises(ValueError, match="label"):
+        _parse_proposal(_payload([{"op": "entity_rename", "slug": "s", "label": "  "}]))
 
 
 def test_parser_empty_ops_is_valid() -> None:
@@ -174,3 +196,36 @@ def test_preview_happy_path_returns_proposal() -> None:
     assert out["ok"] is True
     assert out["proposal"]["ops"][0]["slug"] == "dupe"
     assert out["context"]["recording_id"] == "r1"
+
+
+# ---------- edit-row (audit + {corrections}) ----------
+
+
+def test_edit_row_for_rename_is_entity_update() -> None:
+    """entity_rename lands in graph_edits as entity/update — visible in
+    the Corrections audit and carrying feedback_text for future
+    enrich prompts."""
+    from worker.activities import _edit_row_for_op
+    from worker.graph_edit_model import EditOp, EditTarget
+
+    row = _edit_row_for_op(
+        "quest",
+        {"op": "entity_rename", "slug": "artas", "label": "Виго Моркан"},
+        "portrait was Vigo Morkan, not Arthas",
+    )
+    assert row is not None
+    assert row.tag == "quest"
+    assert row.target == EditTarget.entity
+    assert row.op == EditOp.update
+    assert row.obj_key == "artas"
+    assert row.after == {"label": "Виго Моркан"}
+    assert row.feedback_text == "portrait was Vigo Morkan, not Arthas"
+    assert row.source == "agent"
+
+    typed = _edit_row_for_op(
+        "quest",
+        {"op": "entity_rename", "slug": "artas", "label": "Виго", "type": "person"},
+        None,
+    )
+    assert typed.after == {"label": "Виго", "type": "person"}
+    assert typed.feedback_text is None

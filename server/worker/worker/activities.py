@@ -2189,7 +2189,7 @@ async def fix_apply(args: dict) -> dict:
                 return f"merge target {op['target']} missing"
             if op["source"] == op["target"]:
                 return "merge source equals target"
-        elif kind == "entity_delete":
+        elif kind in ("entity_rename", "entity_delete"):
             if op["slug"] not in current_entities:
                 return f"entity {op['slug']} not found"
         return None
@@ -2251,6 +2251,23 @@ async def fix_apply(args: dict) -> dict:
                     op["from"],
                     op["to"],
                     op["type"],
+                )
+            elif kind == "entity_rename":
+                from .enrich import rename_entity_in_graph
+
+                result = await _heartbeat_while(
+                    asyncio.to_thread(
+                        rename_entity_in_graph,
+                        tag,
+                        op["slug"],
+                        op["label"],
+                        op.get("type"),
+                        c,
+                        c.graph.uri,
+                        c.graph.user,
+                        os.environ.get(c.graph.password_env, ""),
+                        c.graph.database,
+                    )
                 )
             elif kind == "entity_merge":
                 result = apply_entity_merge(
@@ -2364,6 +2381,21 @@ def _edit_row_for_op(tag: str, op: dict, feedback_text: str | None):
             op=EditOp.delete,
             obj_key=f"{op['from']}|{op['to']}|{op['type']}",
             before={"from": op["from"], "to": op["to"], "type": op["type"]},
+            feedback_text=feedback_text,
+            source="agent",
+            status=EditStatus.applied,
+        )
+    if kind == "entity_rename":
+        after = {"label": op["label"]}
+        if "type" in op:
+            after["type"] = op["type"]
+        return GraphEdit(
+            tag=tag,
+            target=EditTarget.entity,
+            op=EditOp.update,
+            obj_key=op["slug"],
+            before={},
+            after=after,
             feedback_text=feedback_text,
             source="agent",
             status=EditStatus.applied,

@@ -881,7 +881,12 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 				relationsSeed={[]}
 			/>
 		{:else if tab === 'corrections'}
-			<CorrectionsTab {tag} onchanged={() => { void refresh(); void refreshDigestStatus(); }} />
+			<CorrectionsTab
+				{tag}
+				entities={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type }))}
+				events={data.sessions.flatMap((s) => s.events)}
+				onchanged={() => { void refresh(); void refreshDigestStatus(); }}
+			/>
 		{:else}
 			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText?.body ?? null} generatedAt={digestText?.generated_at} recordings={digestText?.recordings ?? []} queued={digestStatus?.state === 'queued'} onregen={() => void regenerateDigestNow()} />
 		{/if}
