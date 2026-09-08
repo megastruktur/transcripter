@@ -290,7 +290,7 @@ def get_digest(
     rec_ids = fm.get("recordings") or []
     if not isinstance(rec_ids, list):
         rec_ids = []
-    recordings: list[dict[str, str]] = []
+    recordings: list[dict[str, str | None]] = []
     if rec_ids:
         rows = session.execute(
             select(Recording.id, Recording.title, Recording.recorded_at, Recording.created_at)
