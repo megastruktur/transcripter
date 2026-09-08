@@ -63,6 +63,7 @@ jobs:
         with:
           context: server/
           file: server/Dockerfile.worker
+          push: true
           platforms: linux/amd64
           build-args: |
             APP_VERSION=${{ steps.tag.outputs.tag }}
