@@ -1,3 +1,5 @@
+import { clientHeader } from '$lib/platform';
+
 export type ApiConfig = {
 	baseUrl: string;
 	token: string;
@@ -95,6 +97,7 @@ async function req(
 		headers: {
 			authorization: `Bearer ${cfg.token}`,
 			'content-type': 'application/json',
+			'x-client': clientHeader(),
 			...(init?.headers ?? {})
 		}
 	});
@@ -104,16 +107,19 @@ async function req(
 
 export async function testConnection(cfg: ApiConfig): Promise<string> {
 	const base = cfg.baseUrl.replace(/\/$/, '');
-	const health = await fetch(`${base}/health`);
+	const client = { 'x-client': clientHeader() };
+	const health = await fetch(`${base}/health`, { headers: client });
 	if (!health.ok) throw new Error(`health ${health.status}`);
 	const authed = await fetch(`${base}/recordings`, {
-		headers: { authorization: `Bearer ${cfg.token}` }
+		headers: { authorization: `Bearer ${cfg.token}`, ...client }
 	});
 	if (authed.status === 401) throw new Error('unauthorized: wrong token');
 	if (!authed.ok) throw new Error(`recordings ${authed.status}`);
-	return 'ok';
+	// Pre-v0.32 servers have no version in /health — keep '' so the
+	// Settings panel degrades to a dash instead of "undefined".
+	const version = (await health.json().catch(() => null))?.version;
+	return typeof version === 'string' ? version : '';
 }
-
 export async function listRecordings(cfg: ApiConfig, params: ListParams): Promise<RecordingPage> {
 	const search = new URLSearchParams({ limit: String(params.limit), offset: String(params.offset) });
 	const q = params.q?.trim();

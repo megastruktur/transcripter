@@ -14,3 +14,7 @@ COPY worker/ ./worker/
 # Whisper model is downloaded on first start into /models (compose sets
 # WHISPER_DOWNLOAD_ROOT=/models; baked-in download would bloat the image).
 CMD ["uv", "run", "--directory", "worker", "python", "-m", "worker.main"]
+
+# Same version marker as the API image (diagnostics parity).
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}

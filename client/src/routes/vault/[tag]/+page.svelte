@@ -322,88 +322,103 @@ async function runSearch(): Promise<void> {
 		digestPoll = globalThis.setTimeout(() => void pollDigestOnce(startedAt), DIGEST_POLL_MS);
 	}
 
-	async function pollDigestOnce(startedAt: number): Promise<void> {
-		digestPoll = null;
-		if (tab !== 'digest') return;
-		try {
-			digestText = await fetchDigest(loadApiConfig(), tag);
-			digestGenerating = false;
-			digestMissing = false;
-			digestNote = '';
-		} catch (caught) {
-			const status = (caught as { status?: number }).status;
-			// 404 (note not written yet) and status-less transport blips
-			// (webview "Failed to fetch") are transient: keep polling while
-			// the budget lasts. A real HTTP status (401/500…) is terminal —
-			// retrying cannot fix it (2026-09-04: one webview blip aborted
-			// the whole poll loop and stranded the panel on an error).
-			if (
-				(status === 404 || status === undefined) &&
-				Date.now() - startedAt < DIGEST_POLL_BUDGET_MS
-			) {
+async function pollDigestOnce(startedAt: number): Promise<void> {
+	digestPoll = null;
+	if (tab !== 'digest') return;
+	try {
+		const note = await fetchDigest(loadApiConfig(), tag);
+		// A 200 with an OLD note is not done: the worker overwrites the
+		// note in place, so during the LLM run the endpoint happily serves
+		// the previous digest (observed live 2026-09-08: the first poll
+		// tick 23 s before the write froze the panel on the stale body).
+		// Only a generated_at NEWER than the Regenerate click settles it.
+		if (Date.parse(note.generated_at) <= startedAt) {
+			if (Date.now() - startedAt < DIGEST_POLL_BUDGET_MS) {
 				scheduleDigestPoll(startedAt);
-				return;
-			}
-			digestGenerating = false;
-			if (status === 404) {
-				digestNote = 'Still generating — check again in a minute.';
 			} else {
-				digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+				digestGenerating = false;
+				digestNote = 'Still generating — check back in a minute.';
 			}
+			return;
 		}
-	}
-
-	async function loadDigest(): Promise<void> {
-		stopDigestPoll();
-		digestText = null;
-		digestMissing = false;
-		digestError = '';
-		digestNote = '';
+		digestText = note;
 		digestGenerating = false;
-		digestLoading = true;
-		try {
-			digestText = await fetchDigest(loadApiConfig(), tag);
-		} catch (caught) {
-			const status = (caught as { status?: number }).status;
-			if (status === 404) {
-				digestMissing = true;
-			} else {
-				digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
-			}
-		} finally {
-			digestLoading = false;
-		}
-	}
-
-	async function regenerateDigestNow(): Promise<void> {
-		if (digestGenerating) return;
-		stopDigestPoll();
-		digestText = null;
 		digestMissing = false;
 		digestNote = '';
-		digestError = '';
-		digestGenerating = true;
-		try {
-			await regenerateDigest(loadApiConfig(), tag);
-			scheduleDigestPoll(Date.now());
-		} catch (caught) {
-			digestGenerating = false;
-			digestError = `Digest request failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+	} catch (caught) {
+		const status = (caught as { status?: number }).status;
+		// 404 (note not written yet) and status-less transport blips
+		// (webview "Failed to fetch") are transient: keep polling while
+		// the budget lasts. A real HTTP status (401/500…) is terminal —
+		// retrying cannot fix it (2026-09-04: one webview blip aborted
+		// the whole poll loop and stranded the panel on an error).
+		if (
+			(status === 404 || status === undefined) &&
+			Date.now() - startedAt < DIGEST_POLL_BUDGET_MS
+		) {
+			scheduleDigestPoll(startedAt);
+			return;
 		}
-	}
-
-	function switchTab(next: TabKey): void {
-		tab = next;
-		if (next === 'digest' && !digestLoaded) {
-			digestLoaded = true;
-			void loadDigest();
-		}
-		if (next === 'digest') {
-			void refreshDigestStatus();
+		digestGenerating = false;
+		if (status === 404) {
+			digestNote = 'Still generating — check again in a minute.';
 		} else {
-			clearDigestStatusPoll();
+			digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
 		}
 	}
+}
+
+async function loadDigest(): Promise<void> {
+	stopDigestPoll();
+	digestText = null;
+	digestMissing = false;
+	digestError = '';
+	digestNote = '';
+	digestGenerating = false;
+	digestLoading = true;
+	try {
+		digestText = await fetchDigest(loadApiConfig(), tag);
+	} catch (caught) {
+		const status = (caught as { status?: number }).status;
+		if (status === 404) {
+			digestMissing = true;
+		} else {
+			digestError = `Digest failed to load: ${caught instanceof Error ? caught.message : String(caught)}`;
+		}
+	} finally {
+		digestLoading = false;
+	}
+}
+
+async function regenerateDigestNow(): Promise<void> {
+	if (digestGenerating) return;
+	stopDigestPoll();
+	digestText = null;
+	digestMissing = false;
+	digestNote = '';
+	digestError = '';
+	digestGenerating = true;
+	try {
+		await regenerateDigest(loadApiConfig(), tag);
+		scheduleDigestPoll(Date.now());
+	} catch (caught) {
+		digestGenerating = false;
+		digestError = `Digest request failed: ${caught instanceof Error ? caught.message : String(caught)}`;
+	}
+}
+
+function switchTab(next: TabKey): void {
+	tab = next;
+	if (next === 'digest' && !digestLoaded) {
+		digestLoaded = true;
+		void loadDigest();
+	}
+	if (next === 'digest') {
+		void refreshDigestStatus();
+	} else {
+		clearDigestStatusPoll();
+	}
+}
 
 	/** Definition tab's "Open sessions →" link: jump to the timeline. */
 	function gotoTimeline(): void {

@@ -15,11 +15,14 @@
 	import Icon from '$lib/Icon.svelte';
 	import SignalWarnings from '$lib/SignalWarnings.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
+	import { clientPlatform } from '$lib/platform';
 
 	let cfg = $state(loadApiConfig());
 	const android = isAndroidTauri();
 	let showToken = $state(false);
 
+	/** Settings > Application row: baked build version + platform. */
+	const clientVersionLabel = `${__APP_VERSION__} · ${clientPlatform()}`;
 	const connected = $derived(connection.phase === 'connected');
 	const testing = $derived(connection.phase === 'checking');
 	const linkLabel = $derived(
@@ -118,6 +121,23 @@
 
 	<div class="device-panel">
 		<div class="panel-heading">
+			<div class="antenna" aria-hidden="true"><Icon name="settings" size={17} /></div>
+			<div><span>APPLICATION</span><strong>Versions</strong></div>
+		</div>
+		<div class="form-body">
+			<div class="version-row">
+				<span class="version-label">Client</span>
+				<span class="version-value">{clientVersionLabel}</span>
+			</div>
+			<div class="version-row">
+				<span class="version-label">Server</span>
+				<span class="version-value" class:dimmed={!connection.serverVersion}>{connection.serverVersion || '—'}</span>
+			</div>
+		</div>
+	</div>
+
+	<div class="device-panel">
+		<div class="panel-heading">
 			<div class="antenna" aria-hidden="true"><Icon name="microphone" size={17} /></div>
 			<div><span>AUDIO</span><strong>Capture devices</strong></div>
 			<div class:connected={audioLabel === 'Ready'} class="link-state"><i></i>{audioLabel}</div>
@@ -203,7 +223,10 @@
 	.result strong { color: #e1746b; font-size: 12px; }
 	.result span { margin-top: 3px; color: #b5aa9c; font-size: 11px; line-height: 1.45; }
 	.result.success { border-color: var(--cyan); background: rgba(112,215,208,.055); }
-	.result.success > i { background: var(--cyan); box-shadow: 0 0 8px var(--cyan); }
+	.version-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+	.version-label { color: #c9bdad; font-size: 11px; font-weight: 650; }
+	.version-value { color: var(--bone); font-size: 11px; font-variant-numeric: tabular-nums; }
+	.version-value.dimmed { color: var(--ash); }
 	.result.success strong { color: var(--cyan); }
 	.security-note { display: grid; grid-template-columns: auto 1fr; gap: 10px; padding: 12px; border-top: 1px solid rgba(215,167,71,.2); border-bottom: 1px solid rgba(215,167,71,.2); color: #7d746a; }
 	.security-icon { width: 20px; height: 20px; display: grid; place-items: center; color: var(--brass); line-height: 0; }

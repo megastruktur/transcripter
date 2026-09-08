@@ -461,6 +461,19 @@
 		try {
 			const note = await fetchDigest(loadApiConfig(), tag);
 			if (digestTag !== tag) return;
+			// A 200 with an OLD note is not done: the worker overwrites the
+			// note in place, so during the LLM run the endpoint happily serves
+			// the previous digest. Only a generated_at NEWER than the click
+			// settles the poll (same fix as the vault tag page, 2026-09-08).
+			if (Date.parse(note.generated_at) <= startedAt) {
+				if (Date.now() - startedAt < DIGEST_POLL_BUDGET_MS) {
+					scheduleDigestPoll(tag, startedAt);
+				} else {
+					digestGenerating = false;
+					digestNote = 'Still generating — check back in a minute.';
+				}
+				return;
+			}
 			digestText = note;
 			digestGenerating = false;
 			digestMissing = false;

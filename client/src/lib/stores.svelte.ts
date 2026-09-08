@@ -150,9 +150,13 @@ export type ConnectionPhase = 'unconfigured' | 'checking' | 'connected' | 'unava
 export const connection = $state<{
 	phase: ConnectionPhase;
 	detail: string;
+	/** Server release tag from /health (Settings > Application); empty
+	 * until a successful connection check, "dev" for local uvicorn. */
+	serverVersion: string;
 }>({
 	phase: 'unconfigured',
-	detail: 'Add a bearer token in Settings.'
+	detail: 'Add a bearer token in Settings.',
+	serverVersion: ''
 });
 
 const CONNECTION_TIMEOUT_MS = 5000;
@@ -209,15 +213,17 @@ export async function checkServerConnection(
 			timeoutId = globalThis.setTimeout(() => reject(new Error('Connection timed out.')), CONNECTION_TIMEOUT_MS);
 		})
 	])
-		.then(() => {
+		.then((serverVersion) => {
 			if (persist) saveApiConfig(cfg);
 			connection.phase = 'connected';
 			connection.detail = 'Health and authorization verified.';
+			connection.serverVersion = serverVersion;
 			return true;
 		})
 		.catch((error: unknown) => {
 			connection.phase = 'unavailable';
 			connection.detail = error instanceof TypeError ? 'Could not reach the server.' : error instanceof Error ? error.message : String(error);
+			connection.serverVersion = '';
 			return false;
 		})
 		.finally(() => {

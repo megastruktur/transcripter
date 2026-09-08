@@ -234,4 +234,6 @@ async def bearer_auth(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    # APP_VERSION is a docker build-arg (release tag, e.g. "v0.31.0") set
+    # in the image ENV; local uvicorn runs without it report "dev".
+    return {"status": "ok", "version": os.environ.get("APP_VERSION", "dev")}

@@ -51,6 +51,8 @@ jobs:
           file: server/Dockerfile.api
           push: true
           platforms: linux/amd64
+          build-args: |
+            APP_VERSION=${{ steps.tag.outputs.tag }}
           tags: |
             ghcr.io/megastruktur/transcripter:${{ steps.tag.outputs.tag }}-api
           cache-from: type=gha
@@ -60,9 +62,9 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: server/
-          file: server/Dockerfile.worker
-          push: true
           platforms: linux/amd64
+          build-args: |
+            APP_VERSION=${{ steps.tag.outputs.tag }}
           tags: |
             ghcr.io/megastruktur/transcripter:${{ steps.tag.outputs.tag }}-worker
           cache-from: type=gha
