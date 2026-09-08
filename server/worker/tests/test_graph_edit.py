@@ -547,3 +547,57 @@ def test_reapply_overlay_orphans_unmatched_edit(tmp_path: Path, monkeypatch) -> 
         counts = reapply_overlay(cfg, "quest", rid)
     assert counts["orphaned"] == 1
     assert statuses == [(9, EditStatus.orphaned)]
+
+
+# ---------- relabel_entity_in_events_files ----------
+
+
+def test_relabel_entity_rewrites_both_label_and_type(tmp_path: Path, monkeypatch) -> None:
+    """A graph-side rename must reach the events.json read-model: label
+    (± type) rewritten in the entities[] of every tag recording, files
+    without the slug untouched, count of changed files returned."""
+    import worker.graph_edit as ge
+
+    cfg = _Cfg(tmp_path / "recordings", tmp_path / "vault")
+    doc = {
+        "entities": [
+            {"slug": "artas", "label": "Артас", "type": "npc"},
+            {"slug": "other", "label": "Прочая", "type": "item"},
+        ],
+        "events": [],
+    }
+    path = _write_doc(tmp_path / "recordings", "rec-rl", doc)
+
+    monkeypatch.setattr(ge, "tag_recording_ids", lambda c, t: ["rec-rl", "rec-absent"])
+    touched = ge.relabel_entity_in_events_files(cfg, "quest", "artas", "Виго Моркан", "person")
+
+    assert touched == 1
+    after = _read_doc(path)
+    renamed = next(e for e in after["entities"] if e["slug"] == "artas")
+    assert renamed["label"] == "Виго Моркан"
+    assert renamed["type"] == "person"
+    untouched = next(e for e in after["entities"] if e["slug"] == "other")
+    assert untouched == {"slug": "other", "label": "Прочая", "type": "item"}
+
+
+def test_relabel_entity_label_only_keeps_type(tmp_path: Path, monkeypatch) -> None:
+    """type_=None (label-only rename) must not clobber the entity type."""
+    import worker.graph_edit as ge
+
+    cfg = _Cfg(tmp_path / "recordings", tmp_path / "vault")
+    path = _write_doc(
+        tmp_path / "recordings",
+        "rec-rl2",
+        {"entities": [{"slug": "artas", "label": "Артас", "type": "npc"}], "events": []},
+    )
+    monkeypatch.setattr(ge, "tag_recording_ids", lambda c, t: ["rec-rl2"])
+
+    touched = ge.relabel_entity_in_events_files(cfg, "quest", "artas", "Виго Моркан")
+
+    assert touched == 1
+    after = _read_doc(path)
+    assert after["entities"][0] == {
+        "slug": "artas",
+        "label": "Виго Моркан",
+        "type": "npc",
+    }

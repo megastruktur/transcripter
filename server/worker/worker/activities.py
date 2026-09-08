@@ -1755,24 +1755,9 @@ async def rename_entity(args: dict) -> dict:
     # next enrich regenerate. Best-effort: a rewrite failure logs and
     # does not fail the rename (the graph node is already corrected).
     try:
-        from .graph_edit import rewrite_events_json, tag_recording_ids, vault_paths_for
+        from .graph_edit import relabel_entity_in_events_files
 
-        def _relabel(doc: dict) -> bool:
-            changed = False
-            for ent in doc.get("entities", []):
-                if isinstance(ent, dict) and ent.get("slug") == slug:
-                    if ent.get("label") != label:
-                        ent["label"] = label
-                        changed = True
-                    if type_ is not None and ent.get("type") != type_:
-                        ent["type"] = type_
-                        changed = True
-            return changed
-
-        touched = 0
-        for rec_id in tag_recording_ids(c, tag):
-            if rewrite_events_json(rec_id, vault_paths_for(c, rec_id), _relabel):
-                touched += 1
+        touched = relabel_entity_in_events_files(c, tag, slug, label, type_)
         result["events_files_relabelled"] = touched
     except Exception:
         log.exception(
@@ -2254,6 +2239,7 @@ async def fix_apply(args: dict) -> dict:
                 )
             elif kind == "entity_rename":
                 from .enrich import rename_entity_in_graph
+                from .graph_edit import relabel_entity_in_events_files
 
                 result = await _heartbeat_while(
                     asyncio.to_thread(
@@ -2269,6 +2255,18 @@ async def fix_apply(args: dict) -> dict:
                         c.graph.database,
                     )
                 )
+                if result.get("ok"):
+                    # The graph node is renamed; carry the label into the events.json read-model (Entities/Timeline/Digest read it). Best-effort inside the all-or-nothing batch: a relabel failure must not roll back the graph rename.
+                    try:
+                        result["events_files_relabelled"] = relabel_entity_in_events_files(
+                            c, tag, op["slug"], op["label"], op.get("type")
+                        )
+                    except Exception:
+                        log.exception(
+                            "fix_apply: relabel of %s failed (graph renamed; "
+                            "timeline label lags until next enrich)",
+                            op["slug"],
+                        )
             elif kind == "entity_merge":
                 result = apply_entity_merge(
                     c, vault_paths_for(c, first_rec), tag, op["source"], op["target"]

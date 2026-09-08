@@ -428,6 +428,35 @@ def tag_recording_ids(cfg: Any, tag: str) -> list[str]:
         return [r[0] for r in q.all()]
 
 
+def relabel_entity_in_events_files(
+    cfg: Any, tag: str, slug: str, label: str, type_: str | None = None
+) -> int:
+    """Set label (± type) of ``slug`` in the entities[] of every events.json
+    copy of the tag's DONE recordings — the timeline read-model the UI
+    serves. Shared by the manual rename activity and fix_apply's
+    entity_rename: a graph-side rename WITHOUT this pass leaves the UI
+    showing the pre-rename label until the next regenerate. Returns the
+    count of files changed."""
+
+    def _relabel(doc: dict) -> bool:
+        changed = False
+        for ent in doc.get("entities", []):
+            if isinstance(ent, dict) and ent.get("slug") == slug:
+                if ent.get("label") != label:
+                    ent["label"] = label
+                    changed = True
+                if type_ is not None and ent.get("type") != type_:
+                    ent["type"] = type_
+                    changed = True
+        return changed
+
+    touched = 0
+    for rec_id in tag_recording_ids(cfg, tag):
+        if rewrite_events_json(rec_id, vault_paths_for(cfg, rec_id), _relabel):
+            touched += 1
+    return touched
+
+
 def apply_entity_delete(cfg: Any, paths: VaultPaths, tag: str, slug: str) -> dict[str, Any]:
     with _driver(cfg) as driver, driver.session(database=cfg.graph.database) as session:
         row = session.run(
