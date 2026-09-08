@@ -105,8 +105,8 @@ _DIGEST_PROMPT_HEADER = (
     "sessions. Title this section with the material's own words — "
     "characters and places for a game, participants and topics for a "
     "call — never a technical label like 'entities'.\n"
-    "3. Per-session recap (newest first): one bullet list of notable "
-    "events per recording.\n"
+    "3. Per-session recap (oldest first, chronological): one bullet list "
+    "of notable events per recording.\n"
     "4. Notable changes: for entries with state_change events, one line "
     "each — what changed for whom. Skip when none.\n"
     "5. Open threads / unresolved questions if any.\n"
@@ -513,11 +513,24 @@ def _render_prompt(
         )
         for e in graph.entities
     ) or "- (none)"
-    events_text = "\n".join(
-        f"- {sessions.get(str(e['origin']), e['origin'])} "
-        f"[{e['kind']} @ {e['ts']}] {e['summary']}"
-        for e in graph.events
-    ) or "- (none)"
+    # Events chronological: session position (rows are oldest-first
+    # since build_digest_input reverses the newest-first window) first,
+    # ts second — Neo4j returns rows in arbitrary order.
+    session_pos = {r.recording_id: i for i, r in enumerate(rows)}
+    events_text = (
+        "\n".join(
+            f"- {sessions.get(str(e['origin']), e['origin'])} "
+            f"[{e['kind']} @ {e['ts']}] {e['summary']}"
+            for e in sorted(
+                graph.events,
+                key=lambda e: (
+                    session_pos.get(str(e["origin"]), len(session_pos)),
+                    str(e["ts"] or ""),
+                ),
+            )
+        )
+        or "- (none)"
+    )
     rels_text = "\n".join(
         f"- {r['from']} --[{r['rel']}]--> {r['to']}" for r in graph.relations
     ) or "- (none)"
@@ -572,8 +585,16 @@ def build_digest_input(
     Exposed separately from ``run_digest`` so unit tests can assert the
     prompt shape (entities grouped, events per-recording) without paying
     for an HTTP call.
+
+    The selection window stays newest-first (the SQL LIMIT needs DESC),
+    but the RESULT is reversed to chronological order (oldest first):
+    the prompt's per-session recap reads as a story and the note's
+    frontmatter ``recordings:`` list follows the same order (the client
+    renders it as reference links).
     """
-    rows = _select_recordings(tag, last_n, include_recording_id=include_recording_id)
+    rows = list(
+        reversed(_select_recordings(tag, last_n, include_recording_id=include_recording_id))
+    )
     graph = _fetch_graph_slice(
         tag,
         [r.recording_id for r in rows],

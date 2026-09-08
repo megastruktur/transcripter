@@ -307,12 +307,33 @@ export type EventsArtifact = {
 	relations: { from: string; to: string; type: string }[];
 };
 
-/** Per-tag digest note (markdown with frontmatter) produced by the enrich
- * workflow. Throws with .status 404 when the digest is not generated yet. */
-export async function fetchDigest(cfg: ApiConfig, tag: string): Promise<string> {
+export type DigestReference = {
+	/** Recording id for click-through navigation. */
+	id: string;
+	/** Display title ('(untitled)' placeholder server-side). */
+	title: string;
+	/** ISO-8601 — coalesce(recorded_at, created_at). */
+	recorded_at: string | null;
+};
+
+export type DigestNote = {
+	tag: string;
+	/** Frontmatter value, host metadata (shown in the panel tooltip). */
+	generated_at: string;
+	/** Markdown body WITHOUT frontmatter — ready for the Markdown view. */
+	body: string;
+	/** Reference recordings (frontmatter ids resolved against the
+	 * catalog; deleted ids dropped server-side), oldest first. */
+	recordings: DigestReference[];
+};
+
+/** Per-tag digest note produced by the enrich workflow, served as
+ * structured JSON (2026-09-08): body + reference recordings. Throws
+ * with .status 404 when the digest is not generated yet. */
+export async function fetchDigest(cfg: ApiConfig, tag: string): Promise<DigestNote> {
 	const resp = await req(cfg, `/tags/${encodeURIComponent(tag)}/digest`);
 	if (!resp.ok) throw Object.assign(new Error(`digest ${resp.status}`), { status: resp.status });
-	return resp.text();
+	return resp.json();
 }
 
 /** Trigger digest (re)generation: the server replies 202 and runs the

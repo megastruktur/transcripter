@@ -31,7 +31,8 @@
 		type TimelineResponse,
 		type TimelineSession,
 		type TimelineEvent,
-		type SearchResponse
+		type SearchResponse,
+		type DigestNote
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
 
@@ -59,7 +60,7 @@
 	// extracted — the detail page's copy is entangled with recording state.
 	const DIGEST_POLL_MS = 10_000;
 	const DIGEST_POLL_BUDGET_MS = 120_000;
-	let digestText = $state<string | null>(null);
+	let digestText = $state<DigestNote | null>(null);
 	let digestLoading = $state(false);
 	let digestMissing = $state(false);
 	let digestError = $state('');
@@ -867,7 +868,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 		{:else if tab === 'corrections'}
 			<CorrectionsTab {tag} onchanged={() => { void refresh(); void refreshDigestStatus(); }} />
 		{:else}
-			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} queued={digestStatus?.state === 'queued'} onregen={() => void regenerateDigestNow()} />
+			<DigestPanel tag={tag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText?.body ?? null} generatedAt={digestText?.generated_at} recordings={digestText?.recordings ?? []} queued={digestStatus?.state === 'queued'} onregen={() => void regenerateDigestNow()} />
 		{/if}
 	{/if}
 </section>

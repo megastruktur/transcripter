@@ -266,6 +266,33 @@ def test_render_prompt_says_none_when_empty() -> None:
     assert "Sessions: T1 (2026-08-01)" in prompt
 
 
+def test_render_prompt_events_chronological() -> None:
+    """Events must render oldest-session-first (rows are chronological
+    since build_digest_input reversed the newest-first window), ts
+    ascending within a session — Neo4j row order is arbitrary."""
+    rows = [
+        DigestRow("r1", "Old", datetime(2026, 8, 1, tzinfo=UTC),
+                  datetime(2026, 8, 1, tzinfo=UTC)),
+        DigestRow("r2", "New", datetime(2026, 8, 2, tzinfo=UTC),
+                  datetime(2026, 8, 2, tzinfo=UTC)),
+    ]
+    graph = DigestGraphSlice(
+        entities=[],
+        # Deliberately shuffled: newer session's event first, and within
+        # the older session a later-ts event before an earlier one.
+        events=[
+            {"origin": "r2", "kind": "rp", "ts": "2026-08-02T00:00:00Z", "summary": "tavern"},
+            {"origin": "r1", "kind": "combat", "ts": "2026-08-01T05:00:00Z", "summary": "late ambush"},
+            {"origin": "r1", "kind": "combat", "ts": "2026-08-01T01:00:00Z", "summary": "early ambush"},
+        ],
+        relations=[],
+    )
+    prompt = _render_prompt("pathfinder", 2, rows, graph)
+    events_block = prompt.split("Events (session title", 1)[1]
+    assert events_block.index("early ambush") < events_block.index("late ambush")
+    assert events_block.index("late ambush") < events_block.index("tavern")
+
+
 def test_render_prompt_dominant_language_directive() -> None:
     """2026-09-04: the STT language of the rows must produce an EXPLICIT
     'Write the ENTIRE digest in Russian (ru).' directive — the soft
@@ -371,9 +398,10 @@ def test_build_digest_input_pulls_done_recordings_only(
 
     cfg = activities._cfg
     inp = build_digest_input("pathfinder", 2, cfg)
-    # Three recordings exist with the tag; limit=2 returns the two
-    # newest by created_at DESC — the seeds were inserted newest-first.
-    assert [r.recording_id for r in inp.rows] == rids[:2]
+    # Three recordings exist with the tag; limit=2 takes the two newest
+    # (the SQL window is still DESC) — but build_digest_input returns
+    # them CHRONOLOGICAL (oldest first) for the prompt and frontmatter.
+    assert [r.recording_id for r in inp.rows] == [rids[1], rids[0]]
     assert inp.tag == "pathfinder"
     assert inp.last_n == 2
 

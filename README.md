@@ -668,7 +668,7 @@ All endpoints require `Authorization: Bearer <token>` (except `/health`).
 | GET    | `/profiles`                                           | profile list for the type selector        |
 | GET    | `/tags`                                               | distinct tags with counts                  |
 | GET    | `/tags/{tag}/timeline`                                | tag sessions + events + entities           |
-|GET/POST| `/tags/{tag}/digest`                                  | serve / render the digest note (202)       |
+|GET/POST| `/tags/{tag}/digest`                                  | serve (JSON: body + references) / render (202) |
 | GET    | `/tags/{tag}/search?q=&k=`                            | semantic KNN within the tag                |
 | PATCH  | `/tags/{tag}/entities/{slug}`                         | user entity rename (re-embed)              |
 | GET    | `/vault`                                              | per-tag manifest (Vault page)              |

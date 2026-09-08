@@ -1,6 +1,9 @@
 <script lang="ts">
 	import Icon from '$lib/Icon.svelte';
 	import Markdown from '$lib/Markdown.svelte';
+	import { goto } from '$app/navigation';
+	import { dateLabel } from '$lib/format';
+	import type { DigestReference } from '$lib/api.svelte';
 
 	type Props = {
 		tag: string;
@@ -9,7 +12,13 @@
 		error: string;
 		note: string;
 		missing: boolean;
+		/** Markdown body (frontmatter stripped server-side). */
 		text: string | null;
+		/** When generated (host metadata from the note's frontmatter). */
+		generatedAt?: string;
+		/** Reference sessions the digest was built from, oldest first —
+		 * rendered as click-through links above the body. */
+		recordings?: DigestReference[];
 		/** Phase D: true while the newest graph edit is newer than the digest note — the maintenance workflow will rewrite it
 		 * after the debounce. The lamp carries "Digest renewal queued". */
 		queued?: boolean;
@@ -17,7 +26,24 @@
 		onclose?: () => void;
 	};
 
-	let { tag, loading, generating, error, note, missing, text, queued, onregen, onclose }: Props = $props();
+	let {
+		tag,
+		loading,
+		generating,
+		error,
+		note,
+		missing,
+		text,
+		generatedAt,
+		recordings = [],
+		queued,
+		onregen,
+		onclose
+	}: Props = $props();
+
+	function openRecording(id: string): void {
+		void goto(`/recordings/${encodeURIComponent(id)}`);
+	}
 </script>
 
 <section class="digest-panel" aria-label={`Digest · ${tag}`}>
@@ -51,6 +77,19 @@
 	{:else if missing}
 		<p class="tab-placeholder">No digest yet — generate first.</p>
 	{:else if text !== null}
+		<div class="digest-references" title={generatedAt ? `Generated ${new Date(generatedAt).toLocaleString()}` : undefined}>
+			<span class="digest-references-label">Reference recordings</span>
+			<span class="digest-references-list">
+				{#each recordings as rec (rec.id)}
+					<button type="button" class="digest-ref" onclick={() => openRecording(rec.id)}>
+						<span class="digest-ref-title">{rec.title}</span>
+						{#if rec.recorded_at}
+							<small class="digest-ref-date">{dateLabel(rec.recorded_at)}</small>
+						{/if}
+					</button>
+				{/each}
+			</span>
+		</div>
 		<div class="digest-body"><Markdown text={text} /></div>
 	{/if}
 </section>
@@ -70,7 +109,13 @@
 	.digest-regen:disabled { opacity: 0.6; cursor: default; }
 	.digest-close { width: 22px; height: 22px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #8e857b; cursor: pointer; line-height: 0; }
 	.digest-close:hover { color: var(--bone); border-color: rgba(215,167,71,.4); }
-	.digest-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 2px 8px; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
+	.digest-references { display: flex; align-items: baseline; gap: 8px; padding: 5px 10px; border-bottom: 1px solid var(--line); }
+	.digest-references-label { flex: 0 0 auto; color: var(--ash); font-size: 9px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+	.digest-references-list { min-width: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+	.digest-ref { display: inline-flex; align-items: baseline; gap: 6px; max-width: 100%; padding: 2px 8px; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: var(--bone); font-size: 10px; cursor: pointer; }
+	.digest-ref:hover { border-color: rgba(215,167,71,.4); color: var(--brass); }
+	.digest-ref-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.digest-ref-date { flex: 0 0 auto; color: var(--ash); font-size: 9px; font-variant-numeric: tabular-nums; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
 	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
 </style>

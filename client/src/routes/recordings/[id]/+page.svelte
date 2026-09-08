@@ -23,6 +23,7 @@
 		type EventsArtifact,
 		type Recording,
 		type Stage,
+		type DigestNote,
 	} from '$lib/api.svelte';
 	import { dateLabel, durationLabel } from '$lib/format';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
@@ -53,7 +54,7 @@
 	const DIGEST_POLL_MS = 10_000;
 	const DIGEST_POLL_BUDGET_MS = 120_000;
 	let digestTag = $state<string | null>(null);
-	let digestText = $state<string | null>(null);
+	let digestText = $state<DigestNote | null>(null);
 	let digestLoading = $state(false);
 	let digestMissing = $state(false);
 	let digestError = $state('');
@@ -458,9 +459,9 @@
 		digestPoll = null;
 		if (digestTag !== tag) return;
 		try {
-			const text = await fetchDigest(loadApiConfig(), tag);
+			const note = await fetchDigest(loadApiConfig(), tag);
 			if (digestTag !== tag) return;
-			digestText = text;
+			digestText = note;
 			digestGenerating = false;
 			digestMissing = false;
 			digestNote = '';
@@ -498,9 +499,9 @@
 		digestGenerating = false;
 		digestLoading = true;
 		try {
-			const text = await fetchDigest(loadApiConfig(), tag);
+			const note = await fetchDigest(loadApiConfig(), tag);
 			if (digestTag !== tag) return;
-			digestText = text;
+			digestText = note;
 		} catch (caught) {
 			if (digestTag !== tag) return;
 			const status = (caught as { status?: number }).status;
@@ -677,7 +678,7 @@
 			{/each}
 		</div>
 		{#if digestTag}
-			<DigestPanel tag={digestTag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText} onregen={() => void regenerateDigestNow()} onclose={closeDigest} />
+			<DigestPanel tag={digestTag} loading={digestLoading} generating={digestGenerating} error={digestError} note={digestNote} missing={digestMissing} text={digestText?.body ?? null} generatedAt={digestText?.generated_at} recordings={digestText?.recordings ?? []} onregen={() => void regenerateDigestNow()} onclose={closeDigest} />
 		{/if}
 	{/if}
 	{#each recording.stages.filter((stage) => stage.status === 'failed' && stage.last_error) as stage (stage.kind)}

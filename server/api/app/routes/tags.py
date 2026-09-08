@@ -2,7 +2,7 @@
 
 Wave C: POST /tags/{tag}/digest builds a markdown digest note of the
 last N done recordings carrying the tag; GET /tags/{tag}/digest serves
-the generated note back as text/markdown. Phase 3: GET
+it back as structured JSON (body + reference recordings). Phase 3: GET
 /tags/{tag}/timeline returns the tag's done sessions (newest first)
 with their meta/events.json events, aggregated entities and the
 digest-generated flag — served from Postgres + events.json only, no
@@ -28,8 +28,8 @@ import logging
 import re
 from typing import Annotated, Any, Literal
 
+import yaml
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -40,7 +40,7 @@ from app.config import ServerConfig
 from app.db import EditOp, EditStatus, EditTarget, GraphEdit, Recording, TagDef, get_session
 from app.embeddings import embed_query, expected_index_meta
 from app.semantic_index import index_status, knn_search
-from app.vault import _tag_recordings, find_digest, scan_timeline
+from app.vault import _FRONTMATTER_RE, _tag_recordings, find_digest, scan_timeline
 
 router = APIRouter(prefix="/tags")
 
@@ -246,20 +246,78 @@ async def post_digest(
 
 
 @router.get("/{tag}/digest")
-def get_digest(tag: Annotated[str, Path()], request: Request) -> FileResponse:
-    """Serve the generated digest note for a tag (Phase 1).
+def get_digest(
+    tag: Annotated[str, Path()],
+    request: Request,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Serve the generated digest note for a tag as structured JSON.
 
     The worker names files by slug, so the API cannot reconstruct the
     filename from the raw tag — lookup is frontmatter matching, shared
     with the vault scan (app.vault.find_digest). No graph required:
     reading a note must work even with the graph profile off.
+
+    The note's frontmatter (``tag``, ``generated_at``, ``recordings``,
+    ``count``) is host metadata the client must not render — the raw
+    file used to leak into the markdown view as ``---`` + YAML text.
+    The response carries the BODY only, plus the reference recordings
+    resolved from the catalog: id → title/date rows for click-through
+    links. Since the worker's 2026-09-08 chronological change the
+    ``recordings`` ids are oldest-first; ids whose recording row is
+    gone (deleted after generation) resolve to nothing and drop out —
+    a stale link is worse than a missing one. Unresolvable frontmatter
+    (missing keys, non-list) degrades to an empty reference list, never
+    a 500.
     """
     norm = _normalize_tag(tag)
     _validate_tag(norm)
     md = find_digest(request.app.state.config, norm)
     if md is None:
         raise HTTPException(status_code=404, detail=f"digest not generated yet for tag {norm}")
-    return FileResponse(md, media_type="text/markdown")
+    try:
+        text = md.read_text(encoding="utf-8")
+    except OSError:
+        raise HTTPException(status_code=404, detail=f"digest not generated yet for tag {norm}")
+    fm: dict[str, Any] = {}
+    m = _FRONTMATTER_RE.match(text)
+    if m:
+        try:
+            fm = yaml.safe_load(m.group(1)) or {}
+        except yaml.YAMLError:
+            fm = {}
+    body = text[m.end():].lstrip("\n") if m else text
+    rec_ids = fm.get("recordings") or []
+    if not isinstance(rec_ids, list):
+        rec_ids = []
+    recordings: list[dict[str, str]] = []
+    if rec_ids:
+        rows = session.execute(
+            select(Recording.id, Recording.title, Recording.recorded_at, Recording.created_at)
+            .where(Recording.id.in_(rec_ids))
+        ).all()
+        by_id = {
+            r.id: r
+            for r in rows
+        }
+        for rid in rec_ids:
+            r = by_id.get(rid)
+            if r is None:
+                continue
+            ts = r.recorded_at or r.created_at
+            recordings.append(
+                {
+                    "id": r.id,
+                    "title": r.title or "(untitled)",
+                    "recorded_at": ts.isoformat() if ts is not None else None,
+                }
+            )
+    return {
+        "tag": norm,
+        "generated_at": str(fm.get("generated_at") or ""),
+        "body": body,
+        "recordings": recordings,
+    }
 
 
 class EntityPatchRequest(BaseModel):
