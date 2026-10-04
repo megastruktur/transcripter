@@ -16,10 +16,57 @@
 	import SignalWarnings from '$lib/SignalWarnings.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 	import { clientPlatform } from '$lib/platform';
+	import { overlayPermission, requestOverlayPermission, showOverlay, hideOverlay } from '@orbitkit/ui';
+	import orbitkitConfig from '../../orbitkit.config';
 
 	let cfg = $state(loadApiConfig());
 	const android = isAndroidTauri();
 	let showToken = $state(false);
+
+	// Ambient Call Companion — overlay permission state
+	let overlayGranted = $state(false);
+	let overlayEnabled = $state(
+		typeof localStorage !== 'undefined'
+			? localStorage.getItem('overlayCompanionEnabled') === 'true'
+			: false
+	);
+	let checkingOverlay = $state(false);
+
+	async function checkOverlay(): Promise<void> {
+		checkingOverlay = true;
+		try {
+			overlayGranted = await overlayPermission();
+		} catch {
+			overlayGranted = false;
+		} finally {
+			checkingOverlay = false;
+		}
+	}
+
+	async function openOverlaySettings(): Promise<void> {
+		await requestOverlayPermission();
+		// Re-check after returning from settings
+		await checkOverlay();
+	}
+
+	async function toggleOverlayCompanion(): Promise<void> {
+		const next = !overlayEnabled;
+		if (next) {
+			try {
+				await showOverlay({ menu: orbitkitConfig.menu, mascot: { size: orbitkitConfig.mascot.size ?? 96 } });
+			} catch {
+				// Permission may have been revoked; revert UI and re-check
+				void checkOverlay();
+				return;
+			}
+		} else {
+			await hideOverlay();
+		}
+		overlayEnabled = next;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('overlayCompanionEnabled', String(overlayEnabled));
+		}
+	}
 
 	/** Settings > Application row: baked build version + platform. */
 	const clientVersionLabel = `${__APP_VERSION__} · ${clientPlatform()}`;
@@ -42,6 +89,7 @@
 		// Instant from the shared cache on remounts; enumerates and checks in
 		// the background only when there is no report for this selection yet.
 		void ensureAudioDevices();
+		void checkOverlay();
 	});
 
 	function sourceLabel(state: 'disabled' | 'ready' | 'silent' | 'permission_denied' | 'unavailable' | 'failed'): string {
@@ -194,6 +242,44 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if android}
+		<div class="device-panel">
+			<div class="panel-heading">
+				<div class="antenna" aria-hidden="true"><Icon name="mark" size={17} /></div>
+				<div><span>COMPANION</span><strong>Ambient Call Companion</strong></div>
+				<div class="overlay-status" class:granted={overlayGranted}>
+					<i></i>{overlayGranted ? 'Granted' : 'Not granted'}
+				</div>
+			</div>
+			<div class="form-body">
+				<div class="overlay-description">
+					<p>A floating overlay lets you control recording directly from any screen. Grant "Display over other apps" permission to enable it.</p>
+				</div>
+				{#if !overlayGranted}
+					<button class="overlay-request-btn" type="button" onclick={openOverlaySettings}>
+						<Icon name="mark" size={15} />
+						{checkingOverlay ? 'Checking…' : 'Grant overlay permission'}
+					</button>
+				{:else}
+					<div class="overlay-toggle-row">
+						<span class="overlay-toggle-label">Enable floating overlay</span>
+						<button
+							type="button"
+							class="overlay-toggle"
+							class:on={overlayEnabled}
+							role="switch"
+							aria-checked={overlayEnabled}
+							aria-label="Toggle floating overlay companion"
+							onclick={toggleOverlayCompanion}
+						>
+							<span class="toggle-thumb"></span>
+						</button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
 </section>
 
 <style>
@@ -244,4 +330,17 @@
 	.device-error { margin: 0; color: #df756b; font-size: 10px; line-height: 1.4; }
 	.android-mic-note { display: grid; gap: 4px; padding: 11px 12px; border-left: 2px solid var(--line); background: rgba(0,0,0,.18); font-size: 12px; line-height: 1.4; }
 	.android-mic-note strong { font-size: 10px; font-weight: 700; color: #8d847a; }
+	.overlay-status { display: flex; align-items: center; gap: 6px; color: #8d847a; font-size: 10px; font-weight: 650; }
+	.overlay-status i { width: 5px; height: 5px; border-radius: 50%; background: #655f58; }
+	.overlay-status.granted { color: var(--cyan); }
+	.overlay-status.granted i { background: var(--cyan); box-shadow: 0 0 7px var(--cyan); }
+	.overlay-description p { margin: 0; color: #8d847a; font-size: 11px; line-height: 1.5; }
+	.overlay-request-btn { min-height: 36px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid rgba(215,167,71,.32); border-radius: 3px; background: rgba(215,167,71,.07); color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; }
+	.overlay-request-btn:hover { border-color: var(--brass); background: rgba(215,167,71,.12); }
+	.overlay-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+	.overlay-toggle-label { color: #c9bdad; font-size: 11px; font-weight: 650; }
+	.overlay-toggle { position: relative; width: 38px; height: 21px; border-radius: 11px; border: 1px solid rgba(215,167,71,.3); background: rgba(0,0,0,.25); cursor: pointer; transition: background 180ms ease, border-color 180ms ease; }
+	.overlay-toggle.on { border-color: var(--cyan); background: rgba(112,215,208,.2); }
+	.toggle-thumb { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #655f58; transition: transform 180ms ease, background 180ms ease; }
+	.overlay-toggle.on .toggle-thumb { transform: translateX(17px); background: var(--cyan); }
 </style>

@@ -71,8 +71,5 @@ export const commands = {
 	},
 	pendingUploads(): Promise<SpoolSession[]> {
 		return invoke('cmd_pending_uploads');
-	},
-	applyWindowMode(collapsed: boolean): Promise<void> {
-		return invoke('cmd_apply_window_mode', { collapsed });
 	}
 };

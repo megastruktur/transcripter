@@ -1,0 +1,60 @@
+{
+  "mascot": {
+    "kind": "svg",
+    "src": "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath class='mark-cog' d='M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1-2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z' fill='%23160f0d' stroke='%23d7a747' stroke-width='1.4'/%3E%3Ccircle class='mark-ring' cx='32' cy='32' r='14' fill='none' stroke='%23d7a747' stroke-width='1.4'/%3E%3Cpath class='mark-sigil' d='M32 18v28M25 24h14M25 40h14M22 32h20' fill='none' stroke='%23e9dfcf' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E",
+    "size": 76,
+    "states": {
+      "idle": {
+        "src": "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath class='mark-cog' d='M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1-2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z' fill='%23160f0d' stroke='%23d7a747' stroke-width='1.4'/%3E%3Ccircle class='mark-ring' cx='32' cy='32' r='14' fill='none' stroke='%23d7a747' stroke-width='1.4'/%3E%3Cpath class='mark-sigil' d='M32 18v28M25 24h14M25 40h14M22 32h20' fill='none' stroke='%23e9dfcf' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"
+      },
+      "recording": {
+        "src": "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath class='mark-cog' d='M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1-2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z' fill='%23160f0d' stroke='%23d52d24' stroke-width='1.4'/%3E%3Ccircle class='mark-ring' cx='32' cy='32' r='14' fill='none' stroke='%23d52d24' stroke-width='1.4'/%3E%3Cpath class='mark-sigil' d='M32 18v28M25 24h14M25 40h14M22 32h20' fill='none' stroke='%23e9dfcf' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"
+      },
+      "issue": {
+        "src": "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath class='mark-cog' d='M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1-2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z' fill='%23160f0d' stroke='%23d97706' stroke-width='1.4'/%3E%3Ccircle class='mark-ring' cx='32' cy='32' r='14' fill='none' stroke='%23d97706' stroke-width='1.4'/%3E%3Cpath class='mark-sigil' d='M32 18v28M25 24h14M25 40h14M22 32h20' fill='none' stroke='%23e9dfcf' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"
+      }
+    }
+  },
+  "menu": {
+    "items": [
+      { "id": "expand", "label": "Expand" },
+      { "id": "quick_record", "label": "Quick Record" },
+      { "id": "record_popup", "label": "Record Popup" },
+      { "id": "recordings", "label": "Recordings" },
+      { "id": "vault", "label": "Vault" },
+      { "id": "settings", "label": "Settings" }
+    ],
+    "radius": 92,
+    "startAngle": 90,
+    "endAngle": 270,
+    "itemSize": 44,
+    "trigger": "click",
+    "layout": "arc",
+    "arc": {
+      "position": "left",
+      "span": 180
+    },
+    "caption": true
+  },
+  "windows": {
+    "mascotWindow": {
+      "transparent": true,
+      "alwaysOnTop": true,
+      "decorations": false,
+      "passthrough": true,
+      "url": "index.html?orbitkit=mascot"
+    },
+    "popups": [
+      {
+        "id": "quick_record",
+        "url": "index.html?orbitkit=popup&view=quick_record",
+        "title": "Quick Record",
+        "width": 400,
+        "height": 300,
+        "resizable": true,
+        "decorations": true,
+        "anchor": "mascot"
+      }
+    ]
+  }
+}

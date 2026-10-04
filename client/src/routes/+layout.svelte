@@ -1,19 +1,62 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
-	import { onMount } from 'svelte';
-	import { LogicalSize } from '@tauri-apps/api/dpi';
+	import { goto } from '$app/navigation';
+	import { onMount, onDestroy } from 'svelte';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
 	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
+	import MascotOverlayView from '$lib/orbitkit/MascotOverlayView.svelte';
+	import QuickRecordPopup from '$lib/orbitkit/QuickRecordPopup.svelte';
+	import { PopupSheet, showOverlay, onMenuAction } from '@orbitkit/ui';
+	import orbitkitConfig from '../orbitkit.config';
+
+	// ── Multi-window router ─────────────────────────────────────────────────────
+	// Classifies this webview window into one of three slots so the layout can
+	// render exclusively the correct view instead of the full app shell.
+	//
+	// URL forms (config reconciliation — mandate 3 of BRIEF):
+	//   Config popup URL  → ?orbitkit=popup&view=quick_record
+	//   Spec router keys  → ?popup=quick_record
+	//                         label starts with "orbitkit-popup-quick_record"
+	// Both forms are handled so the declared popup in orbitkit.config.json routes.
+	type WindowSlot = 'mascot' | 'quick_record' | 'default';
+	function classifyWindow(): WindowSlot {
+		const url = typeof window !== 'undefined' ? window.location.href : '';
+		const params = new URL(url).searchParams;
+		// Mascot: URL param or Tauri window label
+		if (params.get('orbitkit') === 'mascot') return 'mascot';
+		// Popup: spec keys (?popup=quick_record) AND config form
+		// (?orbitkit=popup&view=quick_record).  Label prefix is checked by
+		// the tauri config on the Rust side — we only classify the URL here.
+		if (params.get('popup') === 'quick_record') return 'quick_record';
+		if (params.get('orbitkit') === 'popup' && params.get('view') === 'quick_record') return 'quick_record';
+		return 'default';
+	}
+	// AC2 requires window label checks too. Guard with isTauri() because
+	// getCurrentWindow() throws in plain browser (dev fallback path).
+	function getWindowLabel(): string {
+		if (!isTauri()) return '';
+		try {
+			return getCurrentWindow().label;
+		} catch {
+			return '';
+		}
+	}
+	function classifyByLabel(slot: WindowSlot): WindowSlot {
+		const label = getWindowLabel();
+		if (label === 'orbitkit-mascot') return 'mascot';
+		if (label.startsWith('orbitkit-popup-quick_record')) return 'quick_record';
+		return slot;
+	}
+	const windowSlot: WindowSlot = classifyByLabel(classifyWindow());
 
 	let { children } = $props();
 	// Android: no desktop window chrome (collapse/minimize/close), no native
 	// window sizing — the WebView is fullscreen and the OS owns the window.
 	const android = isAndroidTauri();
-	let collapsed = $state(browser && localStorage.getItem('transcripter.window-collapsed') === 'true');
 	// Android-only navigation drawer: the rail is too wide for a phone screen,
 	// so it slides in over the workspace instead of pinning a column.
 	let navOpen = $state(false);
@@ -22,8 +65,6 @@
 	let menuOpen = $state(false);
 	let menuDeleteArmed = $state(false);
 	let menuWrap = $state<HTMLDivElement>();
-	let dragOrigin: { x: number; y: number } | null = null;
-	let draggedCollapsedMark = $state(false);
 	const navItems = [
 		{ href: '/', label: 'Record', icon: 'record' },
 		{ href: '/import', label: 'Import', icon: 'import' },
@@ -79,9 +120,6 @@
 	const serverTone = $derived(
 		connection.phase === 'connected' ? 'ready' : connection.phase === 'checking' ? 'issue' : connection.phase === 'unavailable' ? 'unavailable' : 'idle'
 	);
-	const collapsedStatus = $derived(
-		`${audioStatus} · ${serverStatus}${uploadingCount ? ` · ${uploadStatus.text}` : ''}`
-	);
 	const routeName = $derived(
 		page.url.pathname === '/'
 			? 'Recorder'
@@ -96,61 +134,44 @@
 	onMount(async () => {
 		void checkServerConnection();
 		void initUploadTracking();
-		if (!isTauri()) return;
-		if (android) return;
-		try {
-			const appWindow = getCurrentWindow();
-			const [physicalSize, scaleFactor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
-			const logicalSize = physicalSize.toLogical(scaleFactor);
-			collapsed = logicalSize.width <= 100 && logicalSize.height <= 100;
-			localStorage.setItem('transcripter.window-collapsed', String(collapsed));
-		} catch {
-			// The persisted value remains the fallback if native size inspection fails.
-		}
-		if (collapsed) {
-			// Restore the pinned floating mode for a window that starts collapsed.
-			void applyWindowMode(true);
+		// AC1/AC2: show mascot overlay on desktop boot (mascot window manages itself)
+		if (!android && windowSlot === 'default' && isTauri()) {
+			void showOverlay({ menu: orbitkitConfig.menu, mascot: { size: orbitkitConfig.mascot.size ?? 96 } });
 		}
 	});
+	onDestroy(() => { _unlistenMenu?.(); });
+
+	// AC3: wire mascot menu actions (only in the main default window, not mascot/quick_record slots)
+	let _unlistenMenu: (() => void) | undefined;
+	if (windowSlot === 'default') {
+		onMenuAction((action) => {
+			if (action.id === 'quick_record') {
+				// Toggle capture using last-used configuration from localStorage
+				void import('$lib/stores.svelte').then(({ startRecording, stopRecording, recorder, checkAudio, SYSTEM_AUDIO_OFF }) => {
+					if (recorder.recording) {
+						void stopRecording();
+					} else {
+						const savedMicrophone = localStorage.getItem('transcripter.microphone') ?? '';
+						const savedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
+						const savedCaptureSystem = savedSystemOutput !== SYSTEM_AUDIO_OFF;
+						const systemOutputForRecord = savedSystemOutput === SYSTEM_AUDIO_OFF ? null : savedSystemOutput;
+						void checkAudio(savedMicrophone, savedSystemOutput || null, savedCaptureSystem).then((report) => {
+							if (!report.error && report.mic_state !== 'permission_denied' && report.mic_state !== 'unavailable' && report.mic_state !== 'failed') {
+								void startRecording('Quick Record', [], savedMicrophone || null, systemOutputForRecord, savedCaptureSystem);
+							}
+						});
+					}
+				});
+			} else if (['recordings', 'import', 'vault', 'settings'].includes(action.id)) {
+				void goto(`/${action.id}`);
+				void getCurrentWindow().show();
+			}
+		}).then((fn) => { _unlistenMenu = fn; });
+	}
 
 
 	function isTauri(): boolean {
 		return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-	}
-
-	async function resizeWindow(width: number, height: number): Promise<void> {
-		if (!isTauri()) return;
-		await getCurrentWindow().setSize(new LogicalSize(width, height));
-	}
-	// Browser fallback mirrors the Rust command: remember the expanded size
-	// when collapsing, restore it (>= 440x720) on expand. In Tauri the native
-	// command handles this and the fallback never runs.
-	let lastExpandedSize: { width: number; height: number } | null = null;
-	async function applyWindowMode(collapsed: boolean): Promise<void> {
-		if (!isTauri()) {
-			if (collapsed) {
-				lastExpandedSize = { width: window.innerWidth, height: window.innerHeight };
-				await resizeWindow(76, 76);
-			} else {
-				const restore = lastExpandedSize && lastExpandedSize.width >= 440 && lastExpandedSize.height >= 720
-					? lastExpandedSize
-					: { width: 440, height: 720 };
-				await resizeWindow(restore.width, restore.height);
-			}
-			return;
-		}
-		try {
-			await commands.applyWindowMode(collapsed);
-		} catch {
-			resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
-		}
-	}
-
-	function toggleCollapsed(): void {
-		if (android) return;
-		collapsed = !collapsed;
-		localStorage.setItem('transcripter.window-collapsed', String(collapsed));
-		applyWindowMode(collapsed).catch((error) => console.warn('applyWindowMode failed', error));
 	}
 
 	async function minimizeWindow(): Promise<void> {
@@ -173,7 +194,6 @@
 			navOpen = false;
 			return;
 		}
-		if (!collapsed) toggleCollapsed();
 	}
 
 	function closeMenu(): void {
@@ -202,31 +222,6 @@
 		if (event.target instanceof Node && menuWrap.contains(event.target)) return;
 		closeMenu();
 	}
-
-	function beginCollapsedDrag(event: PointerEvent): void {
-		if (event.button !== 0) return;
-		dragOrigin = { x: event.screenX, y: event.screenY };
-		draggedCollapsedMark = false;
-	}
-
-	async function moveCollapsedDrag(event: PointerEvent): Promise<void> {
-		if (!dragOrigin || draggedCollapsedMark) return;
-		if (Math.hypot(event.screenX - dragOrigin.x, event.screenY - dragOrigin.y) < 5) return;
-		draggedCollapsedMark = true;
-		if (isTauri()) await getCurrentWindow().startDragging();
-	}
-
-	function endCollapsedDrag(): void {
-		dragOrigin = null;
-	}
-
-	function activateCollapsedMark(): void {
-		if (draggedCollapsedMark) {
-			draggedCollapsedMark = false;
-			return;
-		}
-		toggleCollapsed();
-	}
 </script>
 
 <svelte:window onkeydown={handleKeydown} onpointerdown={handleMenuPointerDown} />
@@ -235,29 +230,10 @@
 	<meta name="theme-color" content="#160f0d" />
 </svelte:head>
 
-{#if collapsed}
-	<button
-		class:recording={recorder.recording}
-		class:dragging={draggedCollapsedMark}
-		class="collapsed-mark"
-		type="button"
-		onpointerdown={beginCollapsedDrag}
-		onpointermove={moveCollapsedDrag}
-		onpointerup={endCollapsedDrag}
-		onpointercancel={endCollapsedDrag}
-		onclick={activateCollapsedMark}
-		aria-label={`Expand Transcriptor Maximus. ${collapsedStatus}`}
-		title={collapsedStatus}
-	>
-		<span class="collapsed-icon" aria-hidden="true">
-			<Icon name="mark" size={56} />
-			<span class="collapsed-wave">
-				{#each [10, 17, 21, 17, 10] as barHeight, index (index)}
-					<i style={`--bar-height: ${barHeight}px; --delay: ${index * -74}ms`}></i>
-				{/each}
-			</span>
-		</span>
-	</button>
+{#if windowSlot === 'mascot'}
+	<MascotOverlayView config={orbitkitConfig} />
+{:else if windowSlot === 'quick_record'}
+	<QuickRecordPopup />
 {:else}
 	<div class="app-shell" class:shell--android={android}>
 		{#if !android}
@@ -265,7 +241,7 @@
 			<span class="titlebar-sigil"><Icon name="mark" size={40} /></span>
 			<span class="wordmark">Transcriptor Maximus</span>
 			<div class="window-actions">
-				<button type="button" onclick={toggleCollapsed} aria-label="Collapse to symbol" title="Collapse to symbol"><Icon name="collapse" size={16} /></button>
+				<button type="button" onclick={() => getCurrentWindow().hide()} aria-label="Dock to Companion" title="Dock to Companion"><Icon name="collapse" size={16} /></button>
 				<button type="button" onclick={minimizeWindow} aria-label="Minimize window" title="Minimize"><Icon name="minimize" size={16} /></button>
 				<button class="close" type="button" onclick={closeWindow} aria-label="Close window" title="Close"><Icon name="close" size={16} /></button>
 			</div>
@@ -353,6 +329,7 @@
 		<span><i class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'}></i>{serverStatus}</span>
 		<span>{uploadStatus.text}</span>
 	</footer>
+		<PopupSheet components={{ quick_record: QuickRecordPopup }} />
 	</div>
 {/if}
 
@@ -487,29 +464,6 @@
 	.shell--android .rail { position: absolute; top: 0; bottom: 0; left: 0; z-index: 6; width: 168px; background: #14100e; border-right: 1px solid rgba(215, 167, 71, 0.28); box-shadow: 14px 0 34px rgba(0, 0, 0, 0.5); transform: translateX(-105%); transition: transform 160ms ease; }
 	.shell--android .rail.open { transform: translateX(0); }
 	.shell--android .status-strip { min-height: 28px; padding-bottom: env(safe-area-inset-bottom, 0px); }
-
-	.collapsed-mark { width: 76px; height: 76px; margin: 0; padding: 7px; border: 0; border-radius: 50%; background: transparent; box-shadow: none; cursor: grab; position: relative; display: grid; place-items: center; transition: transform 180ms ease; touch-action: none; }
-	/* Icon box: fixed 56px square. The button is a centering grid — the old
-	   inline-block flow parked the 56px icon at the left of the 62px content
-	   box, a latent 3px offset that became visible when the waveform (which
-	   centers on the button) was added. grid+place-items on the icon kills the
-	   inline-SVG baseline offset; the transition re-enables hover-rotate /
-	   drag-scale motion. */
-	.collapsed-icon { width: 56px; height: 56px; display: grid; place-items: center; transition: transform 180ms ease; line-height: 0; }
-	/* Recording indicator inside the red ring: a mini waveform using the same
-	   signal vocabulary as the Record page meter (780ms alternate, red→brass
-	   gradient, staggered delays). The bone cross yields the ring's center
-	   while capture runs. Anchored to .collapsed-mark, NOT .collapsed-icon:
-	   hover rotates the cog only — the waveform must stay perfectly upright,
-	   so it centers on the button (same 38,38 center as the icon box). */
-	.collapsed-wave { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 3px; line-height: 0; }
-	.collapsed-mark.recording .collapsed-wave { display: flex; }
-	.collapsed-mark.recording :global(.mark-sigil) { opacity: 0; transition: opacity 120ms ease; }
-	.collapsed-wave i { width: 2px; height: calc(var(--bar-height) * 0.5); background: linear-gradient(to top, var(--red), var(--brass)); border-radius: 1px; transform-origin: center; animation: signal 780ms ease-in-out infinite alternate; animation-delay: var(--delay); box-shadow: 0 0 7px rgba(213, 45, 36, 0.25); }
-	@keyframes signal { to { height: var(--bar-height); } }
-	.collapsed-mark:hover .collapsed-icon { transform: rotate(9deg); }
-	.collapsed-mark.dragging { cursor: grabbing; }
-	.collapsed-mark.dragging .collapsed-icon { transform: scale(0.96); }
 
 	:global(.page) { padding: 18px var(--pad-x) 24px; }
 	:global(.page-title) { margin: 0; font-size: 30px; font-weight: 760; line-height: 1.05; letter-spacing: -0.035em; color: var(--bone); }
