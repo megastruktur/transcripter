@@ -8,6 +8,50 @@
 	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
+	import MascotOverlayView from '$lib/orbitkit/MascotOverlayView.svelte';
+	import QuickRecordPopup from '$lib/orbitkit/QuickRecordPopup.svelte';
+	import { PopupSheet } from '@orbitkit/ui';
+	import orbitkitConfig from '../orbitkit.config';
+
+	// ── Multi-window router ─────────────────────────────────────────────────────
+	// Classifies this webview window into one of three slots so the layout can
+	// render exclusively the correct view instead of the full app shell.
+	//
+	// URL forms (config reconciliation — mandate 3 of BRIEF):
+	//   Config popup URL  → ?orbitkit=popup&view=quick_record
+	//   Spec router keys  → ?popup=quick_record
+	//                         label starts with "orbitkit-popup-quick_record"
+	// Both forms are handled so the declared popup in orbitkit.config.json routes.
+	type WindowSlot = 'mascot' | 'quick_record' | 'default';
+	function classifyWindow(): WindowSlot {
+		const url = typeof window !== 'undefined' ? window.location.href : '';
+		const params = new URL(url).searchParams;
+		// Mascot: URL param or Tauri window label
+		if (params.get('orbitkit') === 'mascot') return 'mascot';
+		// Popup: spec keys (?popup=quick_record) AND config form
+		// (?orbitkit=popup&view=quick_record).  Label prefix is checked by
+		// the tauri config on the Rust side — we only classify the URL here.
+		if (params.get('popup') === 'quick_record') return 'quick_record';
+		if (params.get('orbitkit') === 'popup' && params.get('view') === 'quick_record') return 'quick_record';
+		return 'default';
+	}
+	// AC2 requires window label checks too. Guard with isTauri() because
+	// getCurrentWindow() throws in plain browser (dev fallback path).
+	function getWindowLabel(): string {
+		if (!isTauri()) return '';
+		try {
+			return getCurrentWindow().label;
+		} catch {
+			return '';
+		}
+	}
+	function classifyByLabel(slot: WindowSlot): WindowSlot {
+		const label = getWindowLabel();
+		if (label === 'orbitkit-mascot') return 'mascot';
+		if (label.startsWith('orbitkit-popup-quick_record')) return 'quick_record';
+		return slot;
+	}
+	const windowSlot: WindowSlot = classifyByLabel(classifyWindow());
 
 	let { children } = $props();
 	// Android: no desktop window chrome (collapse/minimize/close), no native
@@ -139,11 +183,8 @@
 			}
 			return;
 		}
-		try {
-			await commands.applyWindowMode(collapsed);
-		} catch {
-			resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
-		}
+		// cmd_apply_window_mode removed (oki_rust_backend); legacy block purged in oki_shell_state_sync
+		resizeWindow(collapsed ? 76 : 440, collapsed ? 76 : 720);
 	}
 
 	function toggleCollapsed(): void {
@@ -235,7 +276,11 @@
 	<meta name="theme-color" content="#160f0d" />
 </svelte:head>
 
-{#if collapsed}
+{#if windowSlot === 'mascot'}
+	<MascotOverlayView config={orbitkitConfig} />
+{:else if windowSlot === 'quick_record'}
+	<QuickRecordPopup />
+{:else if collapsed}
 	<button
 		class:recording={recorder.recording}
 		class:dragging={draggedCollapsedMark}
@@ -353,6 +398,7 @@
 		<span><i class:ready={serverTone === 'ready'} class:issue={serverTone === 'issue'} class:unavailable={serverTone === 'unavailable'}></i>{serverStatus}</span>
 		<span>{uploadStatus.text}</span>
 	</footer>
+		<PopupSheet components={{ quick_record: QuickRecordPopup }} />
 	</div>
 {/if}
 
