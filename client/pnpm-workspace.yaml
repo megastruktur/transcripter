@@ -1,7 +1,7 @@
 packages:
   - .
 allowBuilds:
-  "@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/5cf41b0a10b6faf2e15dd6cba70ff474d0430115#path:packages/orbitkit": true
+  "@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/93060149502717fae2664848f9434e28b2092a53#path:packages/orbitkit": true
   esbuild: true
 onlyBuiltDependencies:
   - esbuild
