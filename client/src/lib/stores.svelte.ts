@@ -5,6 +5,7 @@ import type { ApiConfig, Stage } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
 import { ANDROID_MIC_ID, isAndroidTauri } from '$lib/mobile-recorder';
 import type { IconName } from '$lib/Icon.svelte';
+import { setMascotState } from '@orbitkit/ui';
 
 export type UploadState = {
 	sessionId: string;
@@ -270,6 +271,10 @@ export async function checkAudio(
 	// entry point produced it — remounts compare keys to decide whether a
 	// fresh check is due, and a keyless report would force a redundant one.
 	preflightSelectionKey = selectionKey(microphone ?? '', checkSystem ? (systemOutput ?? '') : SYSTEM_AUDIO_OFF);
+	// AC2: signal issue state when preflight detects errors or bad audio
+	if (report.error || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(report.mic_state) || ['silent', 'permission_denied', 'unavailable', 'failed'].includes(report.system_state)) {
+		void setMascotState('issue');
+	}
 	return report;
 }
 
@@ -491,6 +496,7 @@ export async function startRecording(
 	}
 	recorder.sessionId = await commands.startRecording(title || null, tags, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
+	void setMascotState('recording');
 	recorder.frames = 0;
 	recordingStatusTimer = globalThis.setInterval(async () => {
 		try {
@@ -498,6 +504,7 @@ export async function startRecording(
 			const degraded = await commands.recordingDegraded();
 			if (degraded && !recorder.warnings.includes(degraded)) {
 				recorder.warnings.push(`${degraded} — recording continues on microphone`);
+				void setMascotState('issue');
 			}
 		} catch (error) {
 			if (recorder.stopping || !recorder.recording) return;
@@ -525,6 +532,7 @@ export async function stopRecording(): Promise<void> {
 			recordingStatusTimer = null;
 		}
 		recorder.recording = false;
+		void setMascotState('idle');
 		if (cfg.baseUrl && cfg.token) {
 			pushNotice(`recording queued for upload (${session.id.slice(0, 8)}…)`, 60_000);
 		} else {
@@ -538,6 +546,7 @@ export async function stopRecording(): Promise<void> {
 				recordingStatusTimer = null;
 			}
 			recorder.recording = false;
+			void setMascotState('idle');
 			recorder.warnings.push(`recording lost: ${msg.replace('FATAL_STOP: ', '')}`);
 		} else {
 			// Retryable: Rust session is still live — keep draining and
