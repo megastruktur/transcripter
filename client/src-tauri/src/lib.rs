@@ -42,55 +42,72 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-/// Last user-chosen expanded window size (logical px), captured right before
-/// collapsing so expand restores it instead of resetting to the 440x720
-/// default. Session-only by design.
-static LAST_EXPANDED_SIZE: std::sync::Mutex<Option<tauri::LogicalSize<f64>>> =
-    std::sync::Mutex::new(None);
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-#[tauri::command]
-fn cmd_apply_window_mode(app: AppHandle, collapsed: bool) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    // Collapsed: pinned 76x76 mark that floats above other apps (on every
-    // macOS space) and must not be user-resizable. Expanded: a regular
-    // window in the normal z-order that the user may freely grow (never
-    // below the 440x720 design minimum, enforced by the window's min size).
-    // The last user-chosen expanded size survives collapse→expand within
-    // this app session; it is deliberately not persisted across launches.
-    if collapsed {
-        LAST_EXPANDED_SIZE
-            .lock()
-            .map(|mut guard| *guard = window.inner_size().ok().map(|s| s.to_logical(window.scale_factor().unwrap_or(1.0))))
-            .ok();
-        let _ = window.set_resizable(false);
-        let _ = window.set_size(tauri::LogicalSize::new(76u32, 76u32));
-    } else {
-        let _ = window.set_resizable(true);
-        let restore = LAST_EXPANDED_SIZE
-            .lock()
-            .ok()
-            .and_then(|guard| guard.filter(|s| s.width >= 440.0 && s.height >= 720.0));
-        let _ = window.set_size(restore.unwrap_or(tauri::LogicalSize::new(440f64, 720f64)));
-    }
-    let _ = window.set_always_on_top(collapsed);
-    #[cfg(target_os = "macos")]
-    let _ = window.set_visible_on_all_workspaces(collapsed);
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let orbitkit_config: tauri_plugin_orbitkit::OrbitKitConfig =
+        serde_json::from_str(include_str!("../../src/orbitkit.config.json"))
+            .expect("invalid orbitkit.config.json");
+
     tauri::Builder::default()
         // App-local plugin bridging the Kotlin RecordingService (Android mic
         // foreground service) to the frontend; inert stub on desktop.
         .plugin(recording_service::init())
-        .setup(|_app| {
+        .plugin(tauri_plugin_orbitkit::init(orbitkit_config))
+        .setup(|app| {
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             {
-                let show = MenuItemBuilder::with_id("show", "Show Transcriptor Maximus").build(_app)?;
-                let quit = MenuItemBuilder::with_id("quit", "Quit").build(_app)?;
-                let menu = MenuBuilder::new(_app).items(&[&show, &quit]).build()?;
+                use tauri_plugin_orbitkit::OrbitkitExt;
+
+                let app_handle = app.handle().clone();
+                let _app_orbitkit = app.orbitkit();
+
+                app.on_menu_action(move |action| {
+                    let app = app_handle.clone();
+                    let id = action.id.as_str();
+                    match id {
+                        "expand" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quick_record" => {
+                            // Trigger capture toggle using last-used configuration.
+                            let _ = app.emit("orbitkit://menu-action", serde_json::json!({ "id": id }));
+                        }
+                        "record_popup" => {
+                            let orbitkit = app.orbitkit();
+                            let _ = orbitkit.open_popup("quick_record".to_string(), None, None);
+                        }
+                        "recordings" | "import" | "vault" | "settings" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.unminimize();
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                                let _ = app.emit("orbitkit://menu-action", serde_json::json!({ "id": id }));
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                });
+
+                if let Some(window) = app.get_webview_window("main") {
+                    let w = window.clone();
+                    window.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = w.hide();
+                        }
+                    });
+                }
+
+                let show = MenuItemBuilder::with_id("show", "Show Transcriptor Maximus").build(app)?;
+                let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+                let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
                 #[cfg(target_os = "macos")]
                 let tray_icon_bytes: &[u8] = include_bytes!("../icons/tray/32x32.png");
@@ -118,8 +135,10 @@ pub fn run() {
                             show_main_window(tray.app_handle());
                         }
                     })
-                    .build(_app)?;
+                    .build(app)?;
             }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            let _ = app;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -141,8 +160,6 @@ pub fn run() {
             cmd_retry_pending,
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_pending_uploads,
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-            cmd_apply_window_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
