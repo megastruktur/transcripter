@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
-    "@orbitkit/ui": "git+https://github.com/megastruktur/orbitkit.git#path:packages/orbitkit",
+    "@orbitkit/ui": "github:megastruktur/orbitkit#path:packages/orbitkit",
     "@tauri-apps/api": "^2.0.0",
     "@xyflow/svelte": "^1.6.6",
     "dompurify": "^3.4.14",
