@@ -47,6 +47,11 @@ class SummarizeConfig(BaseModel):
     # index/backend → digest-only recap, never a stage failure.
     recap_k: int = 6
     recap_budget_chars: int = 1600
+    # Transcript truncation for the summarize prompt: 0 = no truncation
+    # (the whole transcript goes to the LLM — the summarize model's
+    # context fits multi-hour recordings); >0 = hard cap in chars
+    # (legacy behavior).
+    transcript_limit_chars: int = 0
 
 
 class DiarizationConfig(BaseModel):

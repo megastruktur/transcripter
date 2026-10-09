@@ -5,8 +5,10 @@ the prompt is used verbatim with ``{title}`` and ``{transcript}`` substituted
 inline and sent as a SINGLE user message; the system message is fixed to
 "Follow the user's instructions." per the contract.
 
-Without a profile prompt, the legacy behavior is preserved bit-for-bit:
-SYSTEM_PROMPT + transcript[:100_000] as user.
+Without a profile prompt, the legacy path applies: SYSTEM_PROMPT + the
+transcript as a single user message. Truncation is configurable via
+``summarize.transcript_limit_chars``: 0 (default) sends the transcript
+whole; >0 is the legacy hard cap in chars.
 """
 
 import logging
@@ -32,12 +34,10 @@ SYSTEM_PROMPT = (
 # whole instruction and the system message is a fixed pointer.
 PROFILE_SYSTEM_PROMPT = "Follow the user's instructions."
 
-_TRANSCRIPT_LIMIT = 100_000  # legacy truncate cap (unchanged)
-
 # Recap-retrieval defaults (overridable via summarize.recap_k /
 # summarize.recap_budget_chars): 6 hits keep the block informative without
 # flooding the prior-context; 1600 chars rides comfortably next to the
-# 4000-char digest cap inside the 100k prompt budget.
+# 4000-char digest cap inside the prompt budget.
 _RECAP_K_DEFAULT = 6
 _RECAP_BUDGET_DEFAULT = 1600
 _PER_HIT_CHARS = 420
@@ -234,15 +234,25 @@ def summarize_transcript(
     # Keyless local endpoints reject (and httpx forbids) an empty "Bearer ".
     headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
 
+    # transcript_limit_chars: 0 (default) = send the transcript whole —
+    # the summarize model's context (llama-server --ctx-size 131072) fits
+    # multi-hour transcripts (179k chars ≈ 60-90k tokens); >0 = legacy
+    # hard cap in chars, applied to the user message only.
+    # Strict isinstance read, NOT _int_knob: int(MagicMock()) == 1, so a
+    # MagicMock cfg.summarize would silently cap the user content at 1
+    # char. bool is an int subclass — rejected; non-int (incl. mocks)
+    # and non-positive values mean "no cap".
+    raw = getattr(cfg.summarize, "transcript_limit_chars", 0)
+    cap = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
     if prompt_template is not None:
         # Profile mode: single user message with substitution; fixed system.
         # Apply the same truncate cap to keep the wire shape stable.
         user_content = _render_profile_prompt(prompt_template, title, transcript)
         system = PROFILE_SYSTEM_PROMPT
-        user = user_content[:_TRANSCRIPT_LIMIT]
+        user = user_content[:cap] if cap else user_content
     else:
         system = SYSTEM_PROMPT
-        user = transcript[:_TRANSCRIPT_LIMIT]
+        user = transcript[:cap] if cap else transcript
     # Recap rides INSIDE the single system message (appended after the
     # fixed instruction). NEVER a second system entry: llama-server's
     # Jinja chat template for this model rejects a system message in
