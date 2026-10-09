@@ -17,12 +17,12 @@
   },
   "menu": {
     "items": [
-      { "id": "expand", "label": "Expand" },
-      { "id": "quick_record", "label": "Quick Record" },
-      { "id": "record_popup", "label": "Record Popup" },
-      { "id": "recordings", "label": "Recordings" },
-      { "id": "vault", "label": "Vault" },
-      { "id": "settings", "label": "Settings" }
+      { "id": "expand", "label": "Expand", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><path d=\"M28 3h8l2 7a24 24 0 0 1 5 2l6-4 6 6-4 6a24 24 0 0 1 2 5l8 2v9l-8 2a24 24 0 0 1-2 5l4 6-6 6-6-4a24 24 0 0 1-5 2l-2 8h-8l-2-8a24 24 0 0 1-5-2l-6 4-6-6 4-6a24 24 0 0 1 2-5l-8-2v-9l8-2a24 24 0 0 1 2-5l-4-6 6-6 6 4a24 24 0 0 1 5-2z\" fill=\"#1b1613\" stroke=\"#d7a747\" stroke-width=\"1.4\"/><circle cx=\"32\" cy=\"32\" r=\"14\" fill=\"#160f0d\" stroke=\"#d52d24\" stroke-width=\"2\"/><path d=\"M32 18v28M25 24h14M25 40h14M22 32h20\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"2\" stroke-linecap=\"square\"/></svg>" } },
+      { "id": "quick_record", "label": "Quick Record", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"8\"/><circle cx=\"12\" cy=\"12\" r=\"3\" fill=\"#e9dfcf\" stroke=\"none\"/></svg>" } },
+      { "id": "record_popup", "label": "Record Popup", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M9 6a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0z\"/><path d=\"M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6\"/></svg>" } },
+      { "id": "recordings", "label": "Recordings", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4.5 7.5h15v12h-15zM3.5 4.5h17v3h-17zM9 12h6\"/></svg>" } },
+      { "id": "vault", "label": "Vault", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3.5\" y=\"4\" width=\"17\" height=\"16\"/><path d=\"M3.5 9.5h17M3.5 15h17M7 6.75h.01M7 12.25h.01\"/></svg>" } },
+      { "id": "settings", "label": "Settings", "icon": { "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#e9dfcf\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 6h4M12 6h8M4 12h9M17 12h3M4 18h3M11 18h9\"/><circle cx=\"10\" cy=\"6\" r=\"2\"/><circle cx=\"15\" cy=\"12\" r=\"2\"/><circle cx=\"9\" cy=\"18\" r=\"2\"/></svg>" } }
     ],
     "radius": 92,
     "startAngle": 90,
