@@ -39,7 +39,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 anyhow = "1"
 thiserror = "2"
-tauri-plugin-orbitkit = { git = "https://github.com/megastruktur/orbitkit.git", branch = "main" }
+tauri-plugin-orbitkit = { git = "https://github.com/megastruktur/orbitkit.git", rev = "9270ad18d131d5a974fb4d32bff99ee6b9463816" }
 
 # Linux + macOS — both need x11 (linux) and tray-icon (both). macos-private-api
 # is harmless on linux (no-op) and required on macOS.

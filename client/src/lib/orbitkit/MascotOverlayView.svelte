@@ -19,6 +19,7 @@
 
   // Drag vs click disambiguation
   const dragGesture = createDragGesture({
+    openButton: "right",
     onDragStart: () => startMascotDrag(),
     onToggle: () => {
       menuOpen = !menuOpen;

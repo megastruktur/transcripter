@@ -3735,7 +3735,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-orbitkit"
 version = "0.2.0"
-source = "git+https://github.com/megastruktur/orbitkit.git?branch=main#5cf41b0a10b6faf2e15dd6cba70ff474d0430115"
+source = "git+https://github.com/megastruktur/orbitkit.git?rev=9270ad18d131d5a974fb4d32bff99ee6b9463816#9270ad18d131d5a974fb4d32bff99ee6b9463816"
 dependencies = [
  "jni 0.21.1",
  "log",
