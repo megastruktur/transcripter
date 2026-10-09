@@ -35,6 +35,7 @@ def _cfg(
     recap: bool = True,
     graph_enabled: bool = True,
     tmp_path: Path | None = None,
+    transcript_limit_chars: int | None = None,
 ) -> Any:
     cfg = MagicMock()
     cfg.summarize.enabled = True
@@ -44,6 +45,11 @@ def _cfg(
     cfg.summarize.recap = recap
     cfg.graph.enabled = graph_enabled
     cfg.vault.path = tmp_path if tmp_path is not None else Path("/tmp")
+    # Set ONLY when requested: left unset, the attribute stays a MagicMock
+    # auto-attribute, which summarize_transcript must read as "no cap"
+    # (regression guard for the int(MagicMock()) == 1 truncation bug).
+    if transcript_limit_chars is not None:
+        cfg.summarize.transcript_limit_chars = transcript_limit_chars
     return cfg
 
 
@@ -229,28 +235,35 @@ class TestRecapInjection:
             assert len(sent["json"]["messages"]) == 2
             assert sent["json"]["messages"][0]["content"] == SYSTEM_PROMPT
 
-    def test_recap_not_truncated_by_transcript_cap(
+    def test_recap_not_truncated_by_configured_transcript_cap(
         self, meta: Path, monkeypatch
     ) -> None:
-        """The 100k cap applies to the transcript only; recap rides as-is."""
-        from worker.summarize import _TRANSCRIPT_LIMIT, summarize_transcript
+        """An explicitly configured transcript_limit_chars (100_000) caps
+        the user message only; the recap rides whole even though it is
+        bigger than the cap. The unset-attribute (MagicMock) path meaning
+        "no cap" is pinned by the tests above."""
+        from worker.summarize import summarize_transcript
 
-        big_recap = "R" * (_TRANSCRIPT_LIMIT + 50)
+        cap = 100_000
+        big_transcript = "T" * (cap + 500)
+        (meta / "transcript.md").write_text(big_transcript, encoding="utf-8")
+        big_recap = "R" * 100_050
         sent = _capture_post(monkeypatch)
         summarize_transcript(
             meta,
-            _cfg(tmp_path=meta.parent),
+            _cfg(tmp_path=meta.parent, transcript_limit_chars=cap),
             prompt_template="P: {transcript}",
             recap_block=big_recap,
         )
         messages = sent["json"]["messages"]
         assert len(messages) == 2
+        # Recap (100 050 chars > cap) rides whole, never truncated.
         assert messages[0]["content"].endswith(PREFIX + big_recap)
         assert len(messages[0]["content"]) == (
             len(PROFILE_SYSTEM_PROMPT) + 2 + len(PREFIX) + len(big_recap)
         )
-        # Transcript still capped.
-        assert messages[1]["content"] == "P: " + "hello"
+        # Transcript side IS truncated to exactly the configured cap.
+        assert messages[1]["content"] == ("P: " + big_transcript)[:cap]
 
     def test_no_recap_leaves_single_system(self, meta: Path, monkeypatch) -> None:
         """Baseline: exactly [system, user] with the fixed instruction."""

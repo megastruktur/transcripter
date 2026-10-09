@@ -238,7 +238,12 @@ def summarize_transcript(
     # the summarize model's context (llama-server --ctx-size 131072) fits
     # multi-hour transcripts (179k chars ≈ 60-90k tokens); >0 = legacy
     # hard cap in chars, applied to the user message only.
-    cap = _int_knob(cfg.summarize, "transcript_limit_chars", 0)
+    # Strict isinstance read, NOT _int_knob: int(MagicMock()) == 1, so a
+    # MagicMock cfg.summarize would silently cap the user content at 1
+    # char. bool is an int subclass — rejected; non-int (incl. mocks)
+    # and non-positive values mean "no cap".
+    raw = getattr(cfg.summarize, "transcript_limit_chars", 0)
+    cap = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else 0
     if prompt_template is not None:
         # Profile mode: single user message with substitution; fixed system.
         # Apply the same truncate cap to keep the wire shape stable.
