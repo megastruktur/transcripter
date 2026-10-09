@@ -28,7 +28,7 @@
     "startAngle": 90,
     "endAngle": 270,
     "itemSize": 44,
-    "trigger": "click",
+    "trigger": "right-click",
     "layout": "arc",
     "arc": {
       "position": "left",
