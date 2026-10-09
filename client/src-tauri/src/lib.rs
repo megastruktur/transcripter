@@ -63,8 +63,7 @@ pub fn run() {
 
                 app.on_menu_action(move |action| {
                     let app = app_handle.clone();
-                    let id = action.id.as_str();
-                    match id {
+                    match action.id.as_str() {
                         "expand" => {
                             if let Some(window) = app.get_webview_window("main") {
                                 let _ = window.unminimize();
@@ -73,8 +72,12 @@ pub fn run() {
                             }
                         }
                         "quick_record" => {
-                            // Trigger capture toggle using last-used configuration.
-                            let _ = app.emit("orbitkit://menu-action", serde_json::json!({ "id": id }));
+                            // Capture toggle is owned by the frontend
+                            // `orbitkit://menu-action` listener (+layout.svelte).
+                            // emit_menu_action already broadcast this action once;
+                            // re-emitting here would re-enter this handler
+                            // (notify_menu_action has no guard) and duplicate the
+                            // event — toggle start+stop nets zero.
                         }
                         "record_popup" => {
                             let orbitkit = app.orbitkit();
@@ -85,8 +88,12 @@ pub fn run() {
                                 let _ = window.unminimize();
                                 let _ = window.show();
                                 let _ = window.set_focus();
-                                let _ = app.emit("orbitkit://menu-action", serde_json::json!({ "id": id }));
                             }
+                            // No re-emit here: emit_menu_action (frontend radial
+                            // menu) already broadcast `orbitkit://menu-action`
+                            // globally; goto+show in +layout.svelte owns routing.
+                            // Re-emitting would re-enter this handler
+                            // (notify_menu_action has no guard).
                         }
                         "quit" => {
                             app.exit(0);

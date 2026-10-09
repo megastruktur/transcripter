@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Mascot, RadialMenu, createDragGesture, startMascotDrag, startPassthrough } from "@orbitkit/ui";
+  import { Mascot, RadialMenu, createDragGesture, emitMenuAction, startMascotDrag, startPassthrough } from "@orbitkit/ui";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
   import type { OrbitKitConfig } from "@orbitkit/ui";
@@ -63,8 +63,13 @@
     };
   });
 
-  function handleMenuSelect(_id: string) {
+  async function handleSelect(id: string) {
     menuOpen = false;
+    try {
+      await emitMenuAction(id);
+    } catch (err) {
+      console.error("[MascotOverlayView] Failed to emit menu action:", err);
+    }
   }
 
   function handleMenuClose() {
@@ -97,7 +102,7 @@
       <RadialMenu
         config={config.menu}
         open={menuOpen}
-        onselect={handleMenuSelect}
+        onselect={handleSelect}
         onclose={handleMenuClose}
       />
     </div>
