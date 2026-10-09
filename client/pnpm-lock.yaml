@@ -170,8 +170,8 @@ importers:
         specifier: ^3.1.1
         version: 3.1.1
       '@orbitkit/ui':
-        specifier: github:megastruktur/orbitkit#9270ad18d131d5a974fb4d32bff99ee6b9463816&path:packages/orbitkit
-        version: https://codeload.github.com/megastruktur/orbitkit/tar.gz/9270ad18d131d5a974fb4d32bff99ee6b9463816#path:packages/orbitkit(@tauri-apps/api@2.11.1)(svelte@5.56.9)
+        specifier: github:megastruktur/orbitkit#f1d8a81881efc51d9ced34d4201282cfb541b364&path:packages/orbitkit
+        version: https://codeload.github.com/megastruktur/orbitkit/tar.gz/f1d8a81881efc51d9ced34d4201282cfb541b364#path:packages/orbitkit(@tauri-apps/api@2.11.1)(svelte@5.56.9)
       '@tauri-apps/api':
         specifier: ^2.0.0
         version: 2.11.1
@@ -379,9 +379,9 @@ packages:
     os: [linux]
     libc: [glibc]
 
-  '@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/9270ad18d131d5a974fb4d32bff99ee6b9463816#path:packages/orbitkit':
-    resolution: {gitHosted: true, integrity: sha512-e/ssYQHUIYuMGeuEGjrMgasz+yRsSQjq0FLi3/DOsgY1NqCMDkqWga7gJ2u1a0lB4VtOhYE4Iv9LTKmRr0lpVg==, path: packages/orbitkit, tarball: https://codeload.github.com/megastruktur/orbitkit/tar.gz/9270ad18d131d5a974fb4d32bff99ee6b9463816}
-    version: 0.2.1
+  '@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/f1d8a81881efc51d9ced34d4201282cfb541b364#path:packages/orbitkit':
+    resolution: {gitHosted: true, integrity: sha512-Y0gUazjC8qjhD09QZtnrhB9iZFZdX8qPNR7tlkewJxoR2D9PioV6UceyE+calUCFADBN7e0PAbI0gj1Vp289lQ==, path: packages/orbitkit, tarball: https://codeload.github.com/megastruktur/orbitkit/tar.gz/f1d8a81881efc51d9ced34d4201282cfb541b364}
+    version: 0.3.0
     peerDependencies:
       '@tauri-apps/api': 2.11.1
       svelte: ^5.0.0
@@ -1033,7 +1033,7 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
-  '@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/9270ad18d131d5a974fb4d32bff99ee6b9463816#path:packages/orbitkit(@tauri-apps/api@2.11.1)(svelte@5.56.9)':
+  '@orbitkit/ui@https://codeload.github.com/megastruktur/orbitkit/tar.gz/f1d8a81881efc51d9ced34d4201282cfb541b364#path:packages/orbitkit(@tauri-apps/api@2.11.1)(svelte@5.56.9)':
     dependencies:
       '@tauri-apps/api': 2.11.1
       svelte: 5.56.9

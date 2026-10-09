@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
-    "@orbitkit/ui": "github:megastruktur/orbitkit#9270ad18d131d5a974fb4d32bff99ee6b9463816&path:packages/orbitkit",
+    "@orbitkit/ui": "github:megastruktur/orbitkit#f1d8a81881efc51d9ced34d4201282cfb541b364&path:packages/orbitkit",
     "@tauri-apps/api": "^2.0.0",
     "@xyflow/svelte": "^1.6.6",
     "dompurify": "^3.4.14",

@@ -2757,7 +2757,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3734,8 +3734,8 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-orbitkit"
-version = "0.2.0"
-source = "git+https://github.com/megastruktur/orbitkit.git?rev=9270ad18d131d5a974fb4d32bff99ee6b9463816#9270ad18d131d5a974fb4d32bff99ee6b9463816"
+version = "0.3.0"
+source = "git+https://github.com/megastruktur/orbitkit.git?rev=f1d8a81881efc51d9ced34d4201282cfb541b364#f1d8a81881efc51d9ced34d4201282cfb541b364"
 dependencies = [
  "jni 0.21.1",
  "log",
@@ -4631,7 +4631,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
