@@ -167,6 +167,28 @@ def test_summarize_recap_from_yaml(tmp_path, monkeypatch):
     assert cfg.summarize.recap is False
 
 
+# --- transcript truncation knob ---------------------------------------------------
+
+
+def test_summarize_transcript_limit_default_unlimited(tmp_path, monkeypatch):
+    """Defaults to 0 = no truncation (whole transcript to the LLM)."""
+    cfg_path = _write(tmp_path, "transcribe:\n  backend: local\n")
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.summarize.transcript_limit_chars == 0
+
+
+def test_summarize_transcript_limit_from_yaml(tmp_path, monkeypatch):
+    cfg_path = _write(
+        tmp_path,
+        "summarize:\n  enabled: true\n  model: m\n  base_url: http://x/v1\n"
+        "  transcript_limit_chars: 100000\n",
+    )
+    monkeypatch.setenv("TRANSCRIPTER_CONFIG", str(cfg_path))
+    cfg = load_config()
+    assert cfg.summarize.transcript_limit_chars == 100_000
+
+
 # --- SUMMARIZE_MODEL env override ------------------------------------------------
 
 

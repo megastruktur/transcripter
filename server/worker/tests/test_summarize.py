@@ -7,18 +7,24 @@ import httpx
 import pytest
 
 from worker.summarize import (
-    _TRANSCRIPT_LIMIT,
     PROFILE_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     summarize_transcript,
 )
 
 
-def _cfg(api_key_env: str = "", monkeypatch=None) -> SimpleNamespace:
+def _cfg(
+    api_key_env: str = "", monkeypatch=None, transcript_limit_chars: int = 0
+) -> SimpleNamespace:
     if monkeypatch and api_key_env:
         monkeypatch.setenv(api_key_env, "sk-sum-1")
     return SimpleNamespace(
-        summarize=SimpleNamespace(api_key_env=api_key_env, model="m", base_url="http://x/v1")
+        summarize=SimpleNamespace(
+            api_key_env=api_key_env,
+            model="m",
+            base_url="http://x/v1",
+            transcript_limit_chars=transcript_limit_chars,
+        )
     )
 
 
@@ -131,18 +137,49 @@ def test_legacy_mode_unchanged(meta, monkeypatch):
     assert messages[1]["content"] == "hello"
 
 
-def test_profile_mode_truncates_transcript_at_100k(meta, monkeypatch):
-    sent = _capture(monkeypatch)
-    big = "x" * (_TRANSCRIPT_LIMIT + 5000)
+def test_legacy_mode_sends_whole_transcript_when_uncapped(meta, monkeypatch):
+    """cap=0 (default): a 150k+ transcript goes to the LLM whole."""
+    big = "x" * 150_000
     (meta / "transcript.md").write_text(big)
+    sent = _capture(monkeypatch)
+    summarize_transcript(meta, _cfg())
+    assert sent["json"]["messages"][1]["content"] == big
+
+
+def test_profile_mode_sends_whole_transcript_when_uncapped(meta, monkeypatch):
+    """cap=0: profile mode renders {transcript} whole — no silent cutoff."""
+    big = "y" * 150_000
+    (meta / "transcript.md").write_text(big)
+    sent = _capture(monkeypatch)
+    summarize_transcript(
+        meta, _cfg(), prompt_template="P: {transcript}", title="t"
+    )
+    assert sent["json"]["messages"][1]["content"] == "P: " + big
+
+
+def test_cap_truncates_legacy_transcript(meta, monkeypatch):
+    """cap>0 keeps the legacy hard truncation (regression guard)."""
+    big = "x" * 5_000
+    (meta / "transcript.md").write_text(big)
+    sent = _capture(monkeypatch)
+    summarize_transcript(meta, _cfg(transcript_limit_chars=1_000))
+    assert sent["json"]["messages"][1]["content"] == big[:1_000]
+
+
+def test_profile_mode_truncates_transcript_at_cap(meta, monkeypatch):
+    """cap>0 applies to the rendered user message (template included)."""
+    big = "x" * 5_000
+    (meta / "transcript.md").write_text(big)
+    sent = _capture(monkeypatch)
     summarize_transcript(
         meta,
-        _cfg(),
+        _cfg(transcript_limit_chars=1_000),
         prompt_template="wrap {transcript}",
         title="t",
     )
     user_content = sent["json"]["messages"][1]["content"]
-    assert len(user_content) <= _TRANSCRIPT_LIMIT
+    assert len(user_content) == 1_000
+    assert user_content.startswith("wrap x")
 
 
 def test_profile_mode_empty_title_renders(meta, monkeypatch):
