@@ -41,6 +41,21 @@
       const rect = mascotEl.getBoundingClientRect();
       return [{ left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }];
     });
+    // Menu-open region: while the radial menu is visible the entire overlay
+    // window stays interactive, so clicks on the arc items do not fall
+    // through to the apps underneath. Closed menu → no rects, leaving only
+    // the mascot region above.
+    passthroughController.registerHitRegion(() => {
+      if (!menuOpen) return [];
+      return [
+        {
+          left: 0,
+          top: 0,
+          right: window.innerWidth,
+          bottom: window.innerHeight,
+        },
+      ];
+    });
 
     return () => {
       passthroughController?.stop();
@@ -74,26 +89,48 @@
     </Mascot>
   </div>
 
-  <!-- Radial menu -->
+  <!-- Radial menu: 0×0 origin anchored at the window centre; the arc
+       (layout "arc", position "left") is laid out around this point. -->
   {#if menuOpen}
-    <RadialMenu
-      config={config.menu}
-      open={menuOpen}
-      onselect={handleMenuSelect}
-      onclose={handleMenuClose}
-    />
+    <div class="menu-origin">
+      <RadialMenu
+        config={config.menu}
+        open={menuOpen}
+        onselect={handleMenuSelect}
+        onclose={handleMenuClose}
+      />
+    </div>
   {/if}
 </div>
 
 <style>
+  /* Overlay fills the 288×288 mascot window so the RadialMenu origin can sit
+     at the window centre: an arc (radius 92 + item 44) from the old corner
+     origin (0,76) fell outside the window (x < 0). */
   .mascot-overlay {
-    position: relative;
-    display: inline-block;
+    position: fixed;
+    inset: 0;
   }
 
   .mascot-root {
-    display: inline-block;
+    /* Mascot centred on the window centre — the same point the arc origin
+       uses, so the menu rings the mascot instead of hanging off a corner. */
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    translate: -50% -50%;
     line-height: 0;
+  }
+
+  .menu-origin {
+    /* Zero-size anchor at the window centre: the RadialMenu container is
+       0×0 and positions its items relative to it, so this point is the
+       arc origin (144,144 in the 288×288 overlay window). */
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 0;
+    height: 0;
   }
 
   .collapsed-wave {
