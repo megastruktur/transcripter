@@ -192,6 +192,10 @@ pub fn run() {
             cmd_retry_pending,
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
             cmd_pending_uploads,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            cmd_pending_upload_metas,
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+            cmd_discard_spool,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -379,6 +383,54 @@ fn cmd_upload_now(
 fn cmd_pending_uploads(app: AppHandle) -> Result<Vec<SpoolSession>, String> {
     let spool = spool_from_app(&app)?;
     spool.pending().map_err(|e| e.to_string())
+}
+
+/// Outbox-row projection of a pending spool session: what the Library
+/// "Local outbox" list renders (title, tags, duration, resume offset)
+/// without the capture diagnostics of the full `SpoolSession`.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[derive(Clone, serde::Serialize)]
+pub struct SpoolSessionMeta {
+    pub session_id: String,
+    pub title: String,
+    pub tags: Vec<String>,
+    pub duration_sec: f64,
+    pub uploaded_offset: u64,
+}
+
+/// Same worklist as `cmd_pending_uploads`, shaped for the outbox UI.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn cmd_pending_upload_metas(app: AppHandle) -> Result<Vec<SpoolSessionMeta>, String> {
+    let spool = spool_from_app(&app)?;
+    Ok(spool
+        .pending()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|s| SpoolSessionMeta {
+            session_id: s.id,
+            title: s.title,
+            tags: s.tags,
+            duration_sec: s.duration_sec,
+            uploaded_offset: s.uploaded_offset,
+        })
+        .collect())
+}
+
+/// Drop one spool session (audio + session.json) without uploading.
+/// The id is used as a path segment, so reject anything path-like.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+#[tauri::command]
+fn cmd_discard_spool(app: AppHandle, session_id: String) -> Result<(), String> {
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || session_id.contains('\\')
+        || session_id.contains("..")
+    {
+        return Err("invalid session id".into());
+    }
+    let spool = spool_from_app(&app)?;
+    spool.remove(&session_id).map_err(|e| e.to_string())
 }
 
 /// catch_unwind for futures (tokio has no built-in; use futures crate).

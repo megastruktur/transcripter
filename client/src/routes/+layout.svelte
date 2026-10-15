@@ -5,7 +5,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, startRecordingSync, stopRecording, uploads } from '$lib/stores.svelte';
+	import { checkServerConnection, connection, initUploadTracking, mobilePendingUploads, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, startRecordingSync, stopRecording, uploads } from '$lib/stores.svelte';
 	import { loadPresets } from '$lib/presets.svelte';
 	import { durationLabel } from '$lib/format';
 	import Icon from '$lib/Icon.svelte';
@@ -69,7 +69,6 @@
 	let menuWrap = $state<HTMLDivElement>();
 	const navItems = [
 		{ href: '/', label: 'Record', icon: 'record' },
-		{ href: '/import', label: 'Import', icon: 'import' },
 		{ href: '/recordings', label: 'Library', icon: 'library' },
 		{ href: '/vault', label: 'Vault', icon: 'vault' },
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
@@ -86,6 +85,12 @@
 	});
 
 	const uploadStates = $derived(Object.values(uploads));
+	// Local takes that have not reached the server yet (desktop spool
+	// ledger minus finished confirmations + Android outbox): drives the
+	// Library nav badge.
+	const pendingLocalUploads = $derived(
+		uploadStates.filter((u) => u.state !== 'done').length + mobilePendingUploads.length
+	);
 	const uploadingCount = $derived(uploadStates.filter((u) => u.state === 'uploading' || u.state === 'queued').length);
 	const failedCount = $derived(uploadStates.filter((u) => u.state === 'failed').length);
 	const uploadPct = $derived.by(() => {
@@ -184,7 +189,9 @@
 					}
 				});
 			} else if (['recordings', 'import', 'vault', 'settings'].includes(action.id)) {
-				void goto(`/${action.id}`);
+				// The Import destination lives inside Library now: deep-link the
+				// inline import panel instead of the retired /import nav slot.
+				void goto(action.id === 'import' ? '/recordings?import=1' : `/${action.id}`);
 				void getCurrentWindow().show();
 			}
 		}).then((fn) => { _unlistenMenu = fn; });
@@ -278,7 +285,12 @@
 				{#each navItems as item (item.href)}
 
 					<a href={item.href} onclick={() => (navOpen = false)} aria-current={(item.href === '/recordings' || item.href === '/vault' ? page.url.pathname.startsWith(item.href) : page.url.pathname === item.href) ? 'page' : undefined} title={item.label}>
-						<span class="nav-icon" aria-hidden="true"><Icon name={item.icon} size={20} /></span>
+						<span class="nav-icon" aria-hidden="true">
+							<Icon name={item.icon} size={20} />
+							{#if item.href === '/recordings' && pendingLocalUploads > 0}
+								<span class="nav-badge">{pendingLocalUploads > 9 ? '9+' : pendingLocalUploads}</span>
+							{/if}
+						</span>
 						<span>{item.label}</span>
 					</a>
 				{/each}
@@ -463,7 +475,10 @@
 	.rail { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 10px 5px 8px; background: rgba(8, 7, 6, 0.65); border-right: 1px solid var(--line); }
 	.rail a { display: grid; place-items: center; gap: 5px; min-height: 66px; color: #8e857c; text-decoration: none; font-size: 10px; font-weight: 650; letter-spacing: 0.02em; border: 1px solid transparent; border-radius: 3px; transition: color 130ms ease, background 130ms ease, border-color 130ms ease; }
 	.rail a:hover { color: var(--bone); background: rgba(255, 255, 255, 0.025); }
-	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
+	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; position: relative; }
+	/* Outbox count on the Library link: brass = local takes awaiting the
+	   server (attention, not failure — per-item state lives in Library). */
+	.nav-badge { position: absolute; top: -5px; right: -7px; min-width: 13px; height: 13px; padding: 0 3px; display: grid; place-items: center; border-radius: 2px; background: var(--brass); color: var(--void); font-size: 8px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
 	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 10px; padding: 0 var(--pad-x); min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }

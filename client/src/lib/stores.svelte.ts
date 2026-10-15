@@ -1,4 +1,5 @@
 import { commands } from '$lib/tauri';
+import { loadMobileOutboxItems, removeMobileOutboxItem, saveMobileOutboxItem } from '$lib/mobile-spool';
 import type { AudioDevices, PreFlightReport } from '$lib/tauri';
 import { getRecording, loadApiConfig, saveApiConfig, testConnection, uploadDirect } from '$lib/api.svelte';
 import type { ApiConfig, Stage } from '$lib/api.svelte';
@@ -17,6 +18,10 @@ export type UploadState = {
 	committed: number;
 	total: number;
 	error: string | null;
+	/** Outbox metadata from the spool (refreshPendingUploads); empty
+	 * until the first scan enriches the event-driven entry. */
+	tags: string[];
+	durationSec: number | null;
 }
 
 // UI state shared across pages (Svelte 5 runes).
@@ -85,9 +90,10 @@ function removeMobilePendingUpload(id: string): void {
 	if (index !== -1) mobilePendingUploads.splice(index, 1);
 }
 
-/** Give up on a failed take and drop its audio. */
+/** Give up on a failed take and drop its audio (UI + persisted outbox). */
 export function discardMobileUpload(id: string): void {
 	removeMobilePendingUpload(id);
+	void removeMobileOutboxItem(id).catch(() => {});
 }
 
 /** Retry a failed upload in place (no-op while it is already uploading). */
@@ -161,39 +167,48 @@ type UploadStatusEvent = {
 	total: number;
 	error: string | null;
 };
+/** Session ids the user discarded locally: the Rust worker still holds
+ * them queued and will emit a terminal event for the vanished spool dir;
+ * those events must not resurrect a ghost row in the ledger. */
+const discardedDesktopSessions = new Set<string>();
+
 /** Seed the ledger from the spool (startup) and subscribe to Rust events. */
 export async function initUploadTracking(): Promise<void> {
 	if (uploadEventsBound) return;
 	const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 	if (!isTauri) return;
 	uploadEventsBound = true;
+	// Android outbox: takes persisted before their upload finished. One
+	// caught mid-upload died with the previous process — surface it as
+	// failed so Retry is one tap away instead of the audio being lost.
+	try {
+		for (const item of await loadMobileOutboxItems()) {
+			if (mobilePendingUploads.some((u) => u.id === item.id)) continue;
+			mobilePendingUploads.push(
+				item.status === 'uploading'
+					? { ...item, status: 'failed', error: 'interrupted before upload completed — tap Retry' }
+					: item
+			);
+		}
+	} catch {
+		// Outbox unreadable; this session's takes still upload from memory.
+	}
 	await listen<UploadStatusEvent>('upload://status', (event) => {
 		const p = event.payload;
+		if (discardedDesktopSessions.has(p.session_id)) return;
+		const existing = uploads[p.session_id];
 		uploads[p.session_id] = {
 			sessionId: p.session_id,
 			title: p.title,
 			state: p.state,
 			committed: p.committed,
 			total: p.total,
-			error: p.error
+			error: p.error,
+			tags: existing?.tags ?? [],
+			durationSec: existing?.durationSec ?? null
 		};
 	});
-	try {
-		for (const s of await commands.pendingUploads()) {
-			if (!uploads[s.id]) {
-				uploads[s.id] = {
-					sessionId: s.id,
-					title: s.title,
-					state: 'queued',
-					committed: s.uploaded_offset,
-					total: 0,
-					error: null
-				};
-			}
-		}
-	} catch {
-		// Spool read failed; events will still drive the UI once uploads run.
-	}
+	await refreshPendingUploads();
 	// "done" entries only need a short-lived confirmation; drop them so the
 	// footer returns to a quiet state.
 	if (Object.keys(uploads).length) {
@@ -207,6 +222,74 @@ function pruneDoneUploads(): void {
 	for (const id of Object.keys(uploads)) {
 		if (uploads[id].state === 'done') delete uploads[id];
 	}
+}
+
+/** Re-scan the desktop spool: seed ledger rows for sessions this window
+ * has not seen yet and enrich existing rows (events carry no tags or
+ * duration) with the spool's title/tags/duration/offset. */
+export async function refreshPendingUploads(): Promise<void> {
+	try {
+		for (const m of await commands.pendingUploadMetas()) {
+			if (discardedDesktopSessions.has(m.session_id)) continue;
+			const existing = uploads[m.session_id];
+			if (existing) {
+				existing.title = m.title;
+				existing.tags = m.tags;
+				existing.durationSec = m.duration_sec;
+			} else {
+				uploads[m.session_id] = {
+					sessionId: m.session_id,
+					title: m.title,
+					state: 'queued',
+					committed: m.uploaded_offset,
+					total: 0,
+					error: null,
+					tags: m.tags,
+					durationSec: m.duration_sec
+				};
+			}
+		}
+	} catch {
+		// Spool read failed (or command absent on Android); events will
+		// still drive the UI once uploads run.
+	}
+}
+
+/** Re-enqueue one desktop spool session after a failure (no-op while its
+ * upload is already in flight). */
+export async function retryDesktopUpload(sessionId: string): Promise<void> {
+	const entry = uploads[sessionId];
+	if (!entry || entry.state === 'uploading') return;
+	const cfg = loadApiConfig();
+	if (!cfg.baseUrl || !cfg.token) {
+		entry.state = 'failed';
+		entry.error = 'no server configured — set it in Settings to upload';
+		return;
+	}
+	entry.state = 'queued';
+	entry.error = null;
+	try {
+		await commands.uploadNow(cfg.baseUrl, cfg.token, sessionId);
+	} catch (error) {
+		entry.state = 'failed';
+		entry.error = String(error);
+	}
+}
+
+/** Drop one desktop spool session's audio without uploading it. The
+ * ledger row only disappears once the backend confirms the removal. */
+export async function discardDesktopUpload(sessionId: string): Promise<void> {
+	const entry = uploads[sessionId];
+	if (!entry || entry.state === 'uploading') return;
+	try {
+		await commands.discardSpool(sessionId);
+	} catch (error) {
+		entry.state = 'failed';
+		entry.error = `discard failed: ${String(error)}`;
+		return;
+	}
+	discardedDesktopSessions.add(sessionId);
+	delete uploads[sessionId];
 }
 
 export type ConnectionPhase = 'unconfigured' | 'checking' | 'connected' | 'unavailable';
@@ -673,6 +756,10 @@ async function stopAndroidRecording(): Promise<void> {
 		error: ''
 	};
 	mobilePendingUploads.push(entry);
+	// Persist BEFORE the upload races off: a crash/kill mid-upload must
+	// find the take in the outbox on next launch (status 'uploading'
+	// hydrates as failed — see initUploadTracking).
+	void saveMobileOutboxItem(entry).catch(() => {});
 	recorder.stopping = false;
 	void uploadMobileEntry(entry);
 }
@@ -701,10 +788,14 @@ async function uploadMobileEntry(entry: MobilePendingUpload): Promise<void> {
 			type: entry.recType ?? undefined
 		});
 		removeMobilePendingUpload(entry.id);
+		void removeMobileOutboxItem(entry.id).catch(() => {});
 		announceQueued(result.id);
 	} catch (error) {
 		entry.status = 'failed';
 		entry.error = String(error);
+		// Persist the failure so a restart shows a retryable take with the
+		// same reason, not a fresh 'uploading' that died silently.
+		void saveMobileOutboxItem(entry).catch(() => {});
 	}
 }
 

@@ -44,6 +44,18 @@ export type SpoolSession = {
 };
 
 // Thin command bindings; each adds error normalization on top of invoke.
+
+/** Outbox-row projection of a pending desktop spool session
+ * (`SpoolSessionMeta` in src-tauri/src/lib.rs): what the Library
+ * "Local outbox" list renders. */
+export type SpoolSessionMeta = {
+	session_id: string;
+	title: string;
+	tags: string[];
+	duration_sec: number;
+	uploaded_offset: number;
+};
+
 export const commands = {
 	listAudioDevices(): Promise<AudioDevices> {
 		return invoke('cmd_list_audio_devices');
@@ -69,7 +81,13 @@ export const commands = {
 	retryPending(baseUrl: string, token: string): Promise<number> {
 		return invoke('cmd_retry_pending', { baseUrl, token });
 	},
-	pendingUploads(): Promise<SpoolSession[]> {
-		return invoke('cmd_pending_uploads');
+	/** Outbox rows for the desktop spool: title/tags/duration plus resume
+	 * offset for every session not yet uploaded. */
+	pendingUploadMetas(): Promise<SpoolSessionMeta[]> {
+		return invoke('cmd_pending_upload_metas');
+	},
+	/** Drop one spool session's audio without uploading it. */
+	discardSpool(sessionId: string): Promise<void> {
+		return invoke('cmd_discard_spool', { sessionId });
 	}
 };
