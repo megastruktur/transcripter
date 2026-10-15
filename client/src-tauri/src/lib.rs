@@ -426,10 +426,10 @@ fn cmd_pending_upload_metas(app: AppHandle) -> Result<Vec<SpoolSessionMeta>, Str
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn valid_session_id(session_id: &str) -> bool {
     let mut components = std::path::Path::new(session_id).components();
-    match (components.next(), components.next()) {
-        (Some(std::path::Component::Normal(_)), None) => true,
-        _ => false,
-    }
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    )
 }
 
 /// Drop one spool session (audio + session.json) without uploading.
