@@ -5,7 +5,9 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
-	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, uploads } from '$lib/stores.svelte';
+	import { checkServerConnection, connection, initUploadTracking, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, startRecordingSync, stopRecording, uploads } from '$lib/stores.svelte';
+	import { loadPresets } from '$lib/presets.svelte';
+	import { durationLabel } from '$lib/format';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 	import MascotOverlayView from '$lib/orbitkit/MascotOverlayView.svelte';
@@ -73,6 +75,9 @@
 		{ href: '/settings', label: 'Settings', icon: 'settings' }
 	] as const;
 	const onRecordingDetail = $derived(page.url.pathname.startsWith('/recordings/'));
+	// True on the Record page itself: there the pill is a status lamp (no
+	// navigation) while the big Stop control lives right below it.
+	const onRecordPage = $derived(page.url.pathname === '/');
 	// Route changes close the actions menu: the detail page unpublishes its
 	// actions on unmount, and the menu must not linger over another page.
 	$effect(() => {
@@ -134,6 +139,12 @@
 	onMount(async () => {
 		void checkServerConnection();
 		void initUploadTracking();
+		// Presets for the REC-pill surfaces + popup; safe on every platform.
+		loadPresets();
+		// Desktop main window only: adopt sessions started in the
+		// quick-record popup window (a separate webview realm) so the REC
+		// pill stays truthful while browsing other pages.
+		if (windowSlot === 'default') void startRecordingSync();
 		// AC1/AC2: show mascot overlay on desktop boot (mascot window manages itself)
 		if (!android && windowSlot === 'default' && isTauri()) {
 			void showOverlay({ menu: orbitkitConfig.menu, mascot: { size: orbitkitConfig.mascot.size ?? 96 } });
@@ -162,20 +173,14 @@
 			// brings the activity to front and emits `orbitkit://popup-open`,
 			// which the PopupSheet below consumes).
 			if (action.id === 'quick_record') {
-				// Toggle capture using last-used configuration from localStorage
-				void import('$lib/stores.svelte').then(({ startRecording, stopRecording, recorder, checkAudio, SYSTEM_AUDIO_OFF }) => {
+				// 1-tap toggle from the mascot menu: applies the active named
+				// preset (title stem, type, starter tags) on start; works on
+				// desktop (saved devices) and Android (mobile recorder path).
+				void import('$lib/stores.svelte').then(({ startWithActivePreset, stopRecording, recorder }) => {
 					if (recorder.recording) {
 						void stopRecording();
 					} else {
-						const savedMicrophone = localStorage.getItem('transcripter.microphone') ?? '';
-						const savedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
-						const savedCaptureSystem = savedSystemOutput !== SYSTEM_AUDIO_OFF;
-						const systemOutputForRecord = savedSystemOutput === SYSTEM_AUDIO_OFF ? null : savedSystemOutput;
-						void checkAudio(savedMicrophone, savedSystemOutput || null, savedCaptureSystem).then((report) => {
-							if (!report.error && report.mic_state !== 'permission_denied' && report.mic_state !== 'unavailable' && report.mic_state !== 'failed') {
-								void startRecording('Quick Record', [], savedMicrophone || null, systemOutputForRecord, savedCaptureSystem);
-							}
-						});
+						void startWithActivePreset();
 					}
 				});
 			} else if (['recordings', 'import', 'vault', 'settings'].includes(action.id)) {
@@ -286,6 +291,37 @@
 					<button class="cog-toggle" type="button" onclick={() => (navOpen = !navOpen)} aria-label={navOpen ? 'Close navigation' : 'Open navigation'} aria-expanded={navOpen} aria-controls="primary-nav"><span class="mini-cog" aria-hidden="true"><Icon name="mark" size={56} /></span></button>
 					{/if}
 					<span class="context-name">{routeName}</span>
+					{#if recorder.recording}
+						<span class="rec-pill-row">
+							{#if onRecordPage}
+								<span class="rec-pill" role="status" aria-label="Recording">
+									<span class="rec-dot" aria-hidden="true"></span>
+									<span class="rec-label">REC</span>
+									<span class="rec-time">{durationLabel(recorder.frames / 48_000)}</span>
+								</span>
+							{:else}
+								<button
+									class="rec-pill"
+									type="button"
+									title="Recording — return to the Record page"
+									onclick={() => void goto('/')}
+								>
+									<span class="rec-dot" aria-hidden="true"></span>
+									<span class="rec-label">REC</span>
+									<span class="rec-time">{durationLabel(recorder.frames / 48_000)}</span>
+								</button>
+							{/if}
+							<button
+								class="rec-stop"
+								type="button"
+								disabled={recorder.stopping}
+								title="Stop recording"
+								onclick={() => void stopRecording()}
+							>
+								{recorder.stopping ? 'Stopping…' : 'Stop'}
+							</button>
+						</span>
+					{/if}
 					{#if onRecordingDetail && stageRetry.stages.length}
 						<span class="context-stages" role="group" aria-label="Pipeline stages">
 							{#each stageRetry.stages as stage (stage.kind)}
@@ -430,7 +466,7 @@
 	.nav-icon { width: 28px; height: 28px; display: grid; place-items: center; line-height: 0; }
 	.rail-spacer { flex: 1; }
 	.workspace { display: grid; grid-template-rows: 42px minmax(0, 1fr); min-width: 0; min-height: 0; }
-	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; padding: 0 var(--pad-x); min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
+	.context-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center; gap: 10px; padding: 0 var(--pad-x); min-width: 0; border-bottom: 1px solid var(--line); background: rgba(0, 0, 0, 0.1); }
 	/* Pipeline status icons ride next to the page title; every cluster in the
 	   bar must stay shrinkable so a 360px phone never clips the right edge. */
 	.context-stages { display: flex; gap: 3px; min-width: 0; }
@@ -459,6 +495,18 @@
 	.menu-confirm-no { border: 1px solid rgba(215, 167, 71, 0.26); background: rgba(215, 167, 71, 0.06); color: var(--brass); }
 	.menu-confirm-no:hover { border-color: var(--brass); background: rgba(215, 167, 71, 0.12); }
 	.context-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 650; color: #c8bbaa; }
+	/* Live recording pill: pulsing red dot + REC + elapsed, one lamp one
+	   label (status color rules); tap returns to the Record page. */
+	.rec-pill-row { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+	.rec-pill { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 9px; border: 1px solid rgba(213, 45, 36, 0.55); border-radius: 12px; background: rgba(213, 45, 36, 0.12); color: var(--bone); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; white-space: nowrap; }
+	button.rec-pill { cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+	button.rec-pill:hover { border-color: var(--red); background: rgba(213, 45, 36, 0.2); }
+	.rec-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--red); box-shadow: 0 0 8px rgba(213, 45, 36, 0.8); animation: rec-pulse 1.4s ease-in-out infinite; }
+	.rec-label { color: #ff8b7c; }
+	.rec-time { font-family: "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums; font-weight: 500; }
+	.rec-stop { min-height: 24px; padding: 0 10px; border: 1px solid rgba(213, 45, 36, 0.55); border-radius: 12px; background: transparent; color: #ff8b7c; font-size: 10px; font-weight: 700; white-space: nowrap; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+	.rec-stop:hover:not(:disabled) { border-color: var(--red); background: rgba(213, 45, 36, 0.14); }
+	@keyframes rec-pulse { 50% { opacity: 0.35; } }
 	.status-lamp, .status-strip i { width: 6px; height: 6px; border-radius: 50%; background: #6b655e; box-shadow: 0 0 0 2px rgba(107, 101, 94, 0.12); }
 	.status-lamp.unavailable, .status-strip i.unavailable { background: var(--red); box-shadow: 0 0 0 3px rgba(213, 45, 36, 0.12), 0 0 12px rgba(213, 45, 36, 0.8); }
 	.status-lamp.ready, .status-strip i.ready { background: var(--cyan); box-shadow: 0 0 0 3px rgba(112, 215, 208, 0.1), 0 0 10px rgba(112, 215, 208, 0.65); }
@@ -485,7 +533,7 @@
 	.shell--android { grid-template-rows: 4px minmax(0, 1fr) auto; padding-top: env(safe-area-inset-top, 0px); }
 	/* The context bar becomes the top chrome: sigil toggle + page title +
 	   stage icons + connection lamp + actions menu. */
-	.shell--android .context-bar { grid-template-columns: auto minmax(0, 1fr) auto auto auto; gap: 8px; padding: 0 10px; }
+	.shell--android .context-bar { grid-template-columns: auto minmax(0, 1fr) auto auto auto auto; gap: 8px; padding: 0 10px; }
 
 	/* Android is edge-to-edge fullscreen: the desktop window frame (brass
 	   border + drop shadow) has no window to frame and reads as a stray

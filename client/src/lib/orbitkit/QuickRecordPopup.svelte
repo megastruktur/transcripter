@@ -4,8 +4,26 @@
 	import { commands } from '$lib/tauri';
 	import type { AudioDeviceInfo, PreFlightReport } from '$lib/tauri';
 	import Icon from '$lib/Icon.svelte';
+	import TagChips from '$lib/TagChips.svelte';
+	import { loadApiConfig } from '$lib/api.svelte';
+	import { ANDROID_MIC_ID, isAndroidTauri } from '$lib/mobile-recorder';
+	import { recorder, startRecording, stopRecording, syncRecordingState } from '$lib/stores.svelte';
+	import {
+		buildRecordingTitle,
+		getActivePreset,
+		loadPresets,
+		presetState,
+		selectPreset
+	} from '$lib/presets.svelte';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
+	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
+	import { mergeDraftTags } from '$lib/tags';
 
-	// ── Audio devices ──────────────────────────────────────────────────────────
+	// Android has one system microphone and no desktop capture stack: the
+	// device selectors and preflight panel are desktop-only UI.
+	const android = isAndroidTauri();
+
+	// ── Audio devices (desktop) ───────────────────────────────────────────────
 	let microphones = $state<AudioDeviceInfo[]>([]);
 	let systemOutputs = $state<AudioDeviceInfo[]>([]);
 	let selectedMic = $state<string | null>(null);
@@ -13,18 +31,43 @@
 	let captureSystem = $state(false);
 	let devicesError = $state('');
 
-	// ── Preflight ──────────────────────────────────────────────────────────────
+	// ── Preflight (desktop) ───────────────────────────────────────────────────
 	let preflightReport = $state<PreFlightReport | null>(null);
 	let preflightLoading = $state(false);
 	let preflightError = $state('');
 
-	// ── Capture draft ─────────────────────────────────────────────────────────
-	let title = $state('');
-	let tags = $state('');
+	// ── Presets + extra tags ──────────────────────────────────────────────────
+	let extraTags = $state<string[]>([]);
+	let tagDraft = $state('');
+
+	// ── Capture state ─────────────────────────────────────────────────────────
 	let engaging = $state(false);
 	let engageError = $state('');
 
+	const activePreset = $derived(getActivePreset());
+	const tagSuggestions = $derived(tagSuggestionsCache.items);
+	const CAPTURE_RATE = 48_000;
+	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
+	function fmt(sec: number): string {
+		const h = Math.floor(sec / 3600);
+		const m = Math.floor((sec % 3600) / 60);
+		const s = sec % 60;
+		return h ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+	}
+
+	function presetTypeLabel(recType: string): string {
+		return profilesCache.items.find((profile) => profile.type === recType)?.display_name ?? recType;
+	}
+
 	onMount(async () => {
+		// This popup is its own webview window (own module instances): seed
+		// the preset set here too, and probe for a session another window
+		// already started so Stop is offered instead of a second start.
+		loadPresets();
+		if (android) return;
+		void syncRecordingState();
+		void ensureProfiles(loadApiConfig());
+		void ensureTagSuggestions(loadApiConfig());
 		await loadDevices();
 		await runPreflight();
 	});
@@ -95,26 +138,42 @@
 	});
 
 	async function engageCapture() {
-		if (!audioReady) return;
 		engageError = '';
 		engaging = true;
+		const preset = getActivePreset();
+		// Preset tags first, popup extras on top; the in-progress draft is
+		// flushed so a chip the user did not press Enter for is not dropped.
+		const tags = mergeDraftTags([...preset.tags, ...extraTags], tagDraft);
 		try {
-			const tagList = tags
-				.split(',')
-				.map((t) => t.trim())
-				.filter(Boolean);
-			await commands.startRecording(
-				title || null,
-				tagList.length ? tagList : null,
-				selectedMic,
-				captureSystem ? selectedSystemOutput : null,
-				captureSystem
+			await startRecording(
+				buildRecordingTitle('', preset),
+				tags,
+				android ? ANDROID_MIC_ID : selectedMic,
+				android || !captureSystem ? null : selectedSystemOutput,
+				!android && captureSystem,
+				preset.recType || null
 			);
+			// startRecording reports blockers (denied prompt, no mic) as store
+			// warnings instead of throws: only close when a session is live.
+			if (!recorder.recording) {
+				engageError = recorder.warnings[recorder.warnings.length - 1] ?? 'could not start recording';
+				return;
+			}
 			await closePopup('orbitkit-popup-quick_record');
 		} catch (e) {
 			engageError = String(e);
 		} finally {
 			engaging = false;
+		}
+	}
+
+	async function stopAndClose() {
+		engageError = '';
+		try {
+			await stopRecording();
+			await closePopup('orbitkit-popup-quick_record');
+		} catch (e) {
+			engageError = String(e);
 		}
 	}
 
@@ -140,108 +199,145 @@
 	<div class="hazard-rule" aria-hidden="true"></div>
 
 	<div class="popup-body">
-		<!-- Microphone select -->
-		<div class="field">
-			<label class="field-label" for="mic-select">Microphone</label>
-			<div class="select-wrap">
-				<select
-					id="mic-select"
-					class="select"
-					bind:value={selectedMic}
-					onchange={runPreflight}
-				>
-					{#if microphones.length === 0}
-						<option value="">No microphones found</option>
-					{/if}
-					{#each microphones as mic (mic.id)}
-						<option value={mic.id}>{mic.label || mic.id}</option>
+		{#if recorder.recording}
+			<div class="recording-line" role="status">
+				<span class="rec-dot" aria-hidden="true"></span>
+				<span class="recording-text">Recording</span>
+				<span class="recording-time">{fmt(elapsed)}</span>
+			</div>
+			<p class="recording-hint">
+				The session keeps running when this popup closes — stop here or from the Record page.
+			</p>
+		{:else}
+			<!-- Named presets -->
+			<div class="field">
+				<span class="field-label">Preset</span>
+				<div class="preset-grid" role="listbox" aria-label="Capture presets">
+					{#each presetState.presets as preset (preset.id)}
+						<button
+							type="button"
+							role="option"
+							aria-selected={preset.id === activePreset.id}
+							class="preset-chip"
+							class:selected={preset.id === activePreset.id}
+							onclick={() => selectPreset(preset.id)}
+						>
+							<span class="preset-name">{preset.name}</span>
+							{#if preset.tags.length}
+								<span class="preset-tags">
+									{#each preset.tags as tag (tag)}<span>#{tag}</span>{/each}
+								</span>
+							{/if}
+						</button>
 					{/each}
-				</select>
-				<span class="select-arrow" aria-hidden="true">▾</span>
+				</div>
 			</div>
-		</div>
 
-		<!-- System output select -->
-		<div class="field">
-			<label class="field-label" for="system-select">System Output</label>
-			<div class="select-wrap">
-				<select
-					id="system-select"
-					class="select"
-					bind:value={selectedSystemOutput}
-					disabled={!captureSystem}
-					onchange={runPreflight}
-				>
-					<option value="">None</option>
-					{#each systemOutputs as out (out.id)}
-						<option value={out.id}>{out.label || out.id}</option>
-					{/each}
-				</select>
-				<span class="select-arrow" aria-hidden="true">▾</span>
+			<div class="active-preset-line">
+				<span>{buildRecordingTitle('', activePreset)}</span>
+				{#if activePreset.recType}
+					<span class="active-preset-type">{presetTypeLabel(activePreset.recType)}</span>
+				{/if}
 			</div>
-		</div>
 
-		<!-- System capture checkbox -->
-		<label class="checkbox-row">
-			<input
-				type="checkbox"
-				class="checkbox"
-				bind:checked={captureSystem}
-				onchange={runPreflight}
-			/>
-			<span class="checkbox-label">Capture system audio</span>
-		</label>
-
-		<!-- Preflight status / VU meter -->
-		<div class="preflight-panel">
-			<div class="preflight-lamp-row">
-				<span
-					class="lamp"
-					class:lamp--ready={preflightTone === 'ready'}
-					class:lamp--issue={preflightTone === 'issue'}
-					aria-hidden="true"
-				></span>
-				<span class="preflight-label">{preflightLabel}</span>
+			<!-- Extra tags on top of the preset -->
+			<div class="field">
+				<span class="field-label">Extra tags</span>
+				<TagChips
+					tags={extraTags}
+					bind:draft={tagDraft}
+					suggestions={tagSuggestions}
+					placeholder="e.g. follow-up"
+					onChange={(next) => (extraTags = next)}
+				/>
+				<span class="field-hint">Added on top of “{activePreset.name}” tags</span>
 			</div>
-			{#if preflightReport}
-				<div class="preflight-details">
-					<span class="detail-item">Mic: <strong class={preflightReport.mic_state === 'ready' ? 'text--ready' : 'text--issue'}>{preflightReport.mic_state}</strong></span>
-					{#if captureSystem}
-						<span class="detail-item">System: <strong class={preflightReport.system_state === 'ready' ? 'text--ready' : 'text--issue'}>{preflightReport.system_state}</strong></span>
+
+			{#if android}
+				<div class="preflight-panel">
+					<div class="preflight-lamp-row">
+						<span class="lamp" aria-hidden="true"></span>
+						<span class="preflight-label">System microphone · keeps recording in background</span>
+					</div>
+				</div>
+			{:else}
+				<!-- Microphone select -->
+				<div class="field">
+					<label class="field-label" for="mic-select">Microphone</label>
+					<div class="select-wrap">
+						<select
+							id="mic-select"
+							class="select"
+							bind:value={selectedMic}
+							onchange={runPreflight}
+						>
+							{#if microphones.length === 0}
+								<option value="">No microphones found</option>
+							{/if}
+							{#each microphones as mic (mic.id)}
+								<option value={mic.id}>{mic.label || mic.id}</option>
+							{/each}
+						</select>
+						<span class="select-arrow" aria-hidden="true">▾</span>
+					</div>
+				</div>
+
+				<!-- System output select -->
+				<div class="field">
+					<label class="field-label" for="system-select">System Output</label>
+					<div class="select-wrap">
+						<select
+							id="system-select"
+							class="select"
+							bind:value={selectedSystemOutput}
+							disabled={!captureSystem}
+							onchange={runPreflight}
+						>
+							<option value="">None</option>
+							{#each systemOutputs as out (out.id)}
+								<option value={out.id}>{out.label || out.id}</option>
+							{/each}
+						</select>
+						<span class="select-arrow" aria-hidden="true">▾</span>
+					</div>
+				</div>
+
+				<!-- System capture checkbox -->
+				<label class="checkbox-row">
+					<input
+						type="checkbox"
+						class="checkbox"
+						bind:checked={captureSystem}
+						onchange={runPreflight}
+					/>
+					<span class="checkbox-label">Capture system audio</span>
+				</label>
+
+				<!-- Preflight status / VU meter -->
+				<div class="preflight-panel">
+					<div class="preflight-lamp-row">
+						<span
+							class="lamp"
+							class:lamp--ready={preflightTone === 'ready'}
+							class:lamp--issue={preflightTone === 'issue'}
+							aria-hidden="true"
+						></span>
+						<span class="preflight-label">{preflightLabel}</span>
+					</div>
+					{#if preflightReport}
+						<div class="preflight-details">
+							<span class="detail-item">Mic: <strong class={preflightReport.mic_state === 'ready' ? 'text--ready' : 'text--issue'}>{preflightReport.mic_state}</strong></span>
+							{#if captureSystem}
+								<span class="detail-item">System: <strong class={preflightReport.system_state === 'ready' ? 'text--ready' : 'text--issue'}>{preflightReport.system_state}</strong></span>
+							{/if}
+						</div>
+						<span class="signal-line" class:signal--detected={preflightReport.mic_signal} class:signal--none={!preflightReport.mic_signal}>
+							{preflightReport.mic_signal ? 'Signal detected' : 'No signal'}
+						</span>
 					{/if}
 				</div>
-				<span class="signal-line" class:signal--detected={preflightReport.mic_signal} class:signal--none={!preflightReport.mic_signal}>
-					{preflightReport.mic_signal ? 'Signal detected' : 'No signal'}
-				</span>
 			{/if}
-		</div>
-
-		<!-- Title input -->
-		<div class="field">
-			<label class="field-label" for="rec-title">Recording Title</label>
-			<input
-				id="rec-title"
-				type="text"
-				class="input"
-				placeholder="Call with Alex · 2025-01-15"
-				bind:value={title}
-				autocomplete="off"
-			/>
-		</div>
-
-		<!-- Tags input -->
-		<div class="field">
-			<label class="field-label" for="rec-tags">Tags</label>
-			<input
-				id="rec-tags"
-				type="text"
-				class="input"
-				placeholder="client, follow-up"
-				bind:value={tags}
-				autocomplete="off"
-			/>
-			<span class="field-hint">Comma-separated</span>
-		</div>
+		{/if}
 	</div>
 
 	{#if engageError}
@@ -249,18 +345,29 @@
 	{/if}
 
 	<footer class="popup-footer">
-		<button
-			type="button"
-			class="engage-btn"
-			disabled={!audioReady || engaging}
-			onclick={engageCapture}
-		>
-			{#if engaging}
-				Engaging…
-			{:else}
-				Engage Capture
-			{/if}
-		</button>
+		{#if recorder.recording}
+			<button
+				type="button"
+				class="engage-btn engage-stop"
+				disabled={recorder.stopping}
+				onclick={stopAndClose}
+			>
+				{recorder.stopping ? 'Stopping…' : 'Stop Recording'}
+			</button>
+		{:else}
+			<button
+				type="button"
+				class="engage-btn"
+				disabled={(android ? false : !audioReady) || engaging}
+				onclick={engageCapture}
+			>
+				{#if engaging}
+					Starting…
+				{:else}
+					Start Recording
+				{/if}
+			</button>
+		{/if}
 	</footer>
 </div>
 
@@ -506,25 +613,6 @@
 	}
 
 	/* ── Footer ───────────────────────────────────────────────────────────── */
-	.input {
-		height: 38px;
-		padding: 0 10px;
-		background: #2a1d17;
-		border: 1px solid rgba(231, 214, 190, 0.14);
-		border-radius: 2px;
-		color: #e9dfcf;
-		font-family: inherit;
-		font-size: 13px;
-		transition: border-color 120ms;
-	}
-	.input::placeholder {
-		color: #9e9183;
-	}
-	.input:focus {
-		outline: none;
-		border-color: #d7a747;
-	}
-
 	.field-hint {
 		font-size: 10px;
 		color: #9e9183;
@@ -563,6 +651,113 @@
 	.engage-btn:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+
+	/* ── Named presets ─────────────────────────────────────────────────────── */
+	.preset-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+		gap: 6px;
+	}
+
+	.preset-chip {
+		display: grid;
+		gap: 3px;
+		justify-items: start;
+		padding: 7px 9px;
+		background: #2a1d17;
+		border: 1px solid rgba(231, 214, 190, 0.14);
+		border-radius: 2px;
+		color: #e9dfcf;
+		text-align: left;
+		cursor: pointer;
+		transition: border-color 120ms, background 120ms;
+	}
+	.preset-chip:hover {
+		border-color: rgba(231, 214, 190, 0.4);
+	}
+	.preset-chip.selected {
+		border-color: #d7a747;
+		background: rgba(215, 167, 71, 0.1);
+	}
+
+	.preset-name {
+		font-size: 12px;
+		font-weight: 600;
+	}
+
+	.preset-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		font-size: 10px;
+		color: #9e9183;
+	}
+
+	.active-preset-line {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+		font-size: 11px;
+		color: #9e9183;
+	}
+	.active-preset-type {
+		color: #d7a747;
+	}
+
+	/* ── Live recording state ─────────────────────────────────────────────── */
+	.recording-line {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 10px;
+		background: #2a1d17;
+		border: 1px solid rgba(213, 45, 36, 0.4);
+		border-radius: 2px;
+	}
+	.rec-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #d52d24;
+		box-shadow: 0 0 6px #d52d24;
+		animation: rec-pulse 1.4s ease-in-out infinite;
+		flex-shrink: 0;
+	}
+	.recording-text {
+		font-size: 12px;
+		font-weight: 600;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: #ff8b7c;
+	}
+	.recording-time {
+		margin-left: auto;
+		font-family: ui-monospace, monospace;
+		font-variant-numeric: tabular-nums;
+		font-size: 13px;
+		color: #e9dfcf;
+	}
+	.recording-hint {
+		margin: 0;
+		font-size: 11px;
+		line-height: 1.5;
+		color: #9e9183;
+	}
+	@keyframes rec-pulse {
+		50% {
+			opacity: 0.35;
+		}
+	}
+
+	.engage-stop {
+		background: transparent;
+		border-color: #d52d24;
+		color: #ff8b7c;
+	}
+	.engage-stop:hover:not(:disabled) {
+		background: rgba(213, 45, 36, 0.14);
 	}
 
 	/* ── Error ────────────────────────────────────────────────────────────── */

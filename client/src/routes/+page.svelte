@@ -1,96 +1,109 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { SvelteSet } from 'svelte/reactivity';
 	import {
 		audioDevices,
 		captureDraft,
 		clearWarnings,
+		discardMobileUpload,
 		ensureAudioDevices,
-		pushNotice,
-		removeNotice,
+		mobilePendingUploads,
 		recorder,
+		retryMobileUpload,
 		startRecording,
 		stopRecording,
 		SYSTEM_AUDIO_OFF
 	} from '$lib/stores.svelte';
 	import { commands } from '$lib/tauri';
-	import { getRecording, loadApiConfig, uploadDirect } from '$lib/api.svelte';
+	import { loadApiConfig } from '$lib/api.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import TagChips from '$lib/TagChips.svelte';
 	import SignalWarnings from '$lib/SignalWarnings.svelte';
 	import TypeProfileField from '$lib/TypeProfileField.svelte';
 	import { mergeDraftTags } from '$lib/tags';
-	import { ensureProfiles } from '$lib/profiles.svelte';
+	import { ensureProfiles, profilesCache } from '$lib/profiles.svelte';
 	import { ensureTagSuggestions, tagSuggestionsCache } from '$lib/tag-suggestions.svelte';
+	import { isAndroidTauri } from '$lib/mobile-recorder';
 	import {
-		isAndroidTauri,
-		startMobileRecorder,
-		startRecordingKeepalive,
-		stopRecordingKeepalive
-	} from '$lib/mobile-recorder';
-	import type { MobileRecorder } from '$lib/mobile-recorder';
+		buildRecordingTitle,
+		deletePreset,
+		getActivePreset,
+		loadPresets,
+		presetState,
+		savePreset,
+		selectPreset
+	} from '$lib/presets.svelte';
+	import type { CapturePreset } from '$lib/presets.svelte';
 
 	// Mirrors CAPTURE_RATE in src-tauri/src/capture.rs; recorder.frames is the
 	// session's written-frame count, so elapsed time survives window collapse.
 	const CAPTURE_RATE = 48_000;
-	// Draft (title/tags/tagDraft/recType) lives in captureDraft (stores) so it
-	// survives window collapse→expand, which unmounts this page mid-session.
 	let starting = $state(false);
 	let android = $state(false);
-	let mobile: MobileRecorder | null = null;
-	let mobileFramesTimer: ReturnType<typeof setInterval> | null = null;
-	let mobileStartedAt = 0;
-	/** Active processing watchers (recording id poll timers), cleared on unmount. */
-	const processingWatchers = new SvelteSet<ReturnType<typeof setInterval>>();
-	/** How long a "queued for processing" receipt may stay before it expires on
-	 * its own; the watcher below removes it earlier once the pipeline settles. */
-	const PROCESSING_WATCH_MS = 10 * 60_000;
-	const PROCESSING_POLL_MS = 10_000;
-
-	/** Poll the uploaded recording until the pipeline settles, then swap the
-	 * stale "queued" receipt for a short-lived outcome receipt. Poll errors
-	 * (server down, app backgrounded) just keep waiting — the receipt's TTL
-	 * guarantees it never outlives its truth. */
-	function watchProcessing(id: string, notice: string): void {
-		const cfg = loadApiConfig();
-		const shortId = id.slice(0, 8);
-		const timer = setInterval(async () => {
-			try {
-				const rec = await getRecording(cfg, id);
-				if (rec.state !== 'done' && rec.state !== 'failed') return;
-				clearInterval(timer);
-				processingWatchers.delete(timer);
-				removeNotice(notice);
-				pushNotice(
-					rec.state === 'done'
-						? `recording processed (${shortId}…)`
-						: `processing failed (${shortId}…) — see library`,
-					20_000
-				);
-			} catch {
-				// transient: keep polling until the notice TTL expires
-			}
-		}, PROCESSING_POLL_MS);
-		processingWatchers.add(timer);
+	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
+	function fmt(sec: number): string {
+		const h = Math.floor(sec / 3600);
+		const m = Math.floor((sec % 3600) / 60);
+		const s = sec % 60;
+		return h ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 	}
 
-	/** Receipt for a successful upload: expires on its own after
-	 * PROCESSING_WATCH_MS, replaced by the outcome receipt as soon as the
-	 * pipeline reports done/failed. */
-	function announceQueued(id: string): void {
-		const notice = `recording queued for processing (${id.slice(0, 8)}…)`;
-		pushNotice(notice, PROCESSING_WATCH_MS);
-		watchProcessing(id, notice);
+	// ── Named presets ──────────────────────────────────────────────────────────
+	const activePreset = $derived(getActivePreset());
+	const failedUploads = $derived(mobilePendingUploads.filter((u) => u.status === 'failed'));
+	const tagSuggestions = $derived(tagSuggestionsCache.items);
+	let editorOpen = $state(false);
+	/** Preset being edited; null = the editor is creating a new one. */
+	let editingId = $state<string | null>(null);
+	let presetName = $state('');
+	let presetType = $state('');
+	let presetTags = $state<string[]>([]);
+	let presetTagDraft = $state('');
+	/** Collapsible "Custom title & extra tags" section: forced shut while a
+	 * recording is live (the fields are disabled for the session anyway). */
+	let overridesOpen = $state(false);
+	$effect(() => {
+		if (recorder.recording) overridesOpen = false;
+	});
+
+	function openPresetEditor(mode: 'new' | 'edit'): void {
+		if (mode === 'edit') {
+			const preset = getActivePreset();
+			editingId = preset.id;
+			presetName = preset.name;
+			presetType = preset.recType;
+			presetTags = [...preset.tags];
+		} else {
+			editingId = null;
+			presetName = '';
+			presetType = '';
+			presetTags = [];
+		}
+		presetTagDraft = '';
+		editorOpen = true;
 	}
-	/** Failed mobile upload kept in memory for a manual retry — unlike the
-	 * desktop spool there is no on-disk persistence yet (PoC), so leaving
-	 * the page still loses it; the notice copy says as much. */
-	let failedUpload: { blob: Blob; title: string; tags: string[]; durationSec: number } | null =
-		$state(null);
-	let retrying = $state(false);
-	let tagSuggestions = $derived(tagSuggestionsCache.items);
+
+	function closePresetEditor(): void {
+		editorOpen = false;
+	}
+
+	function savePresetEditor(): void {
+		savePreset({ id: editingId ?? undefined, name: presetName, recType: presetType, tags: presetTags });
+		closePresetEditor();
+	}
+
+	function deleteActivePreset(): void {
+		if (!editingId) return;
+		deletePreset(editingId);
+		closePresetEditor();
+	}
+
+	function presetTypeLabel(preset: CapturePreset): string {
+		if (!preset.recType) return '';
+		return profilesCache.items.find((profile) => profile.type === preset.recType)?.display_name ?? preset.recType;
+	}
 
 	onMount(() => {
+		loadPresets();
 		// Instant from the shared cache on remounts; enumerates and checks in
 		// the background only when there is no report for this selection yet.
 		void ensureAudioDevices();
@@ -107,189 +120,35 @@
 			);
 		}
 		android = isAndroidTauri();
-		return () => {
-			if (mobileFramesTimer) {
-				clearInterval(mobileFramesTimer);
-				mobileFramesTimer = null;
-			}
-			for (const timer of processingWatchers) clearInterval(timer);
-			processingWatchers.clear();
-			// Mobile capture lives in THIS component (unlike the desktop
-			// Rust-side session that survives remounts): leaving the page
-			// mid-recording must tear the MediaRecorder down, or the store
-			// keeps saying "recording" with no reachable handle to stop it.
-			if (mobile) {
-				mobile.cancel();
-				mobile = null;
-				recorder.recording = false;
-				recorder.warnings.push('capture cancelled — left the page mid-recording');
-				void stopRecordingKeepalive();
-			}
-		};
+		// NO mobile cleanup on unmount: the capture handle lives in the shared
+		// store now, so leaving the page mid-recording keeps it running (the
+		// REC pill in the layout bar stays reachable from any page).
 	});
-	const elapsed = $derived(Math.floor(recorder.frames / CAPTURE_RATE));
-	function fmt(sec: number): string {
-		const h = Math.floor(sec / 3600);
-		const m = Math.floor((sec % 3600) / 60);
-		const s = sec % 60;
-		return h ? `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-	}
 
 	async function beginRecording(): Promise<void> {
-		if (android) {
-			await beginMobileRecording();
-			return;
-		}
-		if (!audioDevices.selectedMicrophone) {
-			recorder.warnings.push('no microphone available');
-			return;
-		}
+		if (recorder.recording || recorder.stopping || recorder.busy) return;
 		starting = true;
 		clearWarnings();
 		// Flush the draft before the recording starts so any in-progress
 		// chip the user did not press Enter for is not silently dropped.
 		captureDraft.tags = mergeDraftTags(captureDraft.tags, captureDraft.tagDraft);
 		captureDraft.tagDraft = '';
+		// Title: the custom name wins, otherwise `<preset> · <date>`; the
+		// one-off type override falls back to the preset's type.
+		const recType = captureDraft.recType || activePreset.recType || null;
 		try {
 			await startRecording(
-				captureDraft.title,
+				buildRecordingTitle(captureDraft.title, activePreset),
 				captureDraft.tags,
-				audioDevices.selectedMicrophone,
-				audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
-				audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF
+				android ? null : audioDevices.selectedMicrophone,
+				android ? null : audioDevices.selectedSystemOutput === SYSTEM_AUDIO_OFF ? null : audioDevices.selectedSystemOutput,
+				!android && audioDevices.selectedSystemOutput !== SYSTEM_AUDIO_OFF,
+				recType
 			);
 		} catch (error) {
 			recorder.warnings.push(String(error));
 		} finally {
 			starting = false;
-		}
-	}
-
-	async function beginMobileRecording(): Promise<void> {
-		if (mobile || recorder.recording || recorder.stopping) return;
-		starting = true;
-		clearWarnings();
-		captureDraft.tags = mergeDraftTags(captureDraft.tags, captureDraft.tagDraft);
-		captureDraft.tagDraft = '';
-		let handle: MobileRecorder;
-		try {
-			handle = startMobileRecorder({});
-		} catch (error) {
-			recorder.warnings.push(String(error));
-			starting = false;
-			return;
-		}
-		mobile = handle;
-		// Gate the "recording" UI on the mic ACTUALLY streaming: a denied
-		// system prompt must surface as a warning immediately, not as a
-		// running clock that dies on Stop.
-		try {
-			await handle.ready;
-		} catch (error) {
-			if (mobile === handle) mobile = null;
-			recorder.warnings.push(String(error));
-			starting = false;
-			return;
-		}
-		// Keepalive AFTER the getUserMedia grant, still before the recording UI
-		// flips: a mic-type FGS requires RECORD_AUDIO to be ALREADY granted at
-		// startForeground time ("anyOf […, RECORD_AUDIO]" in the platform
-		// error), and the grant only exists once getUserMedia resolves. The app
-		// is still guaranteed foreground here, which is the other FGS
-		// requirement. Fail-loud: without the service a backgrounded recording
-		// dies silently.
-		try {
-			await startRecordingKeepalive();
-		} catch (error) {
-			if (mobile === handle) mobile = null;
-			handle.cancel();
-			recorder.warnings.push(`Не удалось запустить фоновую запись: ${String(error)}`);
-			starting = false;
-			return;
-		}
-		// The page may have unmounted (cleanup cancelled the handle) while
-		// the permission prompt was open — a late grant must NOT flip the
-		// shared store or start a ticker nobody will clear.
-		if (mobile !== handle) return;
-		recorder.recording = true;
-		recorder.frames = 0;
-		mobileStartedAt = Date.now();
-		// Mirror the desktop poller: tick `recorder.frames` at the same 500 ms cadence
-		// so `elapsed = floor(frames / CAPTURE_RATE)` drives the visible timer without
-		// a second source of truth. CAPTURE_RATE mirrors src-tauri/src/capture.rs.
-		mobileFramesTimer = setInterval(() => {
-			if (!recorder.recording) return;
-			const elapsedSec = (Date.now() - mobileStartedAt) / 1000;
-			recorder.frames = Math.floor(elapsedSec * CAPTURE_RATE);
-		}, 500);
-		starting = false;
-	}
-
-	async function stopMobileRecording(): Promise<void> {
-		if (!mobile || recorder.stopping) return;
-		recorder.stopping = true;
-		if (mobileFramesTimer) {
-			clearInterval(mobileFramesTimer);
-			mobileFramesTimer = null;
-		}
-		const handle = mobile;
-		mobile = null;
-		// The FGS guarded the capture; once the user pressed Stop it must go
-		// down regardless of how the MediaRecorder/upload paths end.
-		await stopRecordingKeepalive();
-		let blob: Blob;
-		try {
-			blob = await handle.stop();
-		} catch (error) {
-			recorder.stopping = false;
-			recorder.recording = false;
-			recorder.warnings.push(`stop failed: ${String(error)}`);
-			return;
-		}
-		const durationSec = Math.max(0, (Date.now() - mobileStartedAt) / 1000);
-		recorder.recording = false;
-		const cfg = loadApiConfig();
-		if (!cfg.baseUrl || !cfg.token) {
-			recorder.warnings.push('no server configured — recording not uploaded');
-			recorder.stopping = false;
-			return;
-		}
-		try {
-			const result = await uploadDirect(cfg, blob, captureDraft.title, captureDraft.tags, durationSec, {
-				type: captureDraft.recType ?? undefined
-			});
-			announceQueued(result.id);
-		} catch (error) {
-			// Do NOT discard the audio: the desktop path survives via the
-			// on-disk spool; the mobile PoC keeps the blob in memory and
-			// offers a manual retry instead of silently losing the take.
-			failedUpload = { blob, title: captureDraft.title, tags: [...captureDraft.tags], durationSec };
-			recorder.warnings.push(`upload failed: ${String(error)}`);
-		} finally {
-			recorder.stopping = false;
-		}
-	}
-
-	async function retryFailedUpload(): Promise<void> {
-		const pending = failedUpload;
-		if (!pending || retrying) return;
-		retrying = true;
-		try {
-			const result = await uploadDirect(
-				loadApiConfig(),
-				pending.blob,
-				pending.title,
-				pending.tags,
-				pending.durationSec,
-				{ type: captureDraft.recType ?? undefined }
-			);
-			failedUpload = null;
-			announceQueued(result.id);
-		} catch {
-			// Block stays; the user can retry again. No stacked warnings —
-			// the persistent notice already carries the failure state.
-		} finally {
-			retrying = false;
 		}
 	}
 
@@ -300,16 +159,31 @@
 <section class="page capture-page">
 	<SignalWarnings />
 
-	{#if failedUpload}
+	{#if failedUploads.length}
 		<div class="notice warning upload-pending" role="status">
-			<strong>Upload pending</strong>
-			<span
-				>the take is kept in memory only — retry when the network is back; leaving this page
-				discards it</span
-			>
-			<button type="button" class="retry-upload" onclick={retryFailedUpload} disabled={retrying}>
-				{retrying ? 'Retrying…' : 'Retry upload'}
-			</button>
+			<strong>Upload failed</strong>
+			<span>
+				{failedUploads.length === 1 ? 'One recording' : `${failedUploads.length} recordings`} waiting for the server —
+				<a class="upload-link" href="/recordings">open Library</a> to retry later
+			</span>
+			<div class="upload-actions">
+				<button
+					type="button"
+					class="retry-upload"
+					onclick={() => failedUploads.forEach((u) => void retryMobileUpload(u.id))}
+				>
+					Retry
+				</button>
+				<button
+					type="button"
+					class="upload-dismiss"
+					aria-label="Discard failed recordings"
+					title="Discard"
+					onclick={() => failedUploads.forEach((u) => discardMobileUpload(u.id))}
+				>
+					<Icon name="close" size={11} />
+				</button>
+			</div>
 		</div>
 	{/if}
 
@@ -327,35 +201,113 @@
 	</div>
 
 	<div class="capture-fields">
-		<TypeProfileField bind:value={captureDraft.recType} disabled={recorder.recording} />
+		<div class="presets-block">
+			<div class="presets-header">
+				<span class="field-label">Presets</span>
+				<span class="presets-actions">
+					<button type="button" class="ghost-btn" disabled={recorder.recording} onclick={() => openPresetEditor('new')}>+ Preset</button>
+					<button type="button" class="ghost-btn" disabled={recorder.recording} onclick={() => openPresetEditor('edit')}>Edit</button>
+				</span>
+			</div>
+			<div class="preset-grid" role="listbox" aria-label="Capture presets">
+				{#each presetState.presets as preset (preset.id)}
+					<button
+						type="button"
+						role="option"
+						aria-selected={preset.id === activePreset.id}
+						class="preset-chip"
+						class:selected={preset.id === activePreset.id}
+						disabled={recorder.recording}
+						onclick={() => selectPreset(preset.id)}
+					>
+						<span class="preset-name">{preset.name}</span>
+						{#if preset.recType}
+							<span class="preset-type">{presetTypeLabel(preset)}</span>
+						{/if}
+						{#if preset.tags.length}
+							<span class="preset-tags">
+								{#each preset.tags as tag (tag)}<span>#{tag}</span>{/each}
+							</span>
+						{/if}
+					</button>
+				{/each}
+			</div>
+			{#if editorOpen}
+				<div class="preset-editor">
+					<label class="editor-field">
+						<span class="field-label">Preset name</span>
+						<input type="text" placeholder="e.g. Standup" bind:value={presetName} />
+					</label>
+					<label class="editor-field">
+						<span class="field-label">Type</span>
+						<select bind:value={presetType}>
+							<option value="">Default pipeline</option>
+							{#each profilesCache.items as profile (profile.id)}
+								<option value={profile.type}>{profile.display_name}</option>
+							{/each}
+						</select>
+					</label>
+					<label class="editor-field">
+						<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
+						<TagChips
+							tags={presetTags}
+							bind:draft={presetTagDraft}
+							suggestions={tagSuggestions}
+							placeholder="e.g. dnd, standup"
+							onChange={(next) => (presetTags = next)}
+						/>
+					</label>
+					<div class="editor-actions">
+						<button type="button" class="editor-save" disabled={!presetName.trim()} onclick={savePresetEditor}>Save</button>
+						{#if editingId}
+							<button type="button" class="editor-delete" onclick={deleteActivePreset}>Delete</button>
+						{/if}
+						<button type="button" class="editor-cancel" onclick={closePresetEditor}>Cancel</button>
+					</div>
+				</div>
+			{/if}
+		</div>
 
-		<label class="title-field">
-			<span class="field-label">Recording name</span>
-			<input type="text" placeholder="e.g. Product sync — August 22" bind:value={captureDraft.title} disabled={recorder.recording} />
-		</label>
-
-		<label class="tags-field" class:disabled={recorder.recording}>
-			<span class="field-label">Tags <small>Press Enter or comma to add</small></span>
-			<TagChips
-				tags={captureDraft.tags}
-				bind:draft={captureDraft.tagDraft}
-				disabled={recorder.recording}
-				suggestions={tagSuggestions}
-				placeholder="e.g. doctronic, dnd dark castle"
-				onChange={(next) => (captureDraft.tags = next)}
-			/>
-		</label>
+		<details class="custom-overrides" class:locked={recorder.recording} bind:open={overridesOpen}>
+			<summary>Custom title &amp; extra tags</summary>
+			<div class="overrides-body">
+				<label class="title-field">
+					<span class="field-label">Recording name</span>
+					<input
+						type="text"
+						placeholder={`Auto: ${buildRecordingTitle('', activePreset)}`}
+						bind:value={captureDraft.title}
+						disabled={recorder.recording}
+					/>
+				</label>
+				<label class="type-field">
+					<span class="field-label">Type <small>one-off override</small></span>
+					<TypeProfileField bind:value={captureDraft.recType} disabled={recorder.recording} />
+				</label>
+				<label class="tags-field">
+					<span class="field-label">Extra tags <small>Press Enter or comma to add</small></span>
+					<TagChips
+						tags={captureDraft.tags}
+						bind:draft={captureDraft.tagDraft}
+						disabled={recorder.recording}
+						suggestions={tagSuggestions}
+						placeholder="e.g. doctronic, dnd dark castle"
+						onChange={(next) => (captureDraft.tags = next)}
+					/>
+				</label>
+			</div>
+		</details>
 	</div>
 
 	{#if recorder.recording}
-		<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => android ? stopMobileRecording() : stopRecording()}>
+		<button class="record-control stop" type="button" disabled={recorder.stopping} onclick={() => void stopRecording()}>
 			<span class="control-symbol" aria-hidden="true"><Icon name="stop" size={12} /></span>
 			<span><strong>{recorder.stopping ? 'Sealing archive…' : 'Stop recording'}</strong><small>Finish and send for processing</small></span>
 		</button>
 	{:else}
-		<button class="record-control start" type="button" disabled={starting} onclick={beginRecording}>
+		<button class="record-control start" type="button" disabled={starting || recorder.busy} onclick={beginRecording}>
 			<span class="control-symbol" aria-hidden="true"><Icon name="dot" size={12} /></span>
-			<span><strong>{starting ? 'Running pre-flight…' : 'Start recording'}</strong><small>Checks devices before capture</small></span>
+			<span><strong>{starting ? 'Running pre-flight…' : 'Start recording'}</strong><small>Starts with “{activePreset.name}”</small></span>
 		</button>
 	{/if}
 
@@ -375,7 +327,6 @@
 .capture-fields { flex: 1; display: grid; gap: 12px; align-content: start; padding: 14px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .title-field { display: block; }
 .tags-field { display: block; }
-.tags-field.disabled { opacity: 0.55; }
 .tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 .record-control { width: 100%; margin-top: auto; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
 .record-control:hover:not(:disabled) { filter: brightness(1.1); transform: translateY(-1px); }
@@ -385,7 +336,47 @@
 .record-control strong { font-size: 14px; letter-spacing: 0.01em; }
 .record-control small { margin-top: 4px; font-size: 10px; opacity: 0.74; }
 .upload-pending { grid-template-columns: 1fr auto; align-items: center; }
+.upload-link { color: var(--brass); }
+.upload-actions { display: flex; align-items: center; gap: 6px; }
+.upload-dismiss { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: none; background: transparent; color: #8d847a; cursor: pointer; transition: color 120ms ease; }
+.upload-dismiss:hover { color: var(--bone); }
 .retry-upload { align-self: center; min-height: 34px; padding: 0 14px; border: 1px solid var(--brass); border-radius: 3px; background: transparent; color: var(--brass); font-size: 11px; font-weight: 700; cursor: pointer; transition: background 120ms ease, color 120ms ease; }
 .retry-upload:hover:not(:disabled) { background: var(--brass); color: #17110b; }
+/* ── Presets bar ── */
+.presets-block { display: grid; gap: 8px; }
+.presets-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.presets-header .field-label { margin-bottom: 0; }
+.presets-actions { display: inline-flex; gap: 6px; }
+.ghost-btn { min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 3px; background: transparent; color: var(--brass); font-size: 11px; font-weight: 650; cursor: pointer; transition: border-color 120ms ease; }
+.ghost-btn:hover:not(:disabled) { border-color: var(--brass); }
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 6px; }
+.preset-chip { display: grid; gap: 3px; justify-items: start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; background: rgba(0, 0, 0, 0.22); color: var(--bone); text-align: left; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+.preset-chip:hover:not(:disabled):not(.selected) { border-color: #6f685f; }
+.preset-chip.selected { border-color: var(--brass); background: rgba(215, 167, 71, 0.09); }
+.preset-name { font-size: 12px; font-weight: 650; }
+.preset-type { font-size: 10px; color: var(--brass); }
+.preset-tags { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px; color: #8d847a; }
+.preset-editor { display: grid; gap: 10px; padding: 10px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.05); }
+.editor-field { display: grid; gap: 4px; }
+.editor-field .field-label { margin-bottom: 0; }
+.editor-actions { display: flex; gap: 6px; }
+.editor-actions button { min-height: 32px; padding: 0 12px; border-radius: 3px; font-size: 11px; font-weight: 700; cursor: pointer; transition: filter 120ms ease, border-color 120ms ease; }
+.editor-save { border: 1px solid var(--brass); background: var(--brass); color: #17110b; }
+.editor-save:hover:not(:disabled) { filter: brightness(1.1); }
+.editor-delete { border: 1px solid var(--red); background: transparent; color: var(--red); }
+.editor-delete:hover:not(:disabled) { background: rgba(213, 45, 36, 0.12); }
+.editor-cancel { border: 1px solid var(--line); background: transparent; color: var(--ash, #9e9183); }
+.editor-cancel:hover:not(:disabled) { border-color: #6f685f; }
+/* ── Collapsible overrides ── */
+.custom-overrides { border-top: 1px solid var(--line); }
+.custom-overrides summary { padding: 9px 2px; font-size: 11px; font-weight: 650; color: #b8ac9d; cursor: pointer; list-style: none; }
+.custom-overrides summary::-webkit-details-marker { display: none; }
+.custom-overrides summary::before { content: '▸'; display: inline-block; margin-right: 6px; color: #6f685f; transition: transform 120ms ease; }
+.custom-overrides[open] summary::before { transform: rotate(90deg); }
+.custom-overrides.locked { opacity: 0.55; }
+.custom-overrides.locked summary { cursor: not-allowed; }
+.overrides-body { display: grid; gap: 12px; padding: 2px 2px 10px; }
+.type-field { display: block; }
+.type-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 @keyframes signal { to { height: var(--bar-height); } }
 </style>

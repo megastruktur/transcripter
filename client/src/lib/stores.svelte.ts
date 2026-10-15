@@ -1,9 +1,12 @@
 import { commands } from '$lib/tauri';
 import type { AudioDevices, PreFlightReport } from '$lib/tauri';
-import { loadApiConfig, saveApiConfig, testConnection } from '$lib/api.svelte';
+import { getRecording, loadApiConfig, saveApiConfig, testConnection, uploadDirect } from '$lib/api.svelte';
 import type { ApiConfig, Stage } from '$lib/api.svelte';
 import { listen } from '@tauri-apps/api/event';
-import { ANDROID_MIC_ID, isAndroidTauri } from '$lib/mobile-recorder';
+import { ANDROID_MIC_ID, isAndroidTauri, startMobileRecorder, startRecordingKeepalive, stopRecordingKeepalive } from '$lib/mobile-recorder';
+import type { MobileRecorder } from '$lib/mobile-recorder';
+import { buildRecordingTitle, getActivePreset } from '$lib/presets.svelte';
+import { mergeDraftTags } from '$lib/tags';
 import type { IconName } from '$lib/Icon.svelte';
 import { setMascotState } from '@orbitkit/ui';
 
@@ -20,6 +23,9 @@ export type UploadState = {
 export const recorder = $state({
 	recording: false,
 	stopping: false,
+	/** Start transition in flight (device probes, mic prompt, FGS raise).
+	 * The Record page ORs it with its local `starting` for the button. */
+	busy: false,
 	sessionId: '',
 	frames: 0,
 	warnings: [] as string[]
@@ -36,6 +42,62 @@ export const captureDraft = $state({
 	tagDraft: '',
 	recType: null as string | null
 });
+
+// ── Android capture session ────────────────────────────────────────────────
+// Lives at module scope ON PURPOSE: the Record page unmounts on every
+// navigation/window collapse, and a recording must survive that (the old
+// component-owned handle cancelled the MediaRecorder on page leave — the
+// bug this card fixes). The desktop session lives Rust-side and always
+// survived; now both do.
+/** Mirrors CAPTURE_RATE in src-tauri/src/capture.rs: recorder.frames is a
+ * written-frame count, so elapsed = floor(frames / CAPTURE_RATE). */
+const CAPTURE_RATE = 48_000;
+let mobileInstance: MobileRecorder | null = null;
+let mobileFramesTimer: number | null = null;
+let mobileStartedAt = 0;
+let mobileMeta: { title: string; tags: string[]; recType: string | null } = {
+	title: '',
+	tags: [],
+	recType: null
+};
+
+/** Android takes that finished recording but have not (yet) reached the
+ * server: uploaded in the background, retried or discarded by hand. Kept
+ * in the shared store so a failure is visible from Library / the Record
+ * banner and NEVER lost by leaving a page (the desktop path has the
+ * on-disk spool for this; Card 3 adds IndexedDB persistence here). */
+export type MobilePendingUpload = {
+	id: string;
+	blob: Blob;
+	filename: string;
+	title: string;
+	tags: string[];
+	recType: string | null;
+	durationSec: number;
+	createdAt: number;
+	status: 'uploading' | 'failed';
+	error: string;
+};
+export const mobilePendingUploads = $state<MobilePendingUpload[]>([]);
+
+function removeMobilePendingUpload(id: string): void {
+	const index = mobilePendingUploads.findIndex((u) => u.id === id);
+	if (index !== -1) mobilePendingUploads.splice(index, 1);
+}
+
+/** Give up on a failed take and drop its audio. */
+export function discardMobileUpload(id: string): void {
+	removeMobilePendingUpload(id);
+}
+
+/** Retry a failed upload in place (no-op while it is already uploading). */
+export async function retryMobileUpload(id: string): Promise<void> {
+	const entry = mobilePendingUploads.find((u) => u.id === id);
+	if (!entry || entry.status === 'uploading') return;
+	entry.status = 'uploading';
+	entry.error = '';
+	await uploadMobileEntry(entry);
+}
 
 export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 'json';
 
@@ -243,6 +305,11 @@ let recordingStatusTimer: number | null = null;
 
 export function clearWarnings(): void {
 	recorder.warnings = [];
+}
+/** Remove one warning by position (the ✕ on a notice). Warnings duplicate
+ * freely, so dismissal is positional, not by value. */
+export function dismissWarning(index: number): void {
+	if (index >= 0 && index < recorder.warnings.length) recorder.warnings.splice(index, 1);
 }
 /** Receipt-style messages ("queued for processing …") are info, not signal
  * warnings: they must EXPIRE instead of staying on screen after the fact
@@ -471,13 +538,230 @@ export async function checkAudioDevices(probe = true): Promise<void> {
 	}
 }
 
+// ── Desktop frames poller ──────────────────────────────────────────────────
+// Shared by sessions this window started AND sessions adopted from another
+// window (quick-record popup): both drain the same Rust backend.
+function startFramesPoller(): void {
+	if (recordingStatusTimer !== null) return;
+	recordingStatusTimer = globalThis.setInterval(async () => {
+		try {
+			recorder.frames = await commands.recordingFrames();
+			const degraded = await commands.recordingDegraded();
+			if (degraded && !recorder.warnings.includes(degraded)) {
+				recorder.warnings.push(`${degraded} — recording continues on microphone`);
+				void setMascotState('issue');
+			}
+		} catch (error) {
+			if (recorder.stopping || !recorder.recording) return;
+			if (recordingStatusTimer) {
+				clearInterval(recordingStatusTimer);
+				recordingStatusTimer = null;
+			}
+			// The session ended in ANOTHER window (popup Stop): reset quietly
+			// instead of demanding a retry that could never succeed.
+			if (String(error).includes('no active session')) {
+				recorder.recording = false;
+				recorder.frames = 0;
+				void setMascotState('idle');
+				return;
+			}
+			recorder.warnings.push(String(error));
+			void stopRecording();
+		}
+	}, 500);
+}
+
+// ── Android capture (module scope: survives page unmount — THE FIX) ────────
+async function startAndroidRecording(title: string, tags: string[], recType: string | null): Promise<void> {
+	if (mobileInstance || recorder.busy || recorder.recording || recorder.stopping) return;
+	recorder.busy = true;
+	clearWarnings();
+	let handle: MobileRecorder;
+	try {
+		handle = startMobileRecorder({});
+	} catch (error) {
+		recorder.warnings.push(String(error));
+		recorder.busy = false;
+		return;
+	}
+	mobileInstance = handle;
+	// Gate the "recording" UI on the mic ACTUALLY streaming: a denied
+	// system prompt must surface as a warning immediately, not as a
+	// running clock that dies on Stop.
+	try {
+		await handle.ready;
+	} catch (error) {
+		if (mobileInstance === handle) mobileInstance = null;
+		recorder.warnings.push(String(error));
+		recorder.busy = false;
+		return;
+	}
+	// Keepalive AFTER the getUserMedia grant, still before the recording UI
+	// flips: a mic-type FGS requires RECORD_AUDIO to be ALREADY granted at
+	// startForeground time. Fail-loud: without the service a backgrounded
+	// recording dies silently.
+	try {
+		await startRecordingKeepalive();
+	} catch (error) {
+		if (mobileInstance === handle) mobileInstance = null;
+		handle.cancel();
+		recorder.warnings.push(`Не удалось запустить фоновую запись: ${String(error)}`);
+		recorder.busy = false;
+		return;
+	}
+	// Cancelled while the permission prompt was open — a late grant must
+	// NOT flip the shared store or start a ticker nobody will clear.
+	if (mobileInstance !== handle) {
+		recorder.busy = false;
+		return;
+	}
+	recorder.recording = true;
+	recorder.sessionId = `mobile-${Date.now()}`;
+	recorder.frames = 0;
+	mobileStartedAt = Date.now();
+	mobileMeta = { title, tags: [...tags], recType };
+	void setMascotState('recording');
+	// Drives elapsed = floor(frames / CAPTURE_RATE) exactly like the
+	// desktop Rust poller, without a second source of truth.
+	mobileFramesTimer = globalThis.setInterval(() => {
+		if (!recorder.recording) return;
+		recorder.frames = Math.floor(((Date.now() - mobileStartedAt) / 1000) * CAPTURE_RATE);
+	}, 250);
+	recorder.busy = false;
+}
+
+async function stopAndroidRecording(): Promise<void> {
+	recorder.stopping = true;
+	if (mobileFramesTimer) {
+		clearInterval(mobileFramesTimer);
+		mobileFramesTimer = null;
+	}
+	const handle = mobileInstance;
+	if (!handle) return;
+	mobileInstance = null;
+	// The FGS guarded the capture; once the user pressed Stop it must go
+	// down regardless of how the MediaRecorder/upload paths end.
+	await stopRecordingKeepalive();
+	let blob: Blob;
+	try {
+		blob = await handle.stop();
+	} catch (error) {
+		recorder.stopping = false;
+		recorder.recording = false;
+		recorder.sessionId = '';
+		recorder.warnings.push(`stop failed: ${String(error)}`);
+		return;
+	}
+	const durationSec = Math.max(0, (Date.now() - mobileStartedAt) / 1000);
+	recorder.recording = false;
+	recorder.sessionId = '';
+	recorder.frames = 0;
+	void setMascotState('idle');
+	// Queue the upload entry FIRST so the UI resets immediately: the take
+	// uploads in the background, and a failure stays retryable (here and in
+	// Library) instead of dying with the Record page.
+	const entry: MobilePendingUpload = {
+		id: newPendingId(),
+		blob,
+		filename: mobileBlobFilename(blob),
+		title: mobileMeta.title,
+		tags: [...mobileMeta.tags],
+		recType: mobileMeta.recType,
+		durationSec,
+		createdAt: Date.now(),
+		status: 'uploading',
+		error: ''
+	};
+	mobilePendingUploads.push(entry);
+	recorder.stopping = false;
+	void uploadMobileEntry(entry);
+}
+
+function newPendingId(): string {
+	return `mobile-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function mobileBlobFilename(blob: Blob): string {
+	const ext = blob.type.includes('ogg') ? 'ogg' : blob.type.includes('mp4') ? 'm4a' : 'webm';
+	return `recording-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`;
+}
+
+/** Upload one pending take: success removes it and posts a processing
+ * receipt; failure flips the entry to `failed` so Retry stays available
+ * and no audio is lost. */
+async function uploadMobileEntry(entry: MobilePendingUpload): Promise<void> {
+	const cfg = loadApiConfig();
+	if (!cfg.baseUrl || !cfg.token) {
+		entry.status = 'failed';
+		entry.error = 'no server configured — set it in Settings to upload';
+		return;
+	}
+	try {
+		const result = await uploadDirect(cfg, entry.blob, entry.title, entry.tags, entry.durationSec, {
+			type: entry.recType ?? undefined
+		});
+		removeMobilePendingUpload(entry.id);
+		announceQueued(result.id);
+	} catch (error) {
+		entry.status = 'failed';
+		entry.error = String(error);
+	}
+}
+
+// ── Processing receipts (moved from the Record page: mobile uploads now
+// outlive that page's unmount) ──────────────────────────────────────────────
+const processingWatchers = new Set<number>();
+const PROCESSING_WATCH_MS = 10 * 60_000;
+const PROCESSING_POLL_MS = 10_000;
+
+/** Poll the uploaded recording until the pipeline settles, then swap the
+ * stale "queued" receipt for a short-lived outcome receipt. Poll errors
+ * (server down, app backgrounded) just keep waiting — the receipt's TTL
+ * guarantees it never outlives its truth. */
+function watchProcessing(id: string, notice: string): void {
+	const cfg = loadApiConfig();
+	const shortId = id.slice(0, 8);
+	const timer = globalThis.setInterval(async () => {
+		try {
+			const rec = await getRecording(cfg, id);
+			if (rec.state !== 'done' && rec.state !== 'failed') return;
+			clearInterval(timer);
+			processingWatchers.delete(timer);
+			removeNotice(notice);
+			pushNotice(
+				rec.state === 'done'
+					? `recording processed (${shortId}…)`
+					: `processing failed (${shortId}…) — see library`,
+				20_000
+			);
+		} catch {
+			// transient: keep polling until the notice TTL expires
+		}
+	}, PROCESSING_POLL_MS);
+	processingWatchers.add(timer);
+}
+
+/** Receipt for a successful upload: expires on its own after
+ * PROCESSING_WATCH_MS, replaced by the outcome receipt as soon as the
+ * pipeline reports done/failed. */
+function announceQueued(id: string): void {
+	const notice = `recording queued for processing (${id.slice(0, 8)}…)`;
+	pushNotice(notice, PROCESSING_WATCH_MS);
+	watchProcessing(id, notice);
+}
+
 export async function startRecording(
 	title: string,
 	tags: string[],
 	microphone: string | null,
 	systemOutput: string | null,
-	captureSystem: boolean
+	captureSystem: boolean,
+	recType: string | null = null
 ): Promise<void> {
+	if (isAndroidTauri()) {
+		await startAndroidRecording(title, tags, recType);
+		return;
+	}
 	const report = await checkAudio(microphone, systemOutput, captureSystem);
 	if (report.mic_state === 'permission_denied') {
 		const hint = navigator.userAgent.includes('Windows')
@@ -496,30 +780,21 @@ export async function startRecording(
 	}
 	recorder.sessionId = await commands.startRecording(title || null, tags, microphone, systemOutput, captureSystem);
 	recorder.recording = true;
-	void setMascotState('recording');
 	recorder.frames = 0;
-	recordingStatusTimer = globalThis.setInterval(async () => {
-		try {
-			recorder.frames = await commands.recordingFrames();
-			const degraded = await commands.recordingDegraded();
-			if (degraded && !recorder.warnings.includes(degraded)) {
-				recorder.warnings.push(`${degraded} — recording continues on microphone`);
-				void setMascotState('issue');
-			}
-		} catch (error) {
-			if (recorder.stopping || !recorder.recording) return;
-			if (recordingStatusTimer) {
-				clearInterval(recordingStatusTimer);
-				recordingStatusTimer = null;
-			}
-			recorder.warnings.push(String(error));
-			void stopRecording();
-		}
-	}, 500);
+	void setMascotState('recording');
+	startFramesPoller();
 }
 
 export async function stopRecording(): Promise<void> {
 	if (recorder.stopping) return;
+	// This session consumed the draft overrides: clear them so the next
+	// capture starts from the preset, not a stale custom title.
+	captureDraft.title = '';
+	captureDraft.tagDraft = '';
+	if (isAndroidTauri() && mobileInstance) {
+		await stopAndroidRecording();
+		return;
+	}
 	recorder.stopping = true;
 	const cfg = loadApiConfig();
 	try {
@@ -563,4 +838,60 @@ export async function retryPendingUploads(): Promise<number> {
 	const cfg = loadApiConfig();
 	if (!cfg.baseUrl || !cfg.token) return 0;
 	return commands.retryPending(cfg.baseUrl, cfg.token);
+}
+
+/** 1-tap start for the mascot menu and any non-Record surface: the active
+ * preset supplies the title stem, type and starter tags; extra chips typed
+ * on top of it (captureDraft) merge in. Device selection comes from the
+ * saved preferences, so this works from any window. */
+export async function startWithActivePreset(): Promise<void> {
+	const preset = getActivePreset();
+	const title = buildRecordingTitle(captureDraft.title, preset);
+	const tags = mergeDraftTags([...preset.tags, ...captureDraft.tags], captureDraft.tagDraft);
+	captureDraft.tagDraft = '';
+	const recType = captureDraft.recType ?? (preset.recType || null);
+	if (isAndroidTauri()) {
+		await startRecording(title, tags, ANDROID_MIC_ID, null, false, recType);
+		return;
+	}
+	const savedMicrophone = localStorage.getItem('transcripter.microphone') ?? '';
+	const savedSystemOutput = localStorage.getItem('transcripter.system-output') ?? SYSTEM_AUDIO_OFF;
+	await startRecording(
+		title,
+		tags,
+		savedMicrophone || null,
+		savedSystemOutput === SYSTEM_AUDIO_OFF ? null : savedSystemOutput,
+		savedSystemOutput !== SYSTEM_AUDIO_OFF,
+		recType
+	);
+}
+
+// ── Cross-window session sync (desktop) ────────────────────────────────────
+// The quick-record popup is its own webview with its own store instance; a
+// session started there is invisible to this window unless we ask the Rust
+// backend. `cmd_recording_frames` doubles as the liveness probe: it
+// rejects with "no active session" while idle.
+
+/** One probe: adopt a backend session this window did not start. */
+export async function syncRecordingState(): Promise<void> {
+	if (isAndroidTauri() || recorder.recording) return;
+	try {
+		const frames = await commands.recordingFrames();
+		if (recorder.recording) return;
+		recorder.recording = true;
+		recorder.frames = frames;
+		void setMascotState('recording');
+		startFramesPoller();
+	} catch {
+		// no active session — nothing to adopt
+	}
+}
+
+let recordingSyncTimer: number | null = null;
+/** Slow reconciler for the main window: notices a popup-started session
+ * within ~3 s so the REC pill appears while browsing other pages. */
+export function startRecordingSync(): void {
+	if (recordingSyncTimer !== null || isAndroidTauri()) return;
+	void syncRecordingState();
+	recordingSyncTimer = globalThis.setInterval(() => void syncRecordingState(), 3000);
 }
