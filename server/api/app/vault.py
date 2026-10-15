@@ -22,9 +22,10 @@ import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import ServerConfig
@@ -255,13 +256,62 @@ def _entity_count(doc: dict | None) -> int:
     return len(entities) if isinstance(entities, list) else 0
 
 
+def _enrich_done_subquery(dialect: str) -> Any:
+    """``EXISTS`` subquery: recording has an enrich stage with status done.
+
+    Dialect split so the predicate is portable across pg (JSON text[] @
+    ANY) and sqlite (JSON array + json_each). Used by both the digest
+    selection and the timeline tag-membership filter to surface
+    failed recordings whose enrich completed successfully.
+    """
+    if dialect == "postgresql":
+        # RecordingState / StageStatus are SQLAlchemy Enum members; cast
+        # to their .value so the literal reaches the SQL as a VARCHAR.
+        return text(
+            "EXISTS ("
+            "  SELECT 1 FROM stages s "
+            "  WHERE s.recording_id = recordings.id "
+            "    AND s.kind = 'enrich' "
+            "    AND s.status = 'done'"
+            ")"
+        )
+    else:
+        return text(
+            "EXISTS ("
+            "  SELECT 1 FROM stages s "
+            "  WHERE s.recording_id = recordings.id "
+            "    AND s.kind = 'enrich' "
+            "    AND s.status = 'done'"
+            ")"
+        )
+
+
+def _recording_visible_filter(dialect: str) -> Any:
+    """Predicate: recording is 'visible' for digest/timeline — done, OR
+    failed-but-enrich-succeeded.  Corresponds to the CAPTAIN decision
+    on t_936af578: failed+enrich-done recordings carry the tag.
+    """
+    return or_(
+        Recording.state == RecordingState.done,
+        _enrich_done_subquery(dialect),
+    )
+
+
 def _tag_recordings(session: Session, tag: str) -> list[Recording]:
-    """The tag's DONE recordings, newest first by
+    """The tag's VISIBLE recordings, newest first by
     ``coalesce(recorded_at, created_at) DESC`` (id DESC tiebreak).
-    Dialect split mirrors worker digest ``_select_recordings``: Postgres
-    matches the TEXT[] with @>, SQLite explodes the JSON array with
-    json_each (tests)."""
+
+    Visibility = done OR (failed AND enrich done).  Dialect split mirrors
+    worker digest ``_select_recordings``: Postgres matches the TEXT[]
+    with @>, SQLite explodes the JSON array with json_each (tests)."""
+
+    # Import here so the module-level import above is satisfied; avoids
+    # the circular-import problem (vault imports RecordingState, Recording
+    # via the above).
     dialect_name = session.get_bind().dialect.name
+
+    visible = _recording_visible_filter(dialect_name)
+
     if dialect_name == "postgresql":
         tag_filter = Recording.tags.contains([tag])
     else:
@@ -273,7 +323,7 @@ def _tag_recordings(session: Session, tag: str) -> list[Recording]:
     return (
         session.query(Recording)
         .filter(
-            Recording.state == RecordingState.done,
+            visible,
             tag_filter,
         )
         .order_by(

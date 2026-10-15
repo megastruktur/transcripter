@@ -29,7 +29,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from worker import activities
-from worker.db import Base, Recording, RecordingState, Stage, TagDef, session
+from worker.db import Base, Recording, RecordingState, Stage, StageStatus, TagDef, session
 from worker.digest import (
     DigestGraphSlice,
     DigestInput,
@@ -796,3 +796,141 @@ def test_tag_digest_workflow_and_activity_registered() -> None:
         "TagDigest must be a Temporal workflow class with @workflow.run"
     )
     assert "tag_digest" in {fn.__name__ for fn in main_mod.ACTIVITIES}
+
+
+# ---------- enrich-done visibility (t_936af578) ------------------------------
+
+
+def _seed_with_enrich_status(
+    tag: str,
+    state: RecordingState,
+    enrich_status: StageStatus,
+) -> str:
+    """Create one recording with the given recording state and enrich stage
+    status, plus a meta/events.json artifact (so the row survives the
+    _note_recording_ids filter).
+    """
+    import uuid
+
+    rid = str(uuid.uuid4())
+    with session() as s:
+        s.add(
+            Recording(
+                id=rid,
+                title="Session",
+                tags=[tag],
+                state=state,
+                sha256="x" * 64,
+                committed_bytes=100,
+                total_bytes=100,
+                duration_sec=60.0,
+                created_at=datetime(2026, 10, 1, tzinfo=UTC),
+            )
+        )
+        s.add(Stage(recording_id=rid, kind="enrich", status=enrich_status))
+        s.commit()
+    # Artifact: required by run_digest's _note_recording_ids filter.
+    cfg = activities._cfg
+    assert cfg is not None
+    meta = cfg.recordings_root / rid / "meta"
+    meta.mkdir(parents=True, exist_ok=True)
+    (meta / "events.json").write_text("{}", encoding="utf-8")
+    return rid
+
+
+class TestEnrichDoneVisibility:
+    """failed + enrich done recordings must appear in digest/timeline.
+
+    Per the t_936af578 CAPTAIN decision: when enrich succeeds but summarize
+    fails, the recording's graph/index/artifacts are fully written and the
+    tag must not disappear from digest or timeline.
+    """
+
+    def test_failed_enrich_done_included(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(a) failed + enrich done → included in digest selection."""
+        _seed_with_enrich_status("quest", RecordingState.failed, StageStatus.done)
+        monkeypatch.setattr(
+            "worker.digest._fetch_graph_slice",
+            lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+        )
+        cfg = activities._cfg
+        assert cfg is not None
+        inp = build_digest_input("quest", 5, cfg)
+        assert len(inp.rows) == 1
+
+    def test_failed_enrich_pending_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(b) failed + enrich pending → NOT included."""
+        _seed_with_enrich_status("quest", RecordingState.failed, StageStatus.pending)
+        monkeypatch.setattr(
+            "worker.digest._fetch_graph_slice",
+            lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+        )
+        cfg = activities._cfg
+        assert cfg is not None
+        inp = build_digest_input("quest", 5, cfg)
+        assert inp.rows == []
+
+    def test_failed_enrich_failed_excluded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(b) failed + enrich failed → NOT included."""
+        _seed_with_enrich_status("quest", RecordingState.failed, StageStatus.failed)
+        monkeypatch.setattr(
+            "worker.digest._fetch_graph_slice",
+            lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+        )
+        cfg = activities._cfg
+        assert cfg is not None
+        inp = build_digest_input("quest", 5, cfg)
+        assert inp.rows == []
+
+    def test_done_behaves_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(c) done (any enrich status) → included as before."""
+        _seed_with_enrich_status("quest", RecordingState.done, StageStatus.done)
+        monkeypatch.setattr(
+            "worker.digest._fetch_graph_slice",
+            lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+        )
+        cfg = activities._cfg
+        assert cfg is not None
+        inp = build_digest_input("quest", 5, cfg)
+        assert len(inp.rows) == 1
+
+    def test_untagged_branch_not_regressed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """(d) untagged: the tag filter (empty tags array) is still applied
+        — a failed+enrich-done recording WITH a tag must not appear in the
+        untagged digest window."""
+        import uuid
+
+        # A failed+enrich-done recording WITH a tag — belongs to that tag,
+        # NOT to the untagged namespace.
+        rid = str(uuid.uuid4())
+        with session() as s:
+            s.add(
+                Recording(
+                    id=rid,
+                    title="Tagged session",
+                    tags=["quest"],  # has a real tag
+                    state=RecordingState.failed,
+                    sha256="x" * 64,
+                    committed_bytes=100,
+                    total_bytes=100,
+                    duration_sec=60.0,
+                    created_at=datetime(2026, 10, 1, tzinfo=UTC),
+                )
+            )
+            s.add(Stage(recording_id=rid, kind="enrich", status=StageStatus.done))
+            s.commit()
+        cfg = activities._cfg
+        assert cfg is not None
+        meta = cfg.recordings_root / rid / "meta"
+        meta.mkdir(parents=True, exist_ok=True)
+        (meta / "events.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(
+            "worker.digest._fetch_graph_slice",
+            lambda *a, **kw: DigestGraphSlice(entities=[], events=[], relations=[]),
+        )
+        # The recording carries tag "quest" — it must appear in the quest digest.
+        inp_quest = build_digest_input("quest", 5, cfg)
+        assert rid in [r.recording_id for r in inp_quest.rows]
+        # It must NOT appear in the untagged digest window (empty tags).
+        inp_untagged = build_digest_input("untagged", 5, cfg)
+        assert rid not in [r.recording_id for r in inp_untagged.rows]

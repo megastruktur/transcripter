@@ -1,10 +1,15 @@
 """Phase 3 API surface: GET /tags/{tag}/timeline.
 
-Payload contract: sessions (the tag's DONE recordings, newest first by
+Payload contract: sessions (the tag's VISIBLE recordings, newest first by
 coalesce(recorded_at, created_at)) each carrying its meta/events.json
 events, plus entities aggregated across those files (entities[] OR any
-event's mentions), plus digest_generated. 404 when the tag has no done
+event's mentions), plus digest_generated. 404 when the tag has no visible
 recordings; 400 for tags outside _TAG_RE.
+
+VISIBLE = done OR (failed AND enrich done) — the CAPTAIN decision on
+t_936af578: a failed recording whose enrich completed successfully still
+carries the tag in digest and timeline, because the graph/index/artifacts
+are fully written.
 """
 
 from __future__ import annotations
@@ -328,5 +333,61 @@ def test_timeline_rescans_on_every_call(client: TestClient) -> None:
     second = client.get("/tags/quest/timeline").json()
     assert first["entities"][0]["slug"] == "a"
     assert second["entities"][0]["slug"] == "b"
+
+
+# ---------- enrich-done visibility (t_936af578) --------------------------------
+
+
+def _set_enrich_status(rid: str, status: str) -> None:
+    """Set the enrich stage status for an existing recording."""
+    from app.db import Stage, StageStatus, get_session
+
+    gen = get_session()
+    session = next(gen)
+    try:
+        stage = session.query(Stage).filter(
+            Stage.recording_id == rid, Stage.kind == "enrich"
+        ).first()
+        if stage is None:
+            stage = Stage(recording_id=rid, kind="enrich")
+            session.add(stage)
+        stage.status = StageStatus[status]
+        session.commit()
+    finally:
+        gen.close()
+
+
+class TestTimelineEnrichDoneVisibility:
+    """failed + enrich done recordings must appear in the timeline.
+
+    Per the t_936af578 CAPTAIN decision: when enrich succeeds but summarize
+    fails, the recording's graph/index/artifacts are fully written and the
+    tag must not disappear from the timeline.
+    """
+
+    def test_timeline_failed_enrich_done_visible(self, client: TestClient) -> None:
+        """(a) failed + enrich done → appears in timeline."""
+        rid = client.post(
+            "/recordings", json={"title": "Session", "tags": ["quest"]}
+        ).json()["id"]
+        _force_state(rid, "failed")
+        _set_enrich_status(rid, "done")
+        _write_events(rid, _events_doc())
+
+        body = client.get("/tags/quest/timeline").json()
+        assert [s["recording_id"] for s in body["sessions"]] == [rid]
+
+    def test_timeline_failed_enrich_pending_not_visible(self, client: TestClient) -> None:
+        """(b) failed + enrich pending → 404 (no visible recordings)."""
+        rid = client.post(
+            "/recordings", json={"title": "Session", "tags": ["quest"]}
+        ).json()["id"]
+        _force_state(rid, "failed")
+        _set_enrich_status(rid, "pending")
+        _write_events(rid, _events_doc())
+
+        r = client.get("/tags/quest/timeline")
+        assert r.status_code == 404
+
 
 

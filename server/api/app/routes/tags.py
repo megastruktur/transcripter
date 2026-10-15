@@ -1119,8 +1119,11 @@ async def _start_memory_or_503(tag: str, rebuild: bool, start_stage: str = "summ
 
 
 def _require_done_recordings(tag: str, session: Session) -> int:
-    """404 when no DONE recording carries the tag (nothing to purge or
-    rebuild); returns the done count for the response."""
+    """404 when no VISIBLE recording carries the tag (nothing to purge or
+    rebuild); returns the visible-count for the response.
+
+    VISIBLE = done OR (failed AND enrich done) — the same selection
+    the digest and timeline use (t_936af578)."""
     count = len(_tag_recordings(session, tag))
     if count == 0:
         raise HTTPException(status_code=404, detail=f"no done recordings carry tag {tag}")

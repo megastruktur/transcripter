@@ -299,16 +299,35 @@ def _select_recordings(
     has one.
     """
     with session() as s:
-        # or_(done, include): the include row rides along regardless of
-        # its state; without the param this collapses to the plain done
-        # filter. Shared verbatim by both dialect branches.
+        dialect_name = s.get_bind().dialect.name
+
+        # The enrich-done EXISTS subquery — one source of truth for pg and
+        # sqlite (identical SQL text, different bind-variable stylists would
+        # be the only reason to diverge; keeping them identical for clarity).
+        enrich_done_exists = text(
+            "EXISTS ("
+            "  SELECT 1 FROM stages s2 "
+            "  WHERE s2.recording_id = recordings.id "
+            "    AND s2.kind = 'enrich' "
+            "    AND s2.status = 'done'"
+            ")"
+        )
+
         def state_filter() -> Any:
-            if include_recording_id is None:
-                return Recording.state == RecordingState.done
-            return or_(
+            """Visible = done, OR failed-but-enrich-succeeded.
+
+            When ``include_recording_id`` is set (auto-digest path) that
+            specific recording bypasses ALL state checks — it must be
+            included regardless of where enrich is in the pipeline relative
+            to finalize (the 2026-09-04 pathfinder incident).
+            """
+            base = or_(
                 Recording.state == RecordingState.done,
-                Recording.id == include_recording_id,
+                enrich_done_exists,
             )
+            if include_recording_id is None:
+                return base
+            return or_(base, Recording.id == include_recording_id)
 
         dialect_name = s.get_bind().dialect.name
         if dialect_name == "postgresql":
