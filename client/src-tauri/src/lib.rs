@@ -364,6 +364,9 @@ fn cmd_upload_now(
     token: String,
     session_id: String,
 ) -> Result<(), String> {
+    if !valid_session_id(&session_id) {
+        return Err("invalid session id".into());
+    }
     let spool = spool_from_app(&app)?;
     let session = spool.read_session(&session_id).map_err(|e| e.to_string())?;
     let spool_dir = spool.root().to_path_buf();
@@ -417,16 +420,23 @@ fn cmd_pending_upload_metas(app: AppHandle) -> Result<Vec<SpoolSessionMeta>, Str
         .collect())
 }
 
+/// The id becomes a spool path segment (`spool_root.join(id)`): accept
+/// exactly one Normal component — ".", "..", separators, and platform
+/// prefixes would escape the session dir or erase its siblings.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn valid_session_id(session_id: &str) -> bool {
+    let mut components = std::path::Path::new(session_id).components();
+    match (components.next(), components.next()) {
+        (Some(std::path::Component::Normal(_)), None) => true,
+        _ => false,
+    }
+}
+
 /// Drop one spool session (audio + session.json) without uploading.
-/// The id is used as a path segment, so reject anything path-like.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[tauri::command]
 fn cmd_discard_spool(app: AppHandle, session_id: String) -> Result<(), String> {
-    if session_id.is_empty()
-        || session_id.contains('/')
-        || session_id.contains('\\')
-        || session_id.contains("..")
-    {
+    if !valid_session_id(&session_id) {
         return Err("invalid session id".into());
     }
     let spool = spool_from_app(&app)?;

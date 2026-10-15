@@ -99,6 +99,7 @@ export async function loadMobileOutboxItems(): Promise<MobileOutboxItem[]> {
 			resolve(items);
 		};
 		request.onerror = () => reject(request.error ?? new Error('indexedDB read failed'));
+		tx.onabort = () => reject(tx.error ?? new Error('indexedDB read aborted'));
 		const items = await promise;
 		return items;
 	} finally {
