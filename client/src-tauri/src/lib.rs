@@ -144,7 +144,32 @@ pub fn run() {
                     })
                     .build(app)?;
             }
-            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            #[cfg(target_os = "android")]
+            {
+                // Android: no tray, no secondary windows — the radial menu
+                // lives in the native overlay and the main activity is the
+                // only webview. `record_popup` opens the in-app popup sheet:
+                // the plugin brings the activity to front and emits
+                // `orbitkit://popup-open` for the frontend PopupSheet.
+                // Remaining actions (quick_record toggle, route navigation)
+                // are owned by the frontend `orbitkit://menu-action` listener
+                // in +layout.svelte, same as on desktop; `quit` stays a
+                // desktop tray/radial concern.
+                use tauri_plugin_orbitkit::OrbitkitExt;
+
+                let app_handle = app.handle().clone();
+                app.on_menu_action(move |action| {
+                    let app = app_handle.clone();
+                    match action.id.as_str() {
+                        "record_popup" => {
+                            let orbitkit = app.orbitkit();
+                            let _ = orbitkit.open_popup("quick_record".to_string(), None, None);
+                        }
+                        _ => {}
+                    }
+                });
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android")))]
             let _ = app;
             Ok(())
         })

@@ -10,7 +10,7 @@
 	import { isAndroidTauri } from '$lib/mobile-recorder';
 	import MascotOverlayView from '$lib/orbitkit/MascotOverlayView.svelte';
 	import QuickRecordPopup from '$lib/orbitkit/QuickRecordPopup.svelte';
-	import { PopupSheet, showOverlay, onMenuAction } from '@orbitkit/ui';
+	import { PopupSheet, showOverlay, onMenuAction, overlayPermission } from '@orbitkit/ui';
 	import orbitkitConfig from '../orbitkit.config';
 
 	// ── Multi-window router ─────────────────────────────────────────────────────
@@ -138,6 +138,18 @@
 		if (!android && windowSlot === 'default' && isTauri()) {
 			void showOverlay({ menu: orbitkitConfig.menu, mascot: { size: orbitkitConfig.mascot.size ?? 96 } });
 		}
+		// Android: auto-start the native Call Companion overlay on launch when
+		// the user enabled it in Settings, but only with the overlay
+		// (SYSTEM_ALERT_WINDOW) permission granted.
+		if (android && windowSlot === 'default' && isTauri() && typeof localStorage !== 'undefined' && localStorage.getItem('overlayCompanionEnabled') === 'true') {
+			overlayPermission()
+				.then((granted) => {
+					if (granted) {
+						return showOverlay({ menu: orbitkitConfig.menu, mascot: { size: orbitkitConfig.mascot.size ?? 96 } });
+					}
+				})
+				.catch(() => {});
+		}
 	});
 	onDestroy(() => { _unlistenMenu?.(); });
 
@@ -145,6 +157,10 @@
 	let _unlistenMenu: (() => void) | undefined;
 	if (windowSlot === 'default') {
 		onMenuAction((action) => {
+			// `record_popup` is intentionally absent: Rust's on_menu_action owns
+			// it on every platform (desktop opens the popup window; Android
+			// brings the activity to front and emits `orbitkit://popup-open`,
+			// which the PopupSheet below consumes).
 			if (action.id === 'quick_record') {
 				// Toggle capture using last-used configuration from localStorage
 				void import('$lib/stores.svelte').then(({ startRecording, stopRecording, recorder, checkAudio, SYSTEM_AUDIO_OFF }) => {
@@ -355,6 +371,24 @@
 		   .page padding) read these so all left edges line up on one ruler. */
 		--rail-w: 72px;
 		--pad-x: 16px;
+		/* Mechanicus theme for @orbitkit/ui <PopupSheet /> (in-app popup sheet,
+		   primary consumer: Android single-window record_popup). */
+		--orbitkit-sheet-backdrop-bg: rgba(9, 7, 6, 0.78);
+		--orbitkit-sheet-bg: #171311;
+		--orbitkit-sheet-border: 1px solid #d7a747;
+		--orbitkit-sheet-radius: 6px;
+		--orbitkit-sheet-shadow: 0 0 0 1px rgba(215, 167, 71, 0.2), 0 18px 38px rgba(0, 0, 0, 0.72);
+		--orbitkit-sheet-color: #ede3d2;
+		--orbitkit-sheet-header-bg: #1c1715;
+		--orbitkit-sheet-header-border: #3a302b;
+		--orbitkit-sheet-title-color: #d7a747;
+		--orbitkit-sheet-close-border: #3a302b;
+		--orbitkit-sheet-close-color: #a99b87;
+		--orbitkit-sheet-close-radius: 4px;
+		--orbitkit-sheet-close-hover-bg: rgba(215, 167, 71, 0.14);
+		--orbitkit-sheet-close-hover-color: #ede3d2;
+		--orbitkit-sheet-close-hover-border: #d7a747;
+		--orbitkit-sheet-focus-color: #d7a747;
 	}
 	:global(html), :global(body) { margin: 0; min-width: 100%; min-height: 100%; background: rgba(0, 0, 0, 0) !important; overflow: hidden; }
 	:global(body) { padding: 0; -webkit-font-smoothing: antialiased; }

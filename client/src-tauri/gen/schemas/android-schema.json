@@ -2193,6 +2193,144 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
+          "description": "Default permissions for OrbitKit plugin\n#### This default permission set includes:\n\n- `allow-overlay-permission`\n- `allow-request-overlay-permission`\n- `allow-show-overlay`\n- `allow-hide-overlay`\n- `allow-open-popup`\n- `allow-close-popup`\n- `allow-list-popups`\n- `allow-set-mascot-state`\n- `allow-emit-menu-action`\n- `allow-start-mascot-drag`\n- `allow-mascot-monitor`",
+          "type": "string",
+          "const": "orbitkit:default",
+          "markdownDescription": "Default permissions for OrbitKit plugin\n#### This default permission set includes:\n\n- `allow-overlay-permission`\n- `allow-request-overlay-permission`\n- `allow-show-overlay`\n- `allow-hide-overlay`\n- `allow-open-popup`\n- `allow-close-popup`\n- `allow-list-popups`\n- `allow-set-mascot-state`\n- `allow-emit-menu-action`\n- `allow-start-mascot-drag`\n- `allow-mascot-monitor`"
+        },
+        {
+          "description": "Enables the close_popup command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-close-popup",
+          "markdownDescription": "Enables the close_popup command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the emit_menu_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-emit-menu-action",
+          "markdownDescription": "Enables the emit_menu_action command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the hide_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-hide-overlay",
+          "markdownDescription": "Enables the hide_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_popups command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-list-popups",
+          "markdownDescription": "Enables the list_popups command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the mascot_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-mascot-monitor",
+          "markdownDescription": "Enables the mascot_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_popup command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-open-popup",
+          "markdownDescription": "Enables the open_popup command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the overlay_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-overlay-permission",
+          "markdownDescription": "Enables the overlay_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the request_overlay_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-request-overlay-permission",
+          "markdownDescription": "Enables the request_overlay_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_mascot_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-set-mascot-state",
+          "markdownDescription": "Enables the set_mascot_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the show_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-show-overlay",
+          "markdownDescription": "Enables the show_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the start_mascot_drag command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:allow-start-mascot-drag",
+          "markdownDescription": "Enables the start_mascot_drag command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the close_popup command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-close-popup",
+          "markdownDescription": "Denies the close_popup command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the emit_menu_action command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-emit-menu-action",
+          "markdownDescription": "Denies the emit_menu_action command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the hide_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-hide-overlay",
+          "markdownDescription": "Denies the hide_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_popups command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-list-popups",
+          "markdownDescription": "Denies the list_popups command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the mascot_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-mascot-monitor",
+          "markdownDescription": "Denies the mascot_monitor command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_popup command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-open-popup",
+          "markdownDescription": "Denies the open_popup command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the overlay_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-overlay-permission",
+          "markdownDescription": "Denies the overlay_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the request_overlay_permission command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-request-overlay-permission",
+          "markdownDescription": "Denies the request_overlay_permission command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_mascot_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-set-mascot-state",
+          "markdownDescription": "Denies the set_mascot_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the show_overlay command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-show-overlay",
+          "markdownDescription": "Denies the show_overlay command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the start_mascot_drag command without any pre-configured scope.",
+          "type": "string",
+          "const": "orbitkit:deny-start-mascot-drag",
+          "markdownDescription": "Denies the start_mascot_drag command without any pre-configured scope."
+        },
+        {
           "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-start`\n- `allow-stop`",
           "type": "string",
           "const": "recording-service:default",
