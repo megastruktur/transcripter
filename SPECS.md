@@ -99,6 +99,40 @@
   is pending; backgrounding tears down the MediaStream (foreground service
   is the known future fix).
 
+## Client UX overhaul (2026-10-16)
+
+- Global recording: the recorder lives in `stores.svelte.ts` (with presets
+  in `presets.svelte.ts`), so navigating across routes never cancels an
+  active mobile recording. Android takes that finished recording but not
+  their upload persist to an IndexedDB outbox (`mobile-spool.ts`) and
+  restore on the next launch; Desktop spool is managed over IPC
+  (`cmd_pending_upload_metas`, `cmd_discard_spool`).
+- Named presets (`CapturePreset {id, name, recType, tags}`, localStorage
+  `transcripter.presets.v1` / `transcripter.activePresetId.v1`, seeded with
+  `Quick Note` and `Game Session`) are shared across the Record page, the
+  `QuickRecordPopup`, and the mascot `quick_record` action; a blank title
+  auto-generates as `<Preset> · YYYY-MM-DD HH:mm`.
+- Primary navigation is 4 items — `Record`, `Library` (inline `Import` via
+  `/recordings?import=1` and the `Local outbox` pending/failed section on
+  top, with a numeric badge on the nav item), `Vault`, `Settings`; the
+  context bar shows the live `● REC <elapsed>` pill while recording off the
+  Record page.
+- Recording Detail has 3 artifact tabs — `Summary`, `Events`, `Transcript`
+  (prefers the `merge_speakers` diarized markdown when that stage is done,
+  falls back to `transcribe`; `Events` renders the enrich artifact as
+  monospace `<pre>`).
+- The Vault tag page has 5 tabs — `Digest` (default), `Definition`
+  (`Context` on top, then a collapsible alphabetically sorted
+  `Vocabulary (N)`), `Timeline`, `Entities`, `Corrections`; `Lattice` is
+  removed from the tab strip.
+- Collapsed mode is the OrbitKit companion mascot, not an in-window resize:
+  on Desktop the main window hides into the 288×288 transparent mascot
+  overlay window (`MascotOverlayView`) with the radial menu (`expand`,
+  `quick_record`, `record_popup`, `recordings`, `vault`, `settings`,
+  `quit`); on Android the native companion overlay (`SYSTEM_ALERT_WINDOW`)
+  dispatches the same actions, `record_popup` opening the in-app
+  `PopupSheet`.
+
 ## Tag registry + vocabularies (2026-09-04)
 
 - Tags are a first-class registry entity (`tag_defs` table): a tag can be
@@ -125,7 +159,7 @@
   one ruled row per tag (sessions, entities, vocabulary count; registry-only
   tags show "registered · no sessions yet"), and `GET /vault` unions
   `tag_defs` rows in as 0-session items with `vocabulary_count`. The tag
-  page's first tab is **Definition** (vocabulary editor with immediate-PATCH
+  page carries a **Definition** tab (vocabulary editor with immediate-PATCH
   autosave, context textarea, delete-registry-entry danger zone — the retired
   `/tags/[tag]` page verbatim); the page opens on **Digest** by default and
   renders the tab row even when the timeline 404s (registry-only tag).
@@ -156,5 +190,4 @@
 - UI: the Vault tag page's Entities tab groups entities by type (group
   order = group size) and expands a row into the dossier card — text,
   Refresh/Edit actions, and "Mentioned in" links deep-linking to the
-  recording player at the event's timecode; the Lattice drawer shows the
-  dossier under the entity header.
+  recording player at the event's timecode.

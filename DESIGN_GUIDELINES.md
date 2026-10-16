@@ -60,8 +60,57 @@ Use semantic tokens rather than introducing nearby one-off colors.
 - Keep edges aligned across neighboring controls. Inputs and selects in one tool row must share exact top and bottom edges.
 - Use compact spacing increments: `4`, `6`, `8`, `10`, `12`, `16`, `18`, and `24px`. Repeated groups should reveal a consistent rhythm.
 - The left rail is navigation machinery, not a sidebar card. Active state uses brass text, a restrained red inset marker, and an iron surface shift.
-- Preserve the 440×720 minimum expanded frame and 76×76 collapsed mark. The user may resize the window larger by hand; the app itself never changes the size except for collapse/expand transitions. Do not solve overflow by enlarging the window programmatically.
+- Preserve the 440×720 minimum expanded frame. The user may resize the window larger by hand; the app itself never resizes the expanded window programmatically. Do not solve overflow by enlarging the window programmatically. Collapse does not resize anything — it hides the window and hands the session to the companion mascot (see Collapsed mode).
 - Normal task states should fit without scroll where practical. Scroll belongs to variable-length archives, artifacts, and diagnostic messages.
+
+## Collapsed mode: companion mascot and PopupSheet
+
+Collapsing does not shrink the main window to a mark inside it. The main window hides entirely and the OrbitKit companion mascot takes over the session:
+
+- **Desktop.** Collapse hands over to the `288×288` transparent OrbitKit mascot overlay window (`MascotOverlayView.svelte`): the cog mascot with a radial menu (`Expand`, `Quick Record`, `Record Popup`, `Recordings`, `Vault`, `Settings`, `Quit`). `Expand` brings the main window back. `Quick Record` toggles capture with the active named preset; `Record Popup` opens `QuickRecordPopup` — a `PopupSheet` themed through the `--orbitkit-sheet-*` custom properties so the overlay reads as Mechanicus iron, not OrbitKit blue.
+- **Android.** The native OrbitKit Call Companion overlay (`SYSTEM_ALERT_WINDOW`) floats above other apps and dispatches the same radial actions: `quick_record` toggles background capture with the active preset; `record_popup` opens the in-app `PopupSheet` and brings the activity to front.
+
+## Navigation
+
+Primary navigation is exactly four destinations — one rail on desktop, one drawer on Android:
+
+| Destination | Route |
+|---|---|
+| `Record` | `/` |
+| `Library` | `/recordings` |
+| `Vault` | `/vault` |
+| `Settings` | `/settings` |
+
+- `Import` is not a destination. It lives inline inside the `Library` tools bar and deep-links as `/recordings?import=1`.
+- The `Library` item carries a numeric badge (`9+` above ten) while local outbox items — desktop spool or Android IndexedDB takes — are pending or failed.
+- While a recording is active on any non-Record route, the context bar shows the live `● REC <elapsed>` pill (pulsing red dot, one lamp one label). Tapping it returns to the Record page; a `Stop` control rides beside it.
+
+## Page-specific guidance
+
+### Record
+
+- The primary control is the **Named Presets** selector: seeded `Quick Note` and `Game Session` plus custom presets (`name`, `recType`, `tags`), with an inline `+ Preset` / `Edit` editor.
+- One tap starts capture. A blank title auto-generates as `<Preset> · YYYY-MM-DD HH:mm`.
+- Custom title and extra tags tuck into the collapsible `Custom title & extra tags` section (`<details class="custom-overrides">`); draft overrides clear automatically when recording stops.
+- `SignalWarnings` are dismissible per warning — failures state what failed and never stick forever.
+
+### Library
+
+- A top **`Local outbox`** section lists desktop spool and Android IndexedDB takes that are pending or failed, with per-item `Retry` / `Delete` and a `Retry all` control.
+- The **Import** panel expands inline inside `.archive-tools` (search, state filter, import).
+- The server recordings archive sits below the outbox.
+
+### Recording detail
+
+- Three artifact tabs: **`Summary`**, **`Events`**, **`Transcript`**.
+- `Transcript` automatically displays the speaker-diarized `merge_speakers` markdown once that stage is done and falls back to the plain `transcribe` artifact.
+- `Summary` and `Transcript` render through `<Markdown />`; `Events` renders the enrich artifact as clean monospace `<pre>` text.
+
+### Vault (`/vault` and `/vault/[tag]`)
+
+- `/vault` is the single tag surface: the register form plus one ruled row per tag.
+- The tag page carries five tabs ordered by priority: **`Digest`** (default) → **`Definition`** → **`Timeline`** → **`Entities`** → **`Corrections`**.
+- Inside `Definition`: the `Context` textarea sits at the top, followed by a collapsible, alphabetically sorted `Vocabulary (N)`.
 
 ## Typography
 
@@ -210,5 +259,8 @@ Before merging client UI work, verify:
 - Focus is visible and reduced motion is respected.
 - Both presentations verified: desktop 440×720 and Android 411×914, with
   the change intentional in each.
+- Collapsed state verified in both presentations: the desktop mascot
+  overlay with its radial menu and the Android companion overlay replace
+  the hidden main window — never an in-window resize.
 - The change uses one strong motif and removes decorative excess.
 - The result still looks like Transcriptor Maximus when all franchise names are removed.
