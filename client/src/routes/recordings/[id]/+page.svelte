@@ -78,20 +78,16 @@
 	type TabData = { kind: 'ready'; text: string } | { kind: 'missing' } | { kind: 'error'; message: string };
 	const TAB_SPECS: Record<ArtifactTabKey, { label: string; stage: string; file?: string; markdown?: boolean }> = {
 		transcript: { label: 'Transcript', stage: 'transcribe', markdown: true },
-		speakers: { label: 'Speakers', stage: 'merge_speakers', markdown: true },
 		events: { label: 'Events', stage: 'enrich', markdown: false },
-		summary: { label: 'Summary', stage: 'summarize', markdown: true },
-		json: { label: 'JSON', stage: 'transcribe', file: 'segments.json' }
+		summary: { label: 'Summary', stage: 'summarize', markdown: true }
 	};
-	/** Tab strip vocabulary mirrors TAB_SPECS order. Text-only: five tabs
+	/** Tab strip vocabulary mirrors TAB_SPECS order. Text-only: three tabs
 	 * share one 366px workspace column — labels carry the meaning, the icon
-	 * would only cost width (Vault's 3-tab strips keep their icons). */
+	 * would only cost width (Vault's tab strips keep their icons). */
 	const ARTIFACT_VIEWS: { key: ArtifactTabKey; label: string }[] = [
-		{ key: 'transcript', label: 'Transcript' },
-		{ key: 'speakers', label: 'Speakers' },
-		{ key: 'events', label: 'Events' },
 		{ key: 'summary', label: 'Summary' },
-		{ key: 'json', label: 'JSON' }
+		{ key: 'events', label: 'Events' },
+		{ key: 'transcript', label: 'Transcript' }
 	];
 	let tabData = $state<Partial<Record<ArtifactTabKey, TabData>>>({});
 	let tabLoading = $state(false);
@@ -112,9 +108,9 @@
 		const done = (kind: Stage['kind'] | 'enrich') => rec.stages.some((s) => s.kind === kind && s.status === 'done');
 		if (done('summarize')) return 'summary';
 		if (done('merge_speakers') && done('enrich')) return 'events';
-		if (done('merge_speakers')) return 'speakers';
-		if (done('transcribe')) return 'transcript';
-		return 'json';
+		// Transcript is ready once either transcribe or merge_speakers is
+		// done — the tab itself prefers the diarized artifact (loadTab).
+		return 'transcript';
 	}
 
 	/** "mm:ss" / "hh:mm:ss" → seconds; NaN for anything else. */
@@ -423,11 +419,18 @@
 		if (!recording) return;
 		if (!force && (tabData[tab] !== undefined || tabInflight.has(tab))) return;
 		const spec = TAB_SPECS[tab];
+		// The Transcript tab prefers the speaker-diarized artifact once the
+		// merge_speakers stage has landed; before that it falls back to the
+		// plain transcribe output (the old Speakers tab, folded in here).
+		const stage =
+			tab === 'transcript' && recording.stages.find((s) => s.kind === 'merge_speakers')?.status === 'done'
+				? 'merge_speakers'
+				: spec.stage;
 		const generation = ++tabGeneration;
 		tabInflight.add(tab);
 		tabLoading = true;
 		try {
-			const text = await fetchArtifact(loadApiConfig(), recording.id, spec.stage, spec.file);
+			const text = await fetchArtifact(loadApiConfig(), recording.id, stage, spec.file);
 			if (generation !== tabGeneration) return;
 			tabData = { ...tabData, [tab]: { kind: 'ready', text } };
 		} catch (caught) {
@@ -747,11 +750,7 @@
 									Memory applied
 								</p>
 							{/if}
-							{#if TAB_SPECS[view.key].markdown}
-								<Markdown text={data.text} />
-							{:else}
-								<pre>{data.text}</pre>
-							{/if}
+							<Markdown text={data.text} />
 						{:else if tabData[view.key]?.kind === 'missing'}
 							<p class="tab-placeholder">{view.key === 'events' ? 'No events extracted yet.' : 'This artifact has not been generated yet.'}</p>
 						{:else if tabData[view.key]?.kind === 'error'}
@@ -817,15 +816,9 @@
 	/* Keep-alive shell: visited views stay mounted (switching back is free —
 	 * no re-parse of marked/DOMPurify), hidden ones skip layout and paint
 	 * entirely. Only views whose tab was ever activated render content, so
-	 * the mount of a single view never parses all five artifacts at once. */
+	 * the mount of a single view never parses all three artifacts at once. */
 	.artifact-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 	.artifact-view.hidden { display: none; }
-	.artifact-view pre { flex: 1; min-height: 0; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; color: #c7bbad; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; scrollbar-width: thin; scrollbar-color: var(--red-dark) transparent; }
-	/* JSON artifacts are one huge <pre> — no block boundaries to skip per
-	 * child, so windowed rendering needs the pre itself to be the
-	 * content-visibility root. Markdown bodies get the same treatment on
-	 * their children inside Markdown.svelte. */
-	.artifact-view pre { content-visibility: auto; contain-intrinsic-size: auto 500px; }
 	.tab-placeholder { margin: auto; padding: 18px; color: var(--ash); font-size: 11px; }
 	.tab-error { margin: auto; padding: 18px; color: #f36b60; font-size: 11px; }
 	.rename-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; }

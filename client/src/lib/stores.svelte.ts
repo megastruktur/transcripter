@@ -105,7 +105,7 @@ export async function retryMobileUpload(id: string): Promise<void> {
 	await uploadMobileEntry(entry);
 }
 
-export type ArtifactTabKey = 'transcript' | 'speakers' | 'events' | 'summary' | 'json';
+export type ArtifactTabKey = 'transcript' | 'events' | 'summary';
 
 
 /** Canonical pipeline stage order and display names. Shared by the detail

@@ -10,7 +10,6 @@
 	import SearchRecess from '$lib/SearchRecess.svelte';
 	import ViewTabs from '$lib/ViewTabs.svelte';
 	import Skeleton from '$lib/Skeleton.svelte';
-	import LatticeTab from '$lib/lattice/LatticeTab.svelte';
 	import CorrectionsTab from '$lib/vault/CorrectionsTab.svelte';
 	import TagDefinitionTab from '$lib/vault/TagDefinitionTab.svelte';
 	import EventCard from '$lib/vault/EventCard.svelte';
@@ -38,14 +37,13 @@
 
 	const tag = decodeURIComponent(page.params.tag ?? '');
 
-	type TabKey = 'definition' | 'timeline' | 'entities' | 'lattice' | 'digest' | 'corrections';
+	type TabKey = 'digest' | 'definition' | 'timeline' | 'entities' | 'corrections';
 
-	const TABS: { key: TabKey; label: string; icon: 'tags' | 'timeline' | 'speakers' | 'enrich' | 'summary' | 'shield' }[] = [
+	const TABS: { key: TabKey; label: string; icon: 'tags' | 'timeline' | 'speakers' | 'summary' | 'shield' }[] = [
+		{ key: 'digest', label: 'Digest', icon: 'summary' },
 		{ key: 'definition', label: 'Definition', icon: 'tags' },
 		{ key: 'timeline', label: 'Timeline', icon: 'timeline' },
 		{ key: 'entities', label: 'Entities', icon: 'speakers' },
-		{ key: 'lattice', label: 'Lattice', icon: 'enrich' },
-		{ key: 'digest', label: 'Digest', icon: 'summary' },
 		{ key: 'corrections', label: 'Corrections', icon: 'shield' }
 	];
 	let data = $state<TimelineResponse | null>(null);
@@ -595,7 +593,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	onpointerdown={(event) => { if (memoryMenuOpen && !(event.target instanceof Element && event.target.closest('.memory-menu-wrap'))) closeMemoryMenu(); }}
 />
 
-<section class="page tag-page" class:tag-page--lattice={tab === 'lattice' && !loading && !!data}>
+<section class="page tag-page">
 	<header class="tag-header">
 		<BackButton href="/vault" label="Back to vault" />
 		{#if loading}
@@ -660,7 +658,7 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 	{:else if data}
 		<ViewTabs tabs={TABS} active={tab} ariaLabel="Tag views" onchange={(key) => switchTab(key as TabKey)} />
 
-		{#if tab !== 'lattice' && tab !== 'definition'}
+		{#if tab !== 'definition'}
 			<SearchRecess
 				ariaLabel={`Semantic search · ${tag}`}
 				placeholder="Search this tag's sessions…"
@@ -874,12 +872,6 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 					<EmptyState icon="speakers" title="No entities extracted yet" hint="Run the pipeline on tagged recordings to populate the roster." />
 				{/each}
 			</div>
-		{:else if tab === 'lattice'}
-			<LatticeTab
-				{tag}
-				entitiesSeed={data.entities.map((e) => ({ slug: e.slug, label: e.label, type: e.type, sessions: e.sessions, description: e.description ?? '' }))}
-				relationsSeed={[]}
-			/>
 		{:else if tab === 'corrections'}
 			<CorrectionsTab
 				{tag}
@@ -894,14 +886,6 @@ function scheduleMemoryPoll(workflowId: string, rebuild: boolean): void {
 </section>
 <style>
 	.tag-page { display: flex; flex-direction: column; gap: 12px; min-height: 100%; }
-	/* Lattice tab: the page becomes the canvas frame — height chains
-	   down from the scroll viewport so the graph fills the workspace
-	   instead of a fixed 46vh strip. Other tabs keep normal flow.
-	   overflow:hidden — the lattice view is a fixed frame by design:
-	   nothing inside may grow the page (a WebView flex-quirk letting
-	   the canvas out of its cell would otherwise scroll the tab strip
-	   out of sight — reported on all engines 2026-09-05). */
-	.tag-page--lattice { height: 100%; overflow: hidden; }
 	.tag-header { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
 	.memory-menu-wrap { position: relative; display: flex; min-width: 0; }
 	.memory-toggle { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 2px; background: transparent; color: #968d83; cursor: pointer; line-height: 0; }

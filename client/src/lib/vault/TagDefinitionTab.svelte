@@ -76,8 +76,10 @@
 		void flush();
 	}
 
-	function removeWord(index: number): void {
-		words = words.filter((_, i) => i !== index);
+	function removeWord(target: string): void {
+		// Delete by value, never by index: the list renders sorted, so a
+		// sorted-position index would remove the wrong phrase.
+		words = words.filter((w) => w !== target);
 		void flush();
 	}
 
@@ -132,39 +134,6 @@
 
 	<div class="vocab-section">
 		<div class="vocab-heading">
-			<strong>Vocabulary</strong>
-			<span class="vocab-hint">Hot words bias recognition and summaries — applied on the next transcription or summary run.</span>
-		</div>
-
-		<form class="vocab-add" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
-			<label>
-				<span class="sr-only">New word or phrase</span>
-				<input
-					type="text"
-					placeholder="Name, term, phrase…"
-					maxlength="64"
-					bind:value={newWord}
-				/>
-			</label>
-			<button type="submit" disabled={!newWord.trim()}>Add</button>
-		</form>
-
-		<ul class="vocab-list" aria-live="polite">
-			{#each words as word, i (word)}
-				<li class="vocab-row">
-					<span class="vocab-word">{word}</span>
-					<button class="vocab-remove" type="button" onclick={() => removeWord(i)} aria-label="Remove {word}">
-						<Icon name="trash" size={13} />
-					</button>
-				</li>
-			{:else}
-				<li class="vocab-empty">No words yet — add names and terms that come up in this tag's sessions.</li>
-			{/each}
-		</ul>
-	</div>
-
-	<div class="vocab-section">
-		<div class="vocab-heading">
 			<strong>Context</strong>
 			<span class="vocab-hint">What the LLM should know about this series — players, characters, projects, tone. Applied to summaries, extraction and digests on the next run.</span>
 		</div>
@@ -176,6 +145,43 @@
 			onblur={() => { if (contextChanged()) void flush(); }}
 		></textarea>
 	</div>
+
+	<details class="vocab-section vocab-details">
+		<summary class="vocab-summary">
+			<span class="vocab-summary-row">
+				<strong>Vocabulary</strong>
+				<span class="vocab-count">{words.length}</span>
+			</span>
+			<span class="vocab-hint">Hot words bias recognition and summaries — applied on the next transcription or summary run.</span>
+		</summary>
+		<div class="vocab-body">
+			<form class="vocab-add" onsubmit={(e) => { e.preventDefault(); addWord(); }}>
+				<label>
+					<span class="sr-only">New word or phrase</span>
+					<input
+						type="text"
+						placeholder="Name, term, phrase…"
+						maxlength="64"
+						bind:value={newWord}
+					/>
+				</label>
+				<button type="submit" disabled={!newWord.trim()}>Add</button>
+			</form>
+
+			<ul class="vocab-list" aria-live="polite">
+				{#each [...words].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })) as word (word)}
+					<li class="vocab-row">
+						<span class="vocab-word">{word}</span>
+						<button class="vocab-remove" type="button" onclick={() => removeWord(word)} aria-label="Remove {word}">
+							<Icon name="trash" size={13} />
+						</button>
+					</li>
+				{:else}
+					<li class="vocab-empty">No words yet — add names and terms that come up in this tag's sessions.</li>
+				{/each}
+			</ul>
+		</div>
+	</details>
 	<div class="vocab-actions">
 		{#if saveError}
 			<span class="vocab-error" role="alert">{saveError}</span>
@@ -218,6 +224,18 @@
 	.vocab-heading { display: grid; gap: 2px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
 	.vocab-heading strong { color: #b5aa9c; font-size: 12px; }
 	.vocab-hint { color: #746d64; font-size: 10px; }
+
+	/* Collapsible Vocabulary (secondary to Context): same ▸ marker as the
+	 * recorder page's custom-overrides details. */
+	.vocab-summary { display: grid; gap: 2px; padding: 8px 2px; border-bottom: 1px solid var(--line); cursor: pointer; list-style: none; }
+	.vocab-summary::-webkit-details-marker { display: none; }
+	.vocab-summary:hover strong { color: var(--bone); }
+	.vocab-summary strong { color: #b5aa9c; font-size: 12px; }
+	.vocab-summary-row { display: inline-flex; align-items: center; gap: 8px; }
+	.vocab-summary-row::before { content: '▸'; color: #8b8278; font-size: 10px; }
+	.vocab-details[open] .vocab-summary-row::before { transform: rotate(90deg); }
+	.vocab-count { padding: 0 7px; border: 1px solid rgba(215,167,71,.35); border-radius: 2px; color: var(--brass); font-size: 9px; font-weight: 700; line-height: 1.7; font-variant-numeric: tabular-nums; }
+	.vocab-body { display: grid; gap: 10px; }
 	.context-input { min-height: 42px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 3px; background: rgba(0,0,0,.3); color: var(--bone); font-size: 12px; font-family: inherit; line-height: 1.45; resize: vertical; }
 	.context-input::placeholder { color: #746d64; }
 	.context-input:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 1px var(--cyan); }
