@@ -223,6 +223,8 @@
 						<span class="preset-name">{preset.name}</span>
 						{#if preset.recType}
 							<span class="preset-type">{presetTypeLabel(preset)}</span>
+						{:else}
+							<span class="preset-type preset-type--default">Default pipeline</span>
 						{/if}
 						{#if preset.tags.length}
 							<span class="preset-tags">
@@ -267,6 +269,10 @@
 				</div>
 			{/if}
 		</div>
+		<label class="type-field">
+			<span class="field-label">Type <small>one-off override</small></span>
+			<TypeProfileField bind:value={captureDraft.recType} disabled={recorder.recording} />
+		</label>
 
 		<details class="custom-overrides" class:locked={recorder.recording} bind:open={overridesOpen}>
 			<summary>Custom title &amp; extra tags</summary>
@@ -279,10 +285,6 @@
 						bind:value={captureDraft.title}
 						disabled={recorder.recording}
 					/>
-				</label>
-				<label class="type-field">
-					<span class="field-label">Type <small>one-off override</small></span>
-					<TypeProfileField bind:value={captureDraft.recType} disabled={recorder.recording} />
 				</label>
 				<label class="tags-field">
 					<span class="field-label">Extra tags <small>Press Enter or comma to add</small></span>
@@ -326,6 +328,8 @@
 .capture-meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; padding: 8px 12px 10px; font-size: 10px; color: #8d847a; }
 .capture-fields { flex: 1; display: grid; gap: 12px; align-content: start; padding: 14px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .title-field { display: block; }
+.type-field { display: block; }
+.type-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 .tags-field { display: block; }
 .tags-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 .record-control { width: 100%; margin-top: auto; min-height: 48px; display: grid; grid-template-columns: 36px 1fr; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--red); border-radius: 3px; background: linear-gradient(105deg, #7f1715, #c72b23 72%, #e34737); color: white; text-align: left; cursor: pointer; box-shadow: 0 8px 24px rgba(111, 23, 21, 0.25), inset 0 1px rgba(255,255,255,0.17); transition: transform 120ms ease, filter 120ms ease; }
@@ -355,6 +359,7 @@
 .preset-chip.selected { border-color: var(--brass); background: rgba(215, 167, 71, 0.09); }
 .preset-name { font-size: 12px; font-weight: 650; }
 .preset-type { font-size: 10px; color: var(--brass); }
+.preset-type--default { color: var(--ash, #9e9183); font-style: italic; }
 .preset-tags { display: flex; flex-wrap: wrap; gap: 4px; font-size: 10px; color: #8d847a; }
 .preset-editor { display: grid; gap: 10px; padding: 10px; border-left: 2px solid var(--brass); background: rgba(215, 167, 71, 0.05); }
 .editor-field { display: grid; gap: 4px; }
@@ -376,7 +381,5 @@
 .custom-overrides.locked { opacity: 0.55; }
 .custom-overrides.locked summary { cursor: not-allowed; }
 .overrides-body { display: grid; gap: 12px; padding: 2px 2px 10px; }
-.type-field { display: block; }
-.type-field .field-label small { margin-left: 6px; color: #6f685f; font-weight: 500; }
 @keyframes signal { to { height: var(--bar-height); } }
 </style>
