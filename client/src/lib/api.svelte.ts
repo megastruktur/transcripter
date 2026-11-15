@@ -136,6 +136,45 @@ export async function listProfiles(cfg: ApiConfig): Promise<ProfileInfo[]> {
 	return resp.json();
 }
 
+/** GET /presets row — the server's sync feed: every preset INCLUDING
+ * tombstones (deleted=true), updated_at is ISO-8601 UTC server time
+ * (naive, no offset, on sqlite read-back). */
+export type PresetRow = {
+	id: string;
+	name: string;
+	rec_type: string;
+	tags: string[];
+	deleted: boolean;
+	updated_at: string;
+};
+
+export async function listPresets(cfg: ApiConfig): Promise<PresetRow[]> {
+	const resp = await req(cfg, '/presets');
+	if (!resp.ok) throw new Error(`presets ${resp.status}`);
+	return resp.json();
+}
+
+export async function putPreset(
+	cfg: ApiConfig,
+	id: string,
+	body: { name: string; rec_type: string; tags: string[] }
+): Promise<PresetRow> {
+	const resp = await req(cfg, `/presets/${id}`, {
+		method: 'PUT',
+		body: JSON.stringify(body)
+	});
+	if (!resp.ok) throw new Error(`put preset ${resp.status}`);
+	return resp.json();
+}
+
+/** DELETE /presets/{id} (tombstone server-side). 404 = the row never
+ * existed there (e.g. offline delete of a never-synced preset) — that
+ * is success, nothing left to propagate. */
+export async function deletePresetRemote(cfg: ApiConfig, id: string): Promise<void> {
+	const resp = await req(cfg, `/presets/${id}`, { method: 'DELETE' });
+	if (!resp.ok && resp.status !== 404) throw new Error(`delete preset ${resp.status}`);
+}
+
 export type TagCount = {
 	tag: string;
 	count: number;
