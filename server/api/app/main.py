@@ -14,8 +14,8 @@ from fastapi.responses import JSONResponse
 from app import reaper
 from app.config import ServerConfig, load_config
 from app.db import STAGE_KINDS, Base, engine, init_engine
+from app.routes import presets, recordings, regenerate, search, settings, tags, vault
 from app.routes import profiles as profiles_route
-from app.routes import recordings, regenerate, search, settings, tags, vault
 
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json"}
 # <audio> elements cannot send Authorization, so the bearer middleware below
@@ -212,6 +212,7 @@ app.include_router(vault.router)
 app.include_router(profiles_route.router)
 app.include_router(tags.router)
 app.include_router(search.router)
+app.include_router(presets.router)
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):

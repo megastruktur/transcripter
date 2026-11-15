@@ -7,7 +7,7 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, Enum, Float, ForeignKey, String, Text, create_engine
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import TEXT
 from sqlalchemy.orm import (
@@ -187,6 +187,38 @@ class TagDef(Base):
         Text, nullable=False, default="", server_default=""
     )
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+
+
+class CapturePreset(Base):
+    """Capture-preset SYNC STORE: server-side mirror of the client's
+    capture presets ({name, recType, tags} — client/src/lib/presets.svelte.ts,
+    localStorage-only until now) so they follow the owner between devices.
+    Sync contract: timestamps are server-authoritative — every write
+    stamps updated_at here (utcnow), so last-write-wins needs no
+    clock-skew handling (clients merge by updated_at). DELETE is a
+    TOMBSTONE (deleted=True, row kept) so the deletion itself propagates
+    to other devices; a later PUT resurrects (deleted=False). API-only:
+    the worker never reads presets — no worker mirror."""
+
+    __tablename__ = "capture_presets"
+
+    # Client-generated id (e.g. "preset-vet-x7k2") — the sync key; the
+    # server never mints one.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Recording-type slug; "" = no type (same charset as Recording.type,
+    # validated at the route layer).
+    rec_type: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    # Same TEXT[]/JSON dialect split as Recording.tags.
+    tags: Mapped[list[str]] = mapped_column(
+        postgresql.ARRAY(TEXT, as_tuple=False).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        default=list,
+    )
+    deleted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
 
 
