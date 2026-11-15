@@ -80,6 +80,13 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
+      # Pin the JDK: the runner image's default drifted to Java 25, which
+      # Gradle 8.14.3 cannot parse ("Unsupported class file major version 69").
+      # AGP 8.x targets JDK 17 — keep the build hermetic against image drift.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
