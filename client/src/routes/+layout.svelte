@@ -6,7 +6,8 @@
 	import { getCurrentWindow } from '@tauri-apps/api/window';
 	import { commands } from '$lib/tauri';
 	import { checkServerConnection, connection, initUploadTracking, mobilePendingUploads, preflight, recorder, recordActions, stageIcons, stageNames, stageRetry, startRecordingSync, stopRecording, uploads } from '$lib/stores.svelte';
-	import { loadPresets } from '$lib/presets.svelte';
+	import { loadApiConfig } from '$lib/api.svelte';
+	import { loadPresets, syncPresets } from '$lib/presets.svelte';
 	import { durationLabel } from '$lib/format';
 	import Icon from '$lib/Icon.svelte';
 	import { isAndroidTauri } from '$lib/mobile-recorder';
@@ -146,6 +147,8 @@
 		void initUploadTracking();
 		// Presets for the REC-pill surfaces + popup; safe on every platform.
 		loadPresets();
+		// Cross-device preset sync at boot; silent no-op offline (W5).
+		void syncPresets(loadApiConfig());
 		// Desktop main window only: adopt sessions started in the
 		// quick-record popup window (a separate webview realm) so the REC
 		// pill stays truthful while browsing other pages.
