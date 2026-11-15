@@ -98,6 +98,14 @@
   unless the bytes already are FLAC). Runtime mic check on a physical device
   is pending; backgrounding tears down the MediaStream (foreground service
   is the known future fix).
+- Vet consultation type (2026-11-15): new recording type `vet-consultation`
+  — profile `server/profiles/vet-consultation.yaml` (summarize: structured vet
+  consultation protocol with hard no-invented-dosages rule, output artifact
+  `vet-consultation.md`; enrich: knowledge-graph entities
+  animal/owner/veterinarian/symptom/diagnosis/medication/procedure/vaccine/clinic).
+  Client: the Type dropdown picks it up automatically; seeded preset
+  «Vet Consultation» (tag vet). Changing a done recording's type
+  auto-regenerates summarize+enrich (existing behavior).
 
 ## Client UX overhaul (2026-10-16)
 

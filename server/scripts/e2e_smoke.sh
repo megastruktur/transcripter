@@ -188,6 +188,8 @@ test "$TAGS" = '["pathfinder","e2e"]' && echo "tags normalized: $TAGS" || { echo
 echo "== 3b. profiles registry"
 authf "$API/profiles" | jq -e '.[] | select(.id=="ttrpg-session-log")' >/dev/null \
   && echo "  ok: ttrpg-session-log listed" || { echo "MISSING ttrpg-session-log in GET /profiles"; exit 1; }
+authf "$API/profiles" | jq -e '.[] | select(.id=="vet-consultation")' >/dev/null \
+  && echo "  ok: vet-consultation listed" || { echo "MISSING vet-consultation in GET /profiles"; exit 1; }
 echo "== 3c. set recording type (profile match — the session-log.md assert below needs it;"
 echo "      POST /recordings takes no type, PATCH is the only way to set it pre-pipeline)"
 UPD=$(authf -X PATCH -H 'content-type: application/json' -d '{"type":"ttrpg"}' "$API/recordings/$RID")
