@@ -8,6 +8,7 @@ import { ANDROID_MIC_ID, isAndroidTauri, startMobileRecorder, startRecordingKeep
 import type { MobileRecorder } from '$lib/mobile-recorder';
 import { buildRecordingTitle, getActivePreset } from '$lib/presets.svelte';
 import { mergeDraftTags } from '$lib/tags';
+import { profilesCache } from './profiles.svelte';
 import type { IconName } from '$lib/Icon.svelte';
 import { setMascotState } from '@orbitkit/ui';
 
@@ -704,6 +705,7 @@ async function startAndroidRecording(title: string, tags: string[], recType: str
 	mobileStartedAt = Date.now();
 	mobileMeta = { title, tags: [...tags], recType };
 	void setMascotState('recording');
+	pushNotice(pipelineNotice(recType), 7_000);
 	// Drives elapsed = floor(frames / CAPTURE_RATE) exactly like the
 	// desktop Rust poller, without a second source of truth.
 	mobileFramesTimer = globalThis.setInterval(() => {
@@ -841,6 +843,14 @@ function announceQueued(id: string): void {
 	watchProcessing(id, notice);
 }
 
+/** Start receipt: names the pipeline the take will run through — the
+ * type profile's display name, or the default pipeline when no type is
+ * set (a blank-recType preset used to start silently on defaults). */
+function pipelineNotice(recType: string | null): string {
+	if (!recType) return 'Recording — default pipeline';
+	return `Recording as ${profilesCache.items.find((profile) => profile.type === recType)?.display_name ?? recType}`;
+}
+
 export async function startRecording(
 	title: string,
 	tags: string[],
@@ -873,6 +883,7 @@ export async function startRecording(
 	recorder.recording = true;
 	recorder.frames = 0;
 	void setMascotState('recording');
+	pushNotice(pipelineNotice(recType), 7_000);
 	startFramesPoller();
 }
 
