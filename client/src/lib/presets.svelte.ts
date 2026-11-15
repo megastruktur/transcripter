@@ -20,7 +20,8 @@ const ACTIVE_KEY = 'transcripter.activePresetId.v1';
 
 const DEFAULT_PRESETS: CapturePreset[] = [
 	{ id: 'default-note', name: 'Quick Note', recType: '', tags: [] },
-	{ id: 'session-dnd', name: 'Game Session', recType: '', tags: ['dnd'] }
+	{ id: 'session-dnd', name: 'Game Session', recType: '', tags: ['dnd'] },
+	{ id: 'preset-vet', name: 'Vet Consultation', recType: 'vet-consultation', tags: ['vet'] }
 ];
 
 export const presetState = $state<{ presets: CapturePreset[]; activeId: string }>({
